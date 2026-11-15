@@ -1,5 +1,7 @@
 # `reaction-draw` skill v1.0.0
 
+[![License](https://img.shields.io/github/license/t-0hmura/reaction-draw)](LICENSE) [![Release](https://img.shields.io/github/v/release/t-0hmura/reaction-draw)](https://github.com/t-0hmura/reaction-draw/releases/latest)
+
 English | [日本語](README.ja.md)
 
 A **skill** plugin that lets **AI agents** draw **chemical structures and reaction mechanisms** with curved arrows. From a description of an organic reaction, a textbook reaction name, a hand-drawn image or a paper, the agent makes the figure as PNG, SVG and CDXML files.

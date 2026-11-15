@@ -1,5 +1,7 @@
 # `reaction-draw` skill v1.0.0
 
+[![License](https://img.shields.io/github/license/t-0hmura/reaction-draw)](LICENSE) [![Release](https://img.shields.io/github/v/release/t-0hmura/reaction-draw)](https://github.com/t-0hmura/reaction-draw/releases/latest)
+
 [English](README.md) | 日本語
 
 **AIエージェント**に、**化学構造式**と巻矢印つきの**反応機構**を描かせるskillのプラグインです。有機反応の説明や、教科書的な反応名、手書きの画像、論文をもとにして、PNG、SVG、CDXML形式の画像を作成させることができます。
