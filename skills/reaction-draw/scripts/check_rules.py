@@ -328,7 +328,8 @@ class Figure(object):
     # ---- normalization of the backend's files (the Octet backend's report.json and reload.json, docs/backend.md)
     def _norm_report(self, rep):
         out = {'atoms': {}, 'bonds': [], 'curved': [], 'numbers': [], 'charges': [], 'lone_pairs': [], 'texts': [], 'pieces': {},
-               'timings_s': rep.get('timings_s') or {}, 'font': rep.get('font_check')}
+               'timings_s': rep.get('timings_s') or {}, 'font': rep.get('font_check'),
+               'routes': copy.deepcopy(rep.get('routes') or []), 'px_per_pt': rep.get('px_per_pt')}   # arrows_clear
         for ref, a in (rep.get('atoms') or {}).items():
             out['atoms'][ref] = {'xy': (float(a['x_pt']), float(a['y_pt'])), 'box': _box(a.get('label_box_pt'))}
         out['radicals'] = copy.deepcopy(rep.get('radicals') or [])
