@@ -19,6 +19,12 @@
       "AcCoA"
     ]
   ],
+  "expected_stereo": {
+    "atp:403": "unspecified",
+    "atp:407": "unspecified",
+    "sam:20": "unspecified",
+    "sam:24": "unspecified"
+  },
   "panels": [
     {
       "id": "SAM",

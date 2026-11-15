@@ -349,6 +349,8 @@ def inspect_spec(data):
             bad(rw + '.kind', 'must be ' + ', '.join(ip.REACTION_KINDS))
         if r.get('weight', 'normal') not in ('normal', 'bold'):
             bad(rw + '.weight', 'must be normal or bold')
+        if not isinstance(r.get('summary', False), bool):
+            bad(rw + '.summary', 'must be true or false')
         if r.get('ratio') is not None:
             number(r['ratio'], rw + '.ratio', positive=True)
             if kind != 'equilibrium' or (isinstance(r['ratio'], (int, float)) and r['ratio'] > 100):
@@ -400,11 +402,13 @@ def inspect_spec(data):
                     assigned[target] = gi
 
     # Expectations can be global (all matching panels) or local to a species.
+    # "unspecified" declares a stereocenter whose configuration the source does not show (harness_rsi D541).
+    declared = {}
     def expectations(block, where, own_sid=None):
         for key, want in obj(block, where).items():
             ew = '%s[%r]' % (where, key)
-            if want not in ('R', 'S', 'r', 's', 'E', 'Z'):
-                bad(ew, 'must be R, S, r, s, E or Z')
+            if want not in ('R', 'S', 'r', 's', 'E', 'Z', 'unspecified'):
+                bad(ew, 'must be R, S, r, s, E, Z or unspecified')
                 continue
             target = str(key)
             if own_sid and ':' not in target:
@@ -424,9 +428,16 @@ def inspect_spec(data):
                 bad(ew, 'use an atom map or two double-bond maps a=b')
                 continue
             a, b = int(m[1]), int(m[2]) if m[2] else None
-            if (b is None and want not in ('R', 'S', 'r', 's')) or (b is not None and want not in ('E', 'Z')):
-                bad(ew, 'use R/S for an atom and E/Z for a double bond')
+            if (b is None and want not in ('R', 'S', 'r', 's', 'unspecified')) or (b is not None and want not in ('E', 'Z')):
+                bad(ew, 'use R/S (or unspecified) for an atom and E/Z for a double bond')
                 continue
+            if want == 'unspecified':
+                for sid in matches:
+                    declared.setdefault(sid, set()).add(a)
+            if want == 'unspecified':     # a declaration applies to the panels that draw the atom
+                if all(a not in graphs[sid][0] for sid in matches if sid in graphs):
+                    bad(ew, 'unknown atom map %d' % a)
+                matches = [sid for sid in matches if sid in graphs and a in graphs[sid][0]]
             for sid in matches:
                 if sid not in graphs:
                     continue
@@ -440,6 +451,10 @@ def inspect_spec(data):
                 ar = sid + ':' + str(a)
                 br = sid + ':' + str(b)
                 got = atom_labels.get(ar) if b is None else bond_labels.get(tuple(sorted((ar, br))))
+                if want == 'unspecified':
+                    if got is not None:
+                        bad(ew, '%s: SMILES has %s; write the configuration in expected_stereo, or remove @/@@ if the source does not show it' % (ar, got))
+                    continue
                 if (ar if b is None else tuple(sorted((ar, br)))) in depends:
                     bad(ew, '%s%s: the label depends on an abbreviation or residue stub; write that group in full in the SMILES' % (
                         ar, '' if b is None else '=' + str(b)))
@@ -449,4 +464,21 @@ def inspect_spec(data):
     expectations(data.get('expected_stereo', {}), 'expected_stereo')
     for sid, _, _, s, sw in raw_species:
         expectations(s.get('expected_stereo', {}), sw + '.expected_stereo', sid)
+    # Every stereocenter outside a transition state has a configuration from the source, or is declared unspecified.
+    for sid, _, key, s, sw in raw_species:
+        if sid not in labels or sid not in sources or s.get('ts'):
+            continue
+        styles = s.get('bond_style') if isinstance(s.get('bond_style'), dict) else {}
+        try:
+            centers = stereo.potential_centers(sid, sources[sid], relaxed='coord' in styles.values() or '->' in sources[sid] or '<-' in sources[sid])
+        except (ValueError, RuntimeError):
+            continue
+        maps = graphs[sid][0] if sid in graphs else {}
+        for ref in sorted(centers - set(labels[sid][0][0]), key=lambda r: int(r.rsplit(':', 1)[1])):
+            mp = int(ref.rsplit(':', 1)[1])
+            if mp in declared.get(sid, ()) or (maps.get(mp) or {}).get('el') in ip.METALS:
+                continue
+            bad(sw + '.smiles', 'atom %d is a stereocenter without a configuration; write @/@@ as the source figure draws it '
+                '(and its R/S in expected_stereo), or, if the source does not show this configuration, add '
+                '"%s:%d": "unspecified" to expected_stereo' % (mp, key, mp))
     return list(dict.fromkeys(errors)), sources

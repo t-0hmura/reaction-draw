@@ -82,6 +82,32 @@ def potential_centers(sid, smiles, relaxed=False):
     return {refs[i] for i, _ in Chem.FindMolChiralCenters(mol, includeUnassigned=True, useLegacyImplementation=False)}
 
 
+_AROMATIC = {}
+
+
+def aromatic_pairs(smiles):
+    """Aromatic bonds of a SMILES as {frozenset(('map', 'map'))}; a Kekule form and its aromatic ring give the same set."""
+    if smiles not in _AROMATIC:
+        Chem, _ = _rdkit()
+        from rdkit import rdBase
+        params = Chem.SmilesParserParams()
+        params.removeHs, params.sanitize = False, False
+        out = set()
+        with rdBase.BlockLogs():
+            mol = Chem.MolFromSmiles(smiles, params)
+            if mol is not None:
+                try:
+                    mol.UpdatePropertyCache(strict=False)
+                    Chem.SanitizeMol(mol, sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+                except (ValueError, RuntimeError):
+                    mol = None
+            if mol is not None:
+                out = {frozenset((str(b.GetBeginAtom().GetAtomMapNum()), str(b.GetEndAtom().GetAtomMapNum())))
+                       for b in mol.GetBonds() if b.GetIsAromatic()}
+        _AROMATIC[smiles] = out
+    return _AROMATIC[smiles]
+
+
 def ring_junctions(sid, smiles, relaxed=False):
     """Fused bonds and bridged-ring atoms from the reference graph, without coordinates."""
     Chem, _ = _rdkit()

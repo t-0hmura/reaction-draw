@@ -817,8 +817,11 @@ def load_spec_v2(data, path=None):
         ratio = r.get('ratio')
         if ratio is not None and (kind != 'equilibrium' or isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0 < ratio <= 100):
             raise SpecError('%s: "ratio" is a number above 0 for an "equilibrium" arrow (forward arrow / back arrow length)' % where)
+        if not isinstance(r.get('summary', False), bool):
+            raise SpecError('%s: "summary" must be true or false' % where)
         item = {'from': r['from'], 'to': r['to'], 'kind': kind,
-                'above': r.get('above'), 'below': r.get('below'), 'length': r.get('length'), 'weight': weight, 'ratio': ratio}
+                'above': r.get('above'), 'below': r.get('below'), 'length': r.get('length'), 'weight': weight, 'ratio': ratio,
+                'summary': r.get('summary', False)}
         if (r.get('from_pt') is None) != (r.get('to_pt') is None):
             raise SpecError('%s: give "from_pt" and "to_pt" together' % where)
         for end in ('from_pt', 'to_pt'):            # an end point given as an atom ("panel.species:map") plus an offset in bond lengths

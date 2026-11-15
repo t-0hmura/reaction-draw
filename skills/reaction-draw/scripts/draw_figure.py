@@ -223,7 +223,7 @@ def retry_placements(resolved, out, fig, result, draw, draw_args):
     import copy
     notes, accepted = [], {}
     for targets, flag in ((('charge_own_atom', 'overlap_charge', 'charge_open'), 'repairCharges'),
-                          (('arrows_ends', 'arrows_shape', 'overlap_arrow_text', 'overlap_arrow_bond', 'overlap_arrow_arrow'), 'repairArrows'),
+                          (('arrows_ends', 'arrows_shape', 'overlap_arrow_text', 'overlap_arrow_bond', 'overlap_arrow_arrow', 'arrows_clear'), 'repairArrows'),
                           (('number_place', 'number_clear'), 'repairNumbers')):
         failed = [name for name in targets if name in result['failed']]
         if not failed:
@@ -280,7 +280,7 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args):
     import copy
     import math
     notes = []
-    targets = {'arrows_ends', 'arrows_shape', 'overlap_arrow_bond', 'overlap_arrow_text', 'overlap_arrow_arrow', 'overlap_text_text', 'overlap_text_bond'}
+    targets = {'arrows_ends', 'arrows_shape', 'overlap_arrow_bond', 'overlap_arrow_text', 'overlap_arrow_arrow', 'overlap_text_text', 'overlap_text_bond', 'arrows_clear'}
     for _ in range(3):
         if not targets.intersection(result['failed']):
             break

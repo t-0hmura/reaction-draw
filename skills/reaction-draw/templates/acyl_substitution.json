@@ -2,6 +2,9 @@
   "format": 2,
   "name": "acyl_substitution",
   "source": "Generic nucleophilic acyl substitution (ester hydrolysis by hydroxide). Replace the acyl group, nucleophile and leaving group from the paper; preserve maps 2 (acyl C), 3 (carbonyl O), 4 (leaving O), 6 (nucleophile O) and 7 (its H).",
+  "expected_stereo": {
+    "acyl:2": "unspecified"
+  },
   "panels": [
     {
       "id": "R",

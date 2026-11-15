@@ -4,14 +4,14 @@ These checks cover overlaps, hidden atom symbols, and the [rules](rules.md). The
 
 ## Detectors
 
-`check_rules.py` has 56 detectors:
+`check_rules.py` has 58 detectors:
 
 | Checks | Detectors |
 |---|---|
 | Overlaps and spacing | `overlap_text_text`, `overlap_text_bond`, `overlap_arrow_text`, `overlap_arrow_bond`, `overlap_arrow_arrow`, `overlap_charge`, `bond_crossing`, `species_gap`, `plus_place` |
 | Structure, labels and saved files | `graph`, `hydrogens`, `labels_drawn`, `carbon_labels`, `hydrogen_display`, `isotopes`, `cdxml`, `frame` |
 | Stereochemistry | `stereochemistry`, `stereo_display` |
-| Curved arrows, lone pairs and radicals | `arrows_count`, `arrows_ends`, `arrows_lone_pair`, `arrows_head`, `arrows_color`, `arrows_shape`, `electron_flow`, `lone_pair_geometry`, `radical_marks`, `radical_direction` |
+| Curved arrows, lone pairs and radicals | `arrows_count`, `arrows_ends`, `arrows_lone_pair`, `arrows_head`, `arrows_color`, `arrows_shape`, `arrows_clear`, `arrows_steps`, `electron_flow`, `lone_pair_geometry`, `radical_marks`, `radical_direction` |
 | Charges | `charges`, `charge_circled`, `charge_own_atom`, `charge_size`, `charge_open`, `ion_text` |
 | Atom numbers | `number_size`, `number_place`, `number_clear`, `number_on_h` |
 | Bonds and angles | `chain_angles`, `four_bond`, `ring_substituents`, `label_bonds`, `one_label_bonds`, `bond_lengths`, `partial_dashes`, `delocalized_bonds`, `hbond_dots` |

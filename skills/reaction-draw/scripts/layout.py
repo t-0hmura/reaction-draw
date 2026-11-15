@@ -1966,6 +1966,9 @@ class Layout(object):
                 rarrows.append({'kind': r['kind'], 'x1': bb[0] - ARROW_GAP - L, 'y1': y, 'x2': bb[0] - ARROW_GAP, 'y2': y,
                                 'above': r.get('above'), 'below': r.get('below')})
         for ra, r in zip(rarrows, arrows):                # one drawn arrow per asked arrow, in order
+            ra['from'], ra['to'] = r['from'], r['to']
+            if r.get('summary'):
+                ra['summary'] = True
             if r.get('weight') == 'bold':
                 ra['weight'] = 'bold'
             if r.get('ratio') is not None:

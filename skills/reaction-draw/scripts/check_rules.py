@@ -61,7 +61,8 @@ DETECTORS = ('overlap_text_text', 'overlap_text_bond', 'overlap_arrow_text', 'ov
              'number_size', 'number_place', 'number_clear', 'number_on_h', 'label_bonds', 'one_label_bonds', 'bond_lengths',
              'colors', 'cdxml', 'frame', 'partial_dashes', 'delocalized_bonds', 'ts_brackets',
              'charge_open', 'lone_pair_geometry', 'ring_substituents', 'carbon_labels', 'stereo_display', 'hbond_dots',
-             'radical_marks', 'electron_flow', 'isotopes', 'hydrogen_display', 'coordination', 'metal_geometry', 'residue_codes', 'reaction_kinds', 'radical_direction', 'figure_style', 'species_gap', 'bond_crossing', 'plus_place')
+             'radical_marks', 'electron_flow', 'isotopes', 'hydrogen_display', 'coordination', 'metal_geometry', 'residue_codes', 'reaction_kinds', 'radical_direction', 'figure_style', 'species_gap', 'bond_crossing', 'plus_place',
+             'arrows_steps', 'arrows_clear')
 # A declaration is an OR of features; undeclared extensions run always.
 DETECTOR_FEATURES = {
     'overlap_text_text': ('always',), 'overlap_text_bond': ('bonds',),
@@ -82,6 +83,7 @@ DETECTOR_FEATURES = {
     'hydrogen_display': ('explicit_h',), 'coordination': ('metals',), 'metal_geometry': ('metals',),
     'residue_codes': ('residues',), 'reaction_kinds': ('reaction_arrows',),
     'radical_direction': ('radicals',), 'figure_style': ('always',), 'species_gap': ('species_pairs',), 'bond_crossing': ('bonds',), 'plus_place': ('plus',),
+    'arrows_steps': ('curved',), 'arrows_clear': ('curved',),
 }
 
 
@@ -2125,6 +2127,133 @@ def det_electron_flow(f):
     return out
 
 
+ARROW_CLEAR_PX = 2.0           # arrows_clear: a route this close to other ink (drawer px) reads as touching it
+
+
+def _step_bonds(f, pid):
+    """Atoms (by map) drawn once in a panel, its bonds {frozenset(maps): order} without coordination bonds,
+    the pairs aromatic in its SMILES, and whether it is a transition state."""
+    panel = next(p for p in f.resolved['panels'] if p['id'] == pid)
+    mp = lambda ref: ref.rsplit(':', 1)[1]
+    count = collections.Counter(mp(a['ref']) for a in panel['atoms'])
+    atoms = {mp(a['ref']) for a in panel['atoms'] if count[mp(a['ref'])] == 1}
+    bonds, coord = {}, set()
+    for b in panel['bonds']:
+        pair = frozenset((mp(b['a']), mp(b['b'])))
+        if pair <= atoms:
+            if b.get('coord') or b.get('style') == 'coord':
+                coord.add(pair)
+            else:
+                bonds[pair] = b.get('order', 1)
+    ts = any(a.get('ts') for a in panel['atoms']) or any(b.get('style') == 'partial' for b in panel['bonds'])
+    panel = dict(panel, state={mp(a['ref']): (a.get('charge') or 0, a.get('h'), a.get('el'), a.get('kind', 'atom'))
+                               for a in panel['atoms'] if mp(a['ref']) in atoms})
+    aromatic = set()
+    for sid, smiles in (f.resolved.get('stereo_sources') or {}).items():
+        if sid.split('.', 1)[0] == pid:
+            aromatic |= stereo.aromatic_pairs(smiles)
+    return panel, atoms, bonds, coord, aromatic, ts
+
+
+def det_arrows_steps(f):
+    """A bond that forms, breaks or changes order between two panels joined by a reaction arrow needs a curved
+    arrow in the first panel: a breaking bond is the source of an arrow that ends at one of its atoms (or at a
+    bond or forming-bond gap that includes one), and a forming bond is the two-atom destination of an arrow
+    (or joins the atoms of a lone-pair-to-atom arrow).  "summary": true on the reaction arrow skips the step."""
+    steps = [r for r in f.resolved.get('reaction_arrows') or [] if r.get('from') and r.get('to')]
+    if not steps:
+        return []
+    mp = lambda ref: ref.rsplit(':', 1)[1]
+    info = {pid: _step_bonds(f, pid) for pid in {r[k] for r in steps for k in ('from', 'to')}}
+    nxt = collections.defaultdict(list)
+    for r in steps:
+        nxt[r['from']].append(r)
+    out = []
+    for r in steps:
+        if r.get('summary') or r['kind'] in ('stoich', 'retro') or info[r['from']][5]:
+            continue
+        ends = [r['to']] if not info[r['to']][5] else [n['to'] for n in nxt[r['to']] if not n.get('summary')]
+        panel, atoms, bonds, coord, aromatic, _ = info[r['from']]
+        for end in ends:
+            if end not in info:
+                info[end] = _step_bonds(f, end)
+            _, atoms2, bonds2, coord2, aromatic2, ts2 = info[end]
+            if ts2:
+                continue
+            arrows = list(panel.get('curved', [])) + (list(info[r['to']][0].get('curved', [])) if end != r['to'] else [])
+            uncovered = set()
+            for pair in sorted(set(bonds) | set(bonds2), key=lambda q: sorted(int(x) if x.isdigit() else 0 for x in q)):
+                if not pair <= atoms & atoms2 or pair in coord or pair in coord2:
+                    continue
+                o1, o2 = bonds.get(pair, 0), bonds2.get(pair, 0)
+                if o1 == o2 or (o1 and o2 and (pair in aromatic and pair in aromatic2 or 1.5 in (o1, o2))):
+                    continue
+                ok = False
+                for c in arrows:
+                    fm, tm = {mp(x) for x in c['from']['refs']}, {mp(x) for x in c['to']['refs']}
+                    if o2 < o1 and c['from']['kind'] == 'bond' and fm == pair and (
+                            (c['to']['kind'] == 'atom' and tm <= pair) or (c['to']['kind'] in ('gap', 'bond') and tm & pair)):
+                        ok = True
+                    if o2 > o1 and ((c['to']['kind'] in ('gap', 'bond') and tm == pair)
+                                    or (c['from']['kind'] == 'atom' and c['to']['kind'] == 'atom' and fm | tm == pair)):
+                        ok = True
+                if not ok:
+                    uncovered |= pair
+                    a, b = sorted(pair, key=lambda x: int(x) if x.isdigit() else 0)
+                    what = 'forms' if not o1 else 'breaks' if not o2 else 'changes from order %g to %g' % (o1, o2)
+                    out.append('panel %s -> %s: bond %s-%s %s, but no curved arrow in panel %s %s it' % (
+                        r['from'], end, a, b, what, r['from'], 'draws' if o2 > o1 else 'starts at'))
+            out += _step_charges(r['from'], end, arrows, panel['state'], info[end][0]['state'], bonds, bonds2, coord | coord2, uncovered)
+    return out
+
+
+def _step_charges(pid, end, arrows, state, state2, bonds, bonds2, coord, uncovered):
+    """Formal charges the two-electron arrows of a step give its atoms, against the next panel: a pair leaving a lone
+    pair or a bond raises the charge of its atom(s), a pair arriving as a lone pair or a bond lowers it.  An arrow to
+    one atom forms a bond where the next panel has one; otherwise it is a new lone pair."""
+    from iupac_features import METALS
+    if not arrows or any(c.get('electrons', 2) != 2 for c in arrows):
+        return []
+    mp = lambda ref: ref.rsplit(':', 1)[1]
+    grows = lambda x, y: bonds2.get(frozenset((x, y)), 0) > bonds.get(frozenset((x, y)), 0)
+    dq, touched = collections.Counter(), set()
+    for c in arrows:
+        fm, tm = [mp(x) for x in c['from']['refs']], [mp(x) for x in c['to']['refs']]
+        touched.update(fm + tm)
+        for x in fm:                                   # the pair leaves: lone pair (-2 e) or bond (-1 bond each end)
+            dq[x] += 2 if c['from']['kind'] == 'atom' else 1
+        if c['to']['kind'] in ('gap', 'bond'):
+            for x in tm:
+                dq[x] -= 1
+        else:
+            b = tm[0]
+            partner = next((x for x in fm if x != b and grows(x, b)), None)
+            if partner is not None:
+                dq[b] -= 1
+                dq[partner] -= 1
+            else:
+                dq[b] -= 2
+    out = []
+    for x in sorted(touched, key=lambda v: int(v) if v.isdigit() else 0):
+        if x not in state or x not in state2:
+            continue
+        (q1, h1, el, kind), (q2, h2, _, kind2) = state[x], state2[x]
+        if kind != 'atom' or kind2 != 'atom' or el in METALS or h1 != h2 or x in uncovered or any(x in pair for pair in coord):
+            continue
+        if q1 + dq[x] != q2:
+            out.append('panel %s -> %s: the curved arrows leave atom %s with charge %+d, but panel %s draws %+d; check '
+                       'the direction of the arrows at this atom (for a proton transfer, draw the base\'s lone pair to the H '
+                       'and the H-X bond to X)' % (pid, end, x, q1 + dq[x], end, q2))
+    return out
+
+
+def det_arrows_clear(f):
+    """The drawer's best route for a curved arrow keeps more than ARROW_CLEAR_PX from other ink (report.json routes)."""
+    px = f.report.get('px_per_pt') or 1.0
+    return ['arrow %s: comes within %.2g px (%.2f pt) of other ink, which reads as touching it' % (r['id'], r['min_gap_px'], r['min_gap_px'] / px)
+            for r in f.report.get('routes') or [] if r.get('min_gap_px') is not None and r['min_gap_px'] <= ARROW_CLEAR_PX]
+
+
 def det_isotopes(f):
     out = []
     for ref, a in f.atoms.items():
@@ -2466,6 +2595,10 @@ def repair_hints(f, name, findings):
         'column_arrows': no_fix,
         'arrows_count': no_fix,
         'arrows_head': 'set this arrow\'s electrons to the intended 1 or 2 and redraw',
+        'arrows_steps': ('add the missing curved arrow in the named panel: from the breaking bond ("species:a-b") to the atom that keeps '
+                         'its electrons, and to a forming bond as a two-atom "to"; if the source itself draws this step without '
+                         'curved arrows, set "summary": true on that reaction arrow'),
+        'arrows_clear': '{move} so that this arrow has room, or give it a "bend"',
         'arrows_color': no_fix,
         'number_on_h': 'keep the required number on its heavy atom in numbers; express a moving H as a mapped atom without a number',
         'number_size': no_fix,
@@ -2617,6 +2750,37 @@ def plant(f, name):
     g = _clone(f)
     rep, rl = g.report, g.reload
     labeled = [r for r in g.atoms if g.labeled(r) and g.label_box(r)]
+    if name == 'arrows_clear':
+        rid = g.curved[0]['id'] if g.curved else 'planted'
+        rep['routes'] = [r for r in rep.get('routes') or [] if r.get('id') != rid] + [{'id': rid, 'min_gap_px': 0}]
+        return g, 'route of arrow %s recorded as touching other ink' % rid
+    if name == 'arrows_steps':
+        # a copy of a panel, joined to it by a reaction arrow, in which one bond no curved arrow uses is broken
+        for panel in g.resolved['panels']:
+            used = {frozenset(r.rsplit(':', 1)[1] for r in c[k]['refs']) for c in panel['curved'] for k in ('from', 'to')}
+            once = collections.Counter(a['ref'].rsplit(':', 1)[1] for a in panel['atoms'])
+            bond = next((b for b in panel['bonds'] if not (b.get('coord') or b.get('style') in ('coord', 'partial'))
+                         and once[b['a'].rsplit(':', 1)[1]] == 1 and once[b['b'].rsplit(':', 1)[1]] == 1
+                         and frozenset((b['a'].rsplit(':', 1)[1], b['b'].rsplit(':', 1)[1])) not in used), None)
+            if bond is None:
+                continue
+            for a in panel['atoms']:                   # the planted step is an ordinary one, not a transition state
+                a.pop('ts', None)
+            for b in panel['bonds']:
+                if b.get('style') == 'partial':
+                    b['style'] = 'plain'
+            copy_panel = pickle.loads(pickle.dumps(panel, -1))
+            copy_panel['id'], copy_panel['curved'] = '_planted', []
+            copy_panel['bonds'] = [b for b in copy_panel['bonds'] if (b['a'], b['b']) != (bond['a'], bond['b'])]
+            g.resolved['panels'].append(copy_panel)
+            g.resolved['reaction_arrows'] = list(g.resolved.get('reaction_arrows') or []) + [{'kind': 'single', 'from': panel['id'], 'to': '_planted'}]
+            return g, 'bond %s-%s broken in a following panel without a curved arrow' % (bond['a'], bond['b'])
+        # otherwise two added panels: an O-H bond that breaks without an arrow
+        atom = lambda ref, el: {'ref': ref, 'el': el, 'label': el, 'x': 0.0, 'y': 0.0, 'charge': 0, 'kind': 'atom', 'h': 0, 'species': ref.split(':')[0]}
+        for pid, bonds in (('_planted1', [{'a': '_planted1.w:9001', 'b': '_planted1.w:9002', 'order': 1, 'style': 'plain'}]), ('_planted2', [])):
+            g.resolved['panels'].append({'id': pid, 'atoms': [atom(pid + '.w:9001', 'O'), atom(pid + '.w:9002', 'H')], 'bonds': bonds, 'curved': []})
+        g.resolved['reaction_arrows'] = list(g.resolved.get('reaction_arrows') or []) + [{'kind': 'single', 'from': '_planted1', 'to': '_planted2'}]
+        return g, 'an added O-H bond broken in the next added panel without a curved arrow'
     if name == 'radical_direction':
         arrow = next((c for c in g.curved if c['electrons'] == 1 and c['from']['kind'] == 'atom'), None)
         if arrow is None:

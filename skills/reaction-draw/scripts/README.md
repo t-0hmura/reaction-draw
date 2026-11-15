@@ -91,6 +91,8 @@ For a forming bond, use `"to": ["nuc:1", "electrophile:2"]`. The head of a two-e
 
 Use `R`/`S` (or `r`/`s`) for stereocenters and `E`/`Z` for double bonds. Unknown map numbers, unspecified SMILES stereochemistry, or mismatches raise an input error naming both labels. Always fix the SMILES to match the source; do not change `expected_stereo` to match a bad SMILES.
 
+Every stereocenter outside a transition state needs a configuration: write `@`/`@@` as the source figure draws it, or, if the source does not show it (a racemic center, or one the paper leaves open), declare it with `"unspecified"` (`{"lig:6": "unspecified"}`). A stereocenter left without either raises an input error.
+
 In the output, `STEREO` lines list the CIP label of each stereocenter and double bond (`E.lig:2 R`, `R.gpp:2=3 E`). Any stereocenter or double bond specified in the SMILES without a corresponding `expected_stereo` entry is flagged with a `note:`.
 
 ### Reaction arrows
@@ -102,6 +104,7 @@ In the output, `STEREO` lines list the CIP label of each stereocenter and double
 | `kind` | `single` (→), `resonance` (↔), `equilibrium` (⇌, two half-heads), `both` (⇄, two full heads), `stoich` (=), or `retro` (retrosynthetic arrow) |
 | `length` | Arrow length in bond lengths (default: auto-sized to fit its labels and the panel titles) |
 | `above`, `below` | Literal text labels; digits after letters stay on the baseline (`Enz1`); use `_{...}` for subscripts |
+| `summary` | `true` when the source itself draws this step without curved arrows (several steps in one); otherwise every bond that forms, breaks or changes order between the two panels needs a curved arrow in the first panel (`arrows_steps`) |
 
 For bold or uneven arrows (`weight`, `ratio`) and custom endpoints (`from_pt`, `to_pt`), see [more keys](../references/input-more.md#reaction-arrows).
 

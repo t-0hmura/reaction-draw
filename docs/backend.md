@@ -17,7 +17,7 @@ In `skills/reaction-draw/scripts/`:
 | `spec_validation.py` | Input validation; compares expected stereochemistry against map-free SMILES labels before layout |
 | `layout.py` | Automatic 2D layout of an input file (uses RDKit for stereochemistry and rings) |
 | `layout_repair.py` | Bounded layout alternatives, attempted only after a failed check |
-| `check_rules.py` | Runs applicable checks from 56 declared detectors (supports `--positive-control`) |
+| `check_rules.py` | Runs applicable checks from 58 declared detectors (supports `--positive-control`) |
 | `svg_geometry.py` | SVG path parsing, glyph bounding boxes, and distance calculations for `check_rules.py` |
 | `stereochemistry.py` | CIP stereochemistry comparison between SMILES and saved coordinates/wedges |
 | `octet/` | Octet Draw backend scripts and prebuilt adapter page |
