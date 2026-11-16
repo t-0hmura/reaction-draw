@@ -6,7 +6,7 @@ Four models were tested at high effort on 11 reaction-mechanism problems (44 run
 
 ## Setup and prompts
 
-Each run started in a clean directory containing only the `./reaction-draw/` skill folder and, for paper-based problems, the source paper in `./paper/` (including Supporting Information for Orf30). Claude Code ran with `claude -p --safe-mode`, and Codex CLI ran with an empty `HOME`. Each agent received a single prompt with no additional instructions or follow-up, and all 44 runs executed in parallel.
+Each run started in a clean directory containing only the `./reaction-draw/` skill folder and, for paper-based problems, the source paper in `./paper/` (including Supporting Information for Orf30). Claude Code ran with `claude -p --safe-mode`, and Codex CLI ran with an empty `HOME`. Each agent received a single prompt with no additional instructions or follow-up.
 
 Paper problems (6 problems; `<DOI>` is the paper's DOI):
 
