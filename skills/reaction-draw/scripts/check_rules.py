@@ -225,8 +225,10 @@ def disk_shape(c, r, desc=''):
     return co.Shape('mark', 'poly', pts, True, True, 0.0, desc)
 
 
-def shape_clear(a, b):
-    if co.bbox_gap(a.bbox, b.bbox) > 30:
+def shape_clear(a, b, overlap_only=False):
+    # Shape.bbox includes stroke half-widths; keep another 1 pt for contact checks.
+    # Distance-based checks keep the original cutoff and exact nearby clearances.
+    if co.bbox_gap(a.bbox, b.bbox) > (1.0 if overlap_only else 30):
         return 99.0
     return co.clearance(a, b)
 
@@ -615,7 +617,7 @@ def det_overlap_arrow_text(f):
     texts = [(kind, text, box_shape(box)) for _, kind, text, box in f.texts()]
     for aid, shapes in sc['arrows']:
         for kind, text, tb in texts:
-            c = min(shape_clear(s, tb) for s in shapes)
+            c = min(shape_clear(s, tb, overlap_only=True) for s in shapes)
             if c <= 0.0:
                 out.append('arrow %s touches %s %r (%.2f pt)' % (aid, kind, text, c))
     return out
@@ -626,7 +628,7 @@ def det_overlap_arrow_bond(f):
     out = []
     for aid, shapes in sc['arrows']:
         for s in sc['bonds'] + sc['marks']:
-            c = min(shape_clear(a, s) for a in shapes)
+            c = min(shape_clear(a, s, overlap_only=True) for a in shapes)
             if c <= 0.0:
                 out.append('arrow %s touches %s (%.2f pt)' % (aid, _ink_name(s), c))
     return out
@@ -637,7 +639,7 @@ def det_overlap_arrow_arrow(f):
     out = []
     for i in range(len(arrows)):
         for j in range(i + 1, len(arrows)):
-            c = min(shape_clear(a, b) for a in arrows[i][1] for b in arrows[j][1])
+            c = min(shape_clear(a, b, overlap_only=True) for a in arrows[i][1] for b in arrows[j][1])
             if c <= 0.0:
                 out.append('arrows %s and %s touch (%.2f pt)' % (arrows[i][0], arrows[j][0], c))
     return out
