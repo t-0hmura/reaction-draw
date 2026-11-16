@@ -582,9 +582,9 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 fig, result, retried = retry_placements(resolved, out, fig, result, draw, retry_args)
                 notes.extend(retried)
                 placed = fig
-                fig, result, retried = retry_forming_branch(out, fig, result, draw, retry_args)
-                notes.extend(retried)
                 fig, result, retried = retry_layout(spec, out, fig, result, draw, retry_args)
+                notes.extend(retried)
+                fig, result, retried = retry_forming_branch(out, fig, result, draw, retry_args)
                 notes.extend(retried)
                 fig, result, retried = retry_iupac_pairs(out, fig, result, draw, retry_args)
                 notes.extend(retried)
