@@ -9817,19 +9817,11 @@ function routeArrows(mol, ctx, job, seats = []) {
       };
       const path = arrowPath(arrow, L);
       const length = path.slice(1).reduce((sum, p, k) => sum + dist(p, path[k]), 0);
-      const polys = arrowShapes(arrow, f, L);
-      const near = new Field(bounds, { polys: [...basePolys, ...done.flatMap((p) => p.polys)], boxes: textBoxes.map((b) => pad(b, 2)) });
-      let worst = 1e9;
-      for (const poly of polys) for (let j = 0; j < poly.length; j++) {
-        const p = poly[j], q = poly[(j + 1) % poly.length], count = Math.max(1, Math.ceil(dist(p, q) / 2));
-        for (let k = 0; k < count; k++) worst = Math.min(worst, near.at([p[0] + (q[0] - p[0]) * k / count, p[1] + (q[1] - p[1]) * k / count]));
-      }
-      for (const p of path) worst = Math.min(worst, near.at(p));
       done.push({
         req,
         arrow,
-        polys,
-        info: { start: "retained", end: "retained", bend: arrow.bend, length_bonds: length / L, chord_bonds: dist(path[0], path[path.length - 1]) / L, min_gap_px: r2(worst) }
+        polys: arrowShapes(arrow, f, L),
+        info: { start: "retained", end: "retained", bend: arrow.bend, length_bonds: length / L, chord_bonds: dist(path[0], path[path.length - 1]) / L }
       });
       continue;
     }

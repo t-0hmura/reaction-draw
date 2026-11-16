@@ -156,6 +156,13 @@ def _closer(result, checked):
     return any(k not in before or g < before[k] - 0.05 for k, g in after.items())
 
 
+def _tighter(result, checked):
+    """True when a candidate has more curved arrows close to other ink (arrows_clear warnings) than the checked figure."""
+    def count(r):
+        return len(r['checks'].get('arrows_clear', {}).get('warnings', []))
+    return count(checked) > count(result)
+
+
 def _no_gain(result):
     """Accept a candidate when no detector gains a finding, the total falls, and no two species come closer than half a
     bond where they were not."""
@@ -163,7 +170,7 @@ def _no_gain(result):
     def accept(checked):
         after = _counts(checked)
         return (all(after[n] <= before[n] for n in before) and sum(after.values()) < sum(before.values())
-                and not _closer(result, checked))
+                and not _closer(result, checked) and not _tighter(result, checked))
     return accept
 
 
@@ -223,7 +230,7 @@ def retry_placements(resolved, out, fig, result, draw, draw_args):
     import copy
     notes, accepted = [], {}
     for targets, flag in ((('charge_own_atom', 'overlap_charge', 'charge_open'), 'repairCharges'),
-                          (('arrows_ends', 'arrows_shape', 'overlap_arrow_text', 'overlap_arrow_bond', 'overlap_arrow_arrow', 'arrows_clear'), 'repairArrows'),
+                          (('arrows_ends', 'arrows_shape', 'overlap_arrow_text', 'overlap_arrow_bond', 'overlap_arrow_arrow'), 'repairArrows'),
                           (('number_place', 'number_clear'), 'repairNumbers')):
         failed = [name for name in targets if name in result['failed']]
         if not failed:
@@ -280,7 +287,7 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args):
     import copy
     import math
     notes = []
-    targets = {'arrows_ends', 'arrows_shape', 'overlap_arrow_bond', 'overlap_arrow_text', 'overlap_arrow_arrow', 'overlap_text_text', 'overlap_text_bond', 'arrows_clear'}
+    targets = {'arrows_ends', 'arrows_shape', 'overlap_arrow_bond', 'overlap_arrow_text', 'overlap_arrow_arrow', 'overlap_text_text', 'overlap_text_bond'}
     for _ in range(3):
         if not targets.intersection(result['failed']):
             break

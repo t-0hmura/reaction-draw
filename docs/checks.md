@@ -19,7 +19,7 @@ These checks cover overlaps, hidden atom symbols, and the [rules](rules.md). The
 
 Each detector runs only when its target feature is present in the figure (e.g., `charge_size` runs only when charges are present); the summary lists applicable and non-applicable detectors. Every active detector must also catch a planted error (positive control).
 
-Departures from preferred angles, bond lengths, radical directions, and electron balance, and a `+` not placed between two species (`plus_place`), produce warnings. Mixed residue codes, charge-circle styles, or partial-line styles cause failures. Folded hydrogens, coordination H counts, and TS H counts are preserved in the saved files and verified when read back.
+Departures from preferred angles, bond lengths, radical directions, and electron balance, a `+` not placed between two species (`plus_place`), and a curved arrow within 0.035 bond lengths (0.5 pt) of ink that is not its own start or end (`arrows_clear`) produce warnings. Mixed residue codes, charge-circle styles, or partial-line styles cause failures. Folded hydrogens, coordination H counts, and TS H counts are preserved in the saved files and verified when read back.
 
 To re-check a drawn directory without a browser: `python check_rules.py DIR [--positive-control] [--json OUT.json]`.
 

@@ -162,7 +162,7 @@ def audit_lines(features):
 
 
 def warning_finding(name, message):
-    if name in ('chain_angles', 'ring_substituents', 'radical_direction', 'species_gap', 'plus_place'):
+    if name in ('chain_angles', 'ring_substituents', 'radical_direction', 'species_gap', 'plus_place', 'arrows_clear'):
         return True
     if name == 'four_bond':
         return 'axis-aligned four-bond stereocenter' not in message
@@ -328,8 +328,7 @@ class Figure(object):
     # ---- normalization of the backend's files (the Octet backend's report.json and reload.json, docs/backend.md)
     def _norm_report(self, rep):
         out = {'atoms': {}, 'bonds': [], 'curved': [], 'numbers': [], 'charges': [], 'lone_pairs': [], 'texts': [], 'pieces': {},
-               'timings_s': rep.get('timings_s') or {}, 'font': rep.get('font_check'),
-               'routes': copy.deepcopy(rep.get('routes') or []), 'px_per_pt': rep.get('px_per_pt')}   # arrows_clear
+               'timings_s': rep.get('timings_s') or {}, 'font': rep.get('font_check')}
         for ref, a in (rep.get('atoms') or {}).items():
             out['atoms'][ref] = {'xy': (float(a['x_pt']), float(a['y_pt'])), 'box': _box(a.get('label_box_pt'))}
         out['radicals'] = copy.deepcopy(rep.get('radicals') or [])
@@ -2128,7 +2127,8 @@ def det_electron_flow(f):
     return out
 
 
-ARROW_CLEAR_PX = 2.0           # arrows_clear: a route this close to other ink (drawer px) reads as touching it
+ARROW_CLEAR_BOND = 0.035       # arrows_clear: bond lengths; an arrow this close to ink that is not its own start or end reads as
+                               # touching it (0.5 pt at the ACS bond length 14.4 pt)
 
 
 def _step_bonds(f, pid):
@@ -2259,10 +2259,40 @@ def _step_charges(pid, end, arrows, state, state2, bonds, bonds2, coord, uncover
 
 
 def det_arrows_clear(f):
-    """The drawer's best route for a curved arrow keeps more than ARROW_CLEAR_PX from other ink (report.json routes)."""
-    px = f.report.get('px_per_pt') or 1.0
-    return ['arrow %s: comes within %.2g px (%.2f pt) of other ink, which reads as touching it' % (r['id'], r['min_gap_px'], r['min_gap_px'] / px)
-            for r in f.report.get('routes') or [] if r.get('min_gap_px') is not None and r['min_gap_px'] <= ARROW_CLEAR_PX]
+    """A curved arrow keeps more than ARROW_CLEAR_BOND bond lengths of white from ink it does not start from or point at (saved SVG, as
+    the overlap checks measure).  The plain bonds, lone pair, charge and letters of its own source and target atoms are not
+    counted: a tail sits on its lone pair and a head ends 0.15 bond from a bare vertex, where that atom's bonds meet.  A
+    hashed wedge is counted even when it is the arrow's own: it is as wide as its marks, and an arrow along them is
+    hard to read."""
+    limit = ARROW_CLEAR_BOND * f.bond_pt
+    sc = f.scene()
+    style = {frozenset((b['a'], b['b'])): b.get('style') for b in f.bonds}
+    texts = [(owner, '%s %r' % (kind, text), box_shape(box)) for owner, kind, text, box in f.texts()]
+    out = []
+    for aid, shapes in sc['arrows']:
+        arrow = next((c for c in f.curved if c['id'] == aid), None)
+        if arrow is None:
+            continue
+        own = set(arrow['from']['refs'] + arrow['to']['refs'])
+        near = (99.0, '')
+        def look(s, what):
+            gap = min((shape_clear(a, s) for a in shapes if co.bbox_gap(a.bbox, s.bbox) <= limit), default=99.0)
+            return min(near, (gap, what))
+        for s in sc['bonds'] + sc['marks']:
+            kind, key = s.owner or (None, None)
+            hashed = kind == 'bond' and style.get(frozenset(key)) == 'hash'
+            if hashed or not (own.intersection(key) if kind in ('bond', 'hbond') else key in own):
+                near = look(s, ('hashed ' if hashed else '') + _ink_name(s))
+        for owner, what, tb in texts:
+            if owner not in own:
+                near = look(tb, what)
+        for other, others in sc['arrows']:
+            if other != aid:
+                for s in others:
+                    near = look(s, 'arrow %s' % other)
+        if near[0] <= limit:
+            out.append('arrow %s: %.2f pt from %s, which reads as touching it' % (aid, near[0], near[1]))
+    return out
 
 
 def det_isotopes(f):
@@ -2609,7 +2639,6 @@ def repair_hints(f, name, findings):
         'arrows_steps': ('add the missing curved arrow in the named panel: from the breaking bond ("species:a-b") to the atom that keeps '
                          'its electrons, and to a forming bond as a two-atom "to"; if the source itself draws this step without '
                          'curved arrows, set "summary": true on that reaction arrow'),
-        'arrows_clear': '{move} so that this arrow has room, or give it a "bend"',
         'arrows_color': no_fix,
         'number_on_h': 'keep the required number on its heavy atom in numbers; express a moving H as a mapped atom without a number',
         'number_size': no_fix,
@@ -2739,13 +2768,13 @@ def _shift_box(b, dx, dy):
     return (b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy)
 
 
-def _plain_bond_shape(f):
-    """A long bond-ink polygon of a bond between two skeletal atoms (a target for planted overlaps)."""
+def _plain_bond_shape(f, avoid=()):
+    """A long bond-ink polygon of a bond between two skeletal atoms (a target for planted overlaps), not at an atom in avoid."""
     sc = f.scene()
-    cands = [s for s in sc['bonds'] if s.owner and s.owner[0] == 'bond'
-             and not any(f.labeled(r) for r in s.owner[1])]
+    bonds = [s for s in sc['bonds'] if s.owner and s.owner[0] == 'bond' and not set(avoid).intersection(s.owner[1])]
+    cands = [s for s in bonds if not any(f.labeled(r) for r in s.owner[1])]
     if not cands:
-        cands = [s for s in sc['bonds'] if s.owner and s.owner[0] == 'bond']
+        cands = bonds
     if not cands:
         return None
     s = max(cands, key=lambda s: (s.bbox[2] - s.bbox[0]) + (s.bbox[3] - s.bbox[1]))
@@ -2761,10 +2790,6 @@ def plant(f, name):
     g = _clone(f)
     rep, rl = g.report, g.reload
     labeled = [r for r in g.atoms if g.labeled(r) and g.label_box(r)]
-    if name == 'arrows_clear':
-        rid = g.curved[0]['id'] if g.curved else 'planted'
-        rep['routes'] = [r for r in rep.get('routes') or [] if r.get('id') != rid] + [{'id': rid, 'min_gap_px': 0}]
-        return g, 'route of arrow %s recorded as touching other ink' % rid
     if name == 'arrows_steps':
         # a copy of a panel, joined to it by a reaction arrow, in which one bond no curved arrow uses is broken
         for panel in g.resolved['panels']:
@@ -2977,11 +3002,16 @@ def plant(f, name):
         c, d = _center(t['box']), _shape_mid(s)
         t['box'] = _shift_box(t['box'], d[0] - c[0], d[1] - c[1])
         return g, 'text %r moved onto bond %s' % (t['text'], _ink_name(s))
-    if name in ('overlap_arrow_text', 'overlap_arrow_bond', 'overlap_arrow_arrow'):
+    if name in ('overlap_arrow_text', 'overlap_arrow_bond', 'overlap_arrow_arrow', 'arrows_clear'):
         sc = g.scene()
         if not sc['arrows']:
             return None, 'no arrow'
-        aid, shapes = sc['arrows'][0]
+        k = 0
+        if name == 'arrows_clear':                      # a curved arrow: the check does not read reaction arrows
+            k = next((i for i, (a, _) in enumerate(sc['arrows']) if any(c['id'] == a for c in g.curved)), None)
+            if k is None:
+                return None, 'no curved arrow'
+        aid, shapes = sc['arrows'][k]
         pts = [p for s in shapes for p in s.pts]
         ax, ay = sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
         sample = min(pts, key=lambda p: math.hypot(p[0] - ax, p[1] - ay))
@@ -2990,8 +3020,9 @@ def plant(f, name):
                 return None, 'no label'
             d = _center(g.label_box(labeled[-1]))
             what = 'the label of %s' % labeled[-1]
-        elif name == 'overlap_arrow_bond':
-            s = _plain_bond_shape(g)
+        elif name in ('overlap_arrow_bond', 'arrows_clear'):
+            own = {r for c in g.curved if c['id'] == aid and name == 'arrows_clear' for end in ('from', 'to') for r in c[end]['refs']}
+            s = _plain_bond_shape(g, own)             # arrows_clear does not count the arrow's own bonds
             if s is None:
                 return None, 'no bond'
             d = _shape_mid(s)
@@ -3004,7 +3035,7 @@ def plant(f, name):
             # Duplicate the complete outline so this planted error really overlaps.
             sc['arrows'][0] = (aid, [_move_shape(s, 0.0, 0.0) for s in sc['arrows'][1][1]])
             return g, 'arrow %s drawn on top of arrow %s' % (aid, sc['arrows'][1][0])
-        sc['arrows'][0] = (aid, [_move_shape(s, d[0] - sample[0], d[1] - sample[1]) for s in shapes])
+        sc['arrows'][k] = (aid, [_move_shape(s, d[0] - sample[0], d[1] - sample[1]) for s in shapes])
         return g, 'arrow %s moved onto %s' % (aid, what)
     if name == 'overlap_charge':
         cs = [c for c in rep['charges'] if c['kind'] == 'circle' and c['center']]

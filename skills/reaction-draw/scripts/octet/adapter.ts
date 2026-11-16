@@ -845,17 +845,8 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         from: retained.from, to: retained.to, bend: retained.bend, colour: '#000000', start: retained.start ?? 'none', end: retained.end ?? (req.electrons === 1 ? 'left' : 'full')};
       const path = arrowPath(arrow, L) as Pt[];
       const length = path.slice(1).reduce((sum, p, k) => sum + dist(p, path[k]), 0);
-      const polys = arrowShapes(arrow, f, L) as number[][][];
-      // the kept route is measured against this figure's ink as a new route is, so arrows_clear sees it (check_rules.py)
-      const near = new Field(bounds, {polys: [...basePolys, ...done.flatMap((p) => p.polys)], boxes: textBoxes.map((b) => pad(b, 2))});
-      let worst = 1e9;
-      for (const poly of polys) for (let j = 0; j < poly.length; j++) {
-        const p = poly[j] as Pt, q = poly[(j + 1) % poly.length] as Pt, count = Math.max(1, Math.ceil(dist(p, q) / 2));
-        for (let k = 0; k < count; k++) worst = Math.min(worst, near.at([p[0] + (q[0] - p[0]) * k / count, p[1] + (q[1] - p[1]) * k / count]));
-      }
-      for (const p of path) worst = Math.min(worst, near.at(p));
-      done.push({req, arrow, polys,
-        info: {start: 'retained', end: 'retained', bend: arrow.bend, length_bonds: length / L, chord_bonds: dist(path[0], path[path.length - 1]) / L, min_gap_px: r2(worst)}});
+      done.push({req, arrow, polys: arrowShapes(arrow, f, L) as number[][][],
+        info: {start: 'retained', end: 'retained', bend: arrow.bend, length_bonds: length / L, chord_bonds: dist(path[0], path[path.length - 1]) / L}});
       continue;
     }
     const repair = opts.repairArrows && (!opts.repairArrowIds || opts.repairArrowIds.includes(req.id));
