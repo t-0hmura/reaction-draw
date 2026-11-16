@@ -1,0 +1,33 @@
+name: Regression test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  draw:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Liberation Sans, RDKit and Playwright with Chromium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-liberation
+          python -m pip install rdkit==2026.9.1 playwright==1.63.0
+          python -m playwright install --with-deps chromium
+      - name: Check the environment
+        run: python skills/reaction-draw/scripts/draw_figure.py --check-env
+      - name: Draw the templates and test inputs
+        run: python tests/run_regression.py -j 4 --out regression-out
+      - name: Keep the drawings and logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-out
+          path: regression-out

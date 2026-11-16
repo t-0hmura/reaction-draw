@@ -146,6 +146,10 @@ node build.mjs --octet Octet-Draw --out dist/octet-adapter.html --record dist/oc
 
 `build.mjs` warns if the checkout is on a different commit. `dist/octet-adapter.json` records the commit hash, esbuild version, SHA-256 digests of the built page and `adapter.ts`, and byte sizes per source file; `octet_draw.py` warns when `adapter.ts` no longer matches the prebuilt page. Update `skills/reaction-draw/third_party/octet-draw/NOTICE` whenever bundled files change. To test changes without rebuilding `dist/`, pass `--octet Octet-Draw` (which builds into the cache).
 
+## Regression test
+
+`python tests/run_regression.py` draws every template and every input in `tests/specs/`, and fails unless each drawing passes all checks and its positive control. GitHub Actions runs it on every push to `main` and every pull request (`.github/workflows/regression.yml`).
+
 ## Limits
 
 - At a crowded atom (e.g., three or four bonds, an arrow, and a nearby label), an atom number may have no valid position that satisfies all rules (`backend problem: number ... breaks a rule`); `number_place` then warns, or fails if the number ends up closer to another atom.
