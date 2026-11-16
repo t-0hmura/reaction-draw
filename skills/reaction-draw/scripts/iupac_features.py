@@ -74,6 +74,8 @@ def prepare_species(sp, raw):
     for i, a in enumerate(atoms):
         n = 0 if a['dummy'] or a['symbol'] in METALS or a.get('preserve_h') or sp.get('ts') else mol.GetAtomWithIdx(i).GetNumRadicalElectrons()
         a['radical'] = explicit.get(str(a['map']), n)
+        if a['radical'] and str(a['map']) not in explicit:
+            a['radical_inferred'] = True   # the checks name it, since a missing bracket H gives the same radical
         if str(a['map']) in explicit and a['symbol'] not in METALS and not a.get('preserve_h') and not sp.get('ts') and a['radical'] != n:
             fail('%s:%s: radicals=%d disagrees with the bracket H count, charge and bonds (expected %d)' % (sid, a['map'], a['radical'], n))
         if a['radical'] > 2:
@@ -306,7 +308,7 @@ def resolve_new_bond_heads(spec):
 
 
 def atom_fields(sp, a):
-    out = {k: a[k] for k in ('isotope', 'radical', 'hidden_h', 'preserve_h', 'keep_h', 'radical_angle') if a.get(k) is not None}
+    out = {k: a[k] for k in ('isotope', 'radical', 'radical_inferred', 'hidden_h', 'preserve_h', 'keep_h', 'radical_angle') if a.get(k) is not None}
     if a.get('display_h', a['h']) != a['h']:
         out['display_h'] = a['display_h']
     if a['map'] in sp.get('oxidation', {}):

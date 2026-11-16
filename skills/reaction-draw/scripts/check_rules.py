@@ -186,7 +186,7 @@ def warning_finding(name, message):
     if name == 'electron_flow':
         return any(s in message for s in ('homolysis needs', 'a new bond needs', 'more than two electrons leave'))
     if name == 'radical_marks':
-        return any(s in message for s in ('before or inside', 'radical-ion charge must follow'))
+        return any(s in message for s in ('before or inside', 'radical-ion charge must follow', 'not from radicals'))
     return False
 
 
@@ -2076,6 +2076,9 @@ def det_radical_marks(f):
         marks = [m for m in f.report['radicals'] if m.get('ref') == ref]
         if sum(m.get('multiplier', 1) for m in marks) != n:
             out.append('%s: %d unpaired electrons requested, %d measured marks' % (ref, n, len(marks)))
+        if n and a.get('radical_inferred'):
+            out.append('%s: %d unpaired electron(s) come from the bracket H count, charge and bonds, not from radicals; '
+                       'add the missing H to the SMILES, or list an intended radical in the species\' radicals' % (ref, n))
         for when, saved in (('native', f.reload), ('CDXML', f.reload.get('cdxml'))):
             if saved and int(saved['atoms'].get(ref, {}).get('radical') or 0) != n:
                 out.append('%s: %s lost the unpaired-electron count' % (ref, when))
