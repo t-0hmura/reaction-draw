@@ -2601,6 +2601,21 @@ def _spec_edit(f, refs):
     return 'add %s to "offset" of species %s in panel %s' % (json.dumps(step), key, panel['id'])
 
 
+def _arrow_in_own_species(f, finding):
+    """True when an arrow-bond overlap lies inside one species: the arrow's atoms and the bond all belong to it."""
+    m = re.match(r'arrow (\S+) touches bond (\S+)-(\S+) ', finding)
+    if not m:
+        return False
+    bond = [m.group(2), m.group(3)]
+    panel = bond[0].split('.', 1)[0] + '.'
+    arrow = next((c for c in f.curved if c['id'] == m.group(1)
+                  and any(r.startswith(panel) for k in ('from', 'to') for r in c[k]['refs'])), None)
+    if arrow is None:
+        return False
+    refs = [r for k in ('from', 'to') for r in arrow[k]['refs']] + bond
+    return all(r in f.atoms for r in refs) and len({f.atoms[r]['species'] for r in refs}) == 1
+
+
 def repair_hints(f, name, findings):
     """Translate detector findings back to spec locations, with one concrete edit per finding ({move}: _spec_edit)."""
     no_fix = ('the input cannot fix this (a drawing or saving defect): hand over DIR/last_pass/ when it exists; otherwise '
@@ -2687,7 +2702,11 @@ def repair_hints(f, name, findings):
         action = ('run `python scripts/fix_hbonds.py INPUT --out NEW_DIR` once; if the line still overlaps, follow the hydrogen-bond '
                   'note under "Hand placement" in scripts/README.md' if 'hbond ' in finding else
                   'first add the missing H to the bracket atom in the SMILES; only when the source draws an unpaired electron on '
-                  'this atom, list it in the species\' radicals' if 'not from radicals' in finding else actions.get(name, no_fix))
+                  'this atom, list it in the species\' radicals' if 'not from radicals' in finding else
+                  'the arrow and the bond are in one species, so turning that species keeps the overlap: change this arrow\'s '
+                  '"bend" (the opposite sign, or a larger value up to 1.6); if it still touches, move the bond\'s branch with xy, '
+                  'abbreviate a non-reacting group beside these atoms, or split the step into two panels'
+                  if name == 'overlap_arrow_bond' and _arrow_in_own_species(f, finding) else actions.get(name, no_fix))
         action = action.replace('{move}', _spec_edit(f, refs or named))
         hints.append('%s: %s; %s. Action: %s.' % (name, '; '.join(dict.fromkeys(places)), finding, action))
     return hints
