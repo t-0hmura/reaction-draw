@@ -65,21 +65,27 @@ def expected(sid, smiles, relaxed=False):
     return _labels(mol, refs), refs, stubs
 
 
-def potential_centers(sid, smiles, relaxed=False):
-    """Tetrahedral stereogenic atoms, including unspecified centers; maps only identify atoms."""
+def potential_centers(sid, smiles, relaxed=False, names=None):
+    """Tetrahedral stereogenic atoms, including unspecified centers; maps only identify atoms.  With names (stub_names),
+    the stubs in ABBREV_SMILES are expanded first, as chemical() does."""
     Chem, _ = _rdkit()
     params = Chem.SmilesParserParams()
-    params.removeHs, params.sanitize = False, not relaxed
+    params.removeHs, params.sanitize = False, not relaxed and names is None
     mol = Chem.MolFromSmiles(smiles, params)
     if mol is None:
         raise ValueError('%s: cannot read stereogenic-atom reference' % sid)
     refs = ['%s:%d' % (sid, a.GetAtomMapNum()) for a in mol.GetAtoms()]
+    if names is not None:
+        mol, refs, _ = _expand(sid, mol, names)
+        if not relaxed:
+            Chem.SanitizeMol(mol)
     for atom in mol.GetAtoms():
         atom.SetAtomMapNum(0)
     if relaxed:
         mol.UpdatePropertyCache(strict=False)
         Chem.FastFindRings(mol)
-    return {refs[i] for i, _ in Chem.FindMolChiralCenters(mol, includeUnassigned=True, useLegacyImplementation=False)}
+    return {refs[i] for i, _ in Chem.FindMolChiralCenters(mol, includeUnassigned=True, useLegacyImplementation=False)
+            if ':~' not in refs[i]}
 
 
 _AROMATIC = {}
@@ -163,22 +169,10 @@ def stub_names(sid, spec):
     return names
 
 
-def chemical(sid, smiles, names, relaxed=False):
-    """R/S and E/Z of the real molecule, and the labels that depend on a stub of unknown structure.
-
-    Stubs named in ABBREV_SMILES are expanded in place (the stub becomes the attaching atom, so the
-    chirality tags keep their neighbor order).  Other stubs are ranked lowest (dummy) and highest.
-    """
+def _expand(sid, base, names):
+    """A writable copy of base whose stubs named in ABBREV_SMILES are expanded in place, its refs (added atoms are
+    "sid:~n"), and the indices of the other stubs (neutral, H-free dummies)."""
     Chem, _ = _rdkit()
-    from iupac_features import METALS
-    import re
-    relaxed = relaxed or '->' in smiles or '<-' in smiles or any(e in METALS for e in re.findall(r'\[\d*([A-Z][a-z]?)', smiles))
-    params = Chem.SmilesParserParams()
-    params.removeHs = False
-    params.sanitize = False
-    base = Chem.MolFromSmiles(smiles, params)
-    if base is None:
-        raise ValueError('%s: RDKit cannot read the reference SMILES' % sid)
     refs = ['%s:%d' % (sid, a.GetAtomMapNum()) for a in base.GetAtoms()]
     unknown = []
     rw = Chem.RWMol(base)
@@ -204,6 +198,26 @@ def chemical(sid, smiles, names, relaxed=False):
             refs.append('%s:~%d' % (sid, len(refs)))
         for fb in frag.GetBonds():
             rw.AddBond(index[fb.GetBeginAtomIdx()], index[fb.GetEndAtomIdx()], fb.GetBondType())
+    return rw, refs, unknown
+
+
+def chemical(sid, smiles, names, relaxed=False):
+    """R/S and E/Z of the real molecule, and the labels that depend on a stub of unknown structure.
+
+    Stubs named in ABBREV_SMILES are expanded in place (the stub becomes the attaching atom, so the
+    chirality tags keep their neighbor order).  Other stubs are ranked lowest (dummy) and highest.
+    """
+    Chem, _ = _rdkit()
+    from iupac_features import METALS
+    import re
+    relaxed = relaxed or '->' in smiles or '<-' in smiles or any(e in METALS for e in re.findall(r'\[\d*([A-Z][a-z]?)', smiles))
+    params = Chem.SmilesParserParams()
+    params.removeHs = False
+    params.sanitize = False
+    base = Chem.MolFromSmiles(smiles, params)
+    if base is None:
+        raise ValueError('%s: RDKit cannot read the reference SMILES' % sid)
+    rw, refs, unknown = _expand(sid, base, names)
 
     def labels(z):
         mol = Chem.RWMol(rw)

@@ -83,7 +83,7 @@ DETECTOR_FEATURES = {
     'hydrogen_display': ('explicit_h',), 'coordination': ('metals',), 'metal_geometry': ('metals',),
     'residue_codes': ('residues',), 'reaction_kinds': ('reaction_arrows',),
     'radical_direction': ('radicals',), 'figure_style': ('always',), 'species_gap': ('species_pairs',), 'bond_crossing': ('bonds',), 'plus_place': ('plus',),
-    'arrows_steps': ('curved',), 'arrows_clear': ('curved',),
+    'arrows_steps': ('reaction_arrows',), 'arrows_clear': ('curved',),
 }
 
 
@@ -2170,6 +2170,10 @@ def det_arrows_steps(f):
     for r in steps:
         nxt[r['from']].append(r)
     out = []
+    def twice(pid):        # maps drawn more than once: their atoms cannot be matched between the panels
+        panel = next(p for p in f.resolved['panels'] if p['id'] == pid)
+        count = collections.Counter(mp(a['ref']) for a in panel['atoms'])
+        return sorted((m for m, n in count.items() if n > 1), key=lambda x: int(x) if x.isdigit() else 0)
     for r in steps:
         if r.get('summary') or r['kind'] in ('stoich', 'retro') or info[r['from']][5]:
             continue
@@ -2180,6 +2184,12 @@ def det_arrows_steps(f):
                 info[end] = _step_bonds(f, end)
             _, atoms2, bonds2, coord2, aromatic2, ts2 = info[end]
             if ts2:
+                continue
+            dup = sorted(set(twice(r['from']) + twice(end)), key=lambda x: int(x) if x.isdigit() else 0)
+            if dup:
+                out.append('panel %s -> %s: atom map%s %s %s used by more than one species, so the bonds that change in this step '
+                           'cannot be matched; give every atom of a panel its own map' % (
+                               r['from'], end, 's' if len(dup) > 1 else '', ', '.join(dup), 'are' if len(dup) > 1 else 'is'))
                 continue
             arrows = list(panel.get('curved', [])) + (list(info[r['to']][0].get('curved', [])) if end != r['to'] else [])
             uncovered = set()

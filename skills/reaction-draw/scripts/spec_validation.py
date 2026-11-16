@@ -470,13 +470,14 @@ def inspect_spec(data):
             continue
         styles = s.get('bond_style') if isinstance(s.get('bond_style'), dict) else {}
         try:
-            centers = stereo.potential_centers(sid, sources[sid], relaxed='coord' in styles.values() or '->' in sources[sid] or '<-' in sources[sid])
+            centers = stereo.potential_centers(sid, sources[sid], relaxed='coord' in styles.values() or '->' in sources[sid] or '<-' in sources[sid],
+                                               names=stereo.stub_names(sid, data))
         except (ValueError, RuntimeError):
             continue
         maps = graphs[sid][0] if sid in graphs else {}
         for ref in sorted(centers - set(labels[sid][0][0]), key=lambda r: int(r.rsplit(':', 1)[1])):
             mp = int(ref.rsplit(':', 1)[1])
-            if mp in declared.get(sid, ()) or (maps.get(mp) or {}).get('el') in ip.METALS:
+            if mp in declared.get(sid, ()) or (maps.get(mp) or {}).get('symbol') in ip.METALS:
                 continue
             bad(sw + '.smiles', 'atom %d is a stereocenter without a configuration; write @/@@ as the source figure draws it '
                 '(and its R/S in expected_stereo), or, if the source does not show this configuration, add '
