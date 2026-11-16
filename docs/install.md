@@ -86,3 +86,12 @@ python scripts/draw_figure.py --check-env
 ```
 
 `ENVIRONMENT OK` means you're all set. Otherwise, install any missing dependencies it reports.
+
+On Windows, a venv works. From the skill directory in PowerShell:
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install rdkit playwright
+.venv\Scripts\python -m playwright install chromium
+.venv\Scripts\python scripts\draw_figure.py --check-env
+```

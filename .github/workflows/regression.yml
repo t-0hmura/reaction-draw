@@ -21,6 +21,8 @@ jobs:
           sudo apt-get install -y fonts-liberation
           python -m pip install rdkit==2026.9.1 playwright==1.63.0
           python -m playwright install --with-deps chromium
+      - name: Test the output lock
+        run: python tests/test_lock.py
       - name: Check the environment
         run: python skills/reaction-draw/scripts/draw_figure.py --check-env
       - name: Draw the templates and test inputs
@@ -30,4 +32,32 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: regression-out
+          path: regression-out
+
+  draw-windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Make a venv with RDKit and Playwright with Chromium
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python -m pip install rdkit==2026.9.1 playwright==1.63.0
+          .venv\Scripts\python -m playwright install chromium
+      - name: Test the output lock
+        run: .venv\Scripts\python tests/test_lock.py
+      - name: Check the environment
+        run: .venv\Scripts\python skills/reaction-draw/scripts/draw_figure.py --check-env
+      - name: Draw the templates and test inputs
+        run: .venv\Scripts\python tests/run_regression.py -j 4 --out regression-out
+      - name: Keep the drawings and logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: regression-out-windows
           path: regression-out

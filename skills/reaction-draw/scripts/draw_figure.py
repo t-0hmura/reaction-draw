@@ -10,8 +10,8 @@ Exit status: 0 when every check passes (and, with --positive-control, the positi
 2 when the input file is wrong or a stage cannot run. Stages, outputs and options: the repository's docs/backend.md.
 """
 import argparse
-import fcntl
 import json
+import os
 import signal
 import sys
 import time
@@ -28,6 +28,16 @@ sys.path.insert(0, str(HERE / 'octet'))
 import specutil  # noqa: E402
 import check_rules  # noqa: E402
 import stereochemistry as stereo  # noqa: E402
+
+if os.name == 'nt':
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    _KERNEL32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    _KERNEL32.LockFile.argtypes = [wintypes.HANDLE] + [wintypes.DWORD] * 4
+    _KERNEL32.LockFile.restype = wintypes.BOOL
+else:
+    import fcntl
 
 SMALL_DPI = 150
 ACS_COLUMNS_PT = ((234, 'single column (3.25 in)'), (504, 'double column (7 in)'))
@@ -50,6 +60,23 @@ def _passing(out):
     return summary.is_file() and 'RESULT: all checks pass' in summary.read_text(encoding='utf-8').splitlines()
 
 
+def _lock(path):
+    """Open and lock `path` without waiting (BlockingIOError when another process holds it). The OS releases the lock when
+    the file closes or the process ends, even if it is killed; the file is never truncated or written."""
+    handle = open(path, 'a+b')
+    try:
+        if os.name == 'nt':
+            if not _KERNEL32.LockFile(msvcrt.get_osfhandle(handle.fileno()), 0, 0, 1, 0):
+                code = ctypes.get_last_error()
+                raise BlockingIOError(code, 'locked') if code == 33 else ctypes.WinError(code)   # 33: ERROR_LOCK_VIOLATION
+        else:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise
+    return handle
+
+
 def _save_pass(out, spec_bytes=None):
     """Copy only managed passing files; never remove other files in either directory."""
     saved = out / 'last_pass'
@@ -66,9 +93,8 @@ def run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, b
     """Retain the last checked figure through failed checks and early-stage failures."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    lock = open(out / '.draw.lock', 'w')          # released when this process ends, even if it is killed
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock = _lock(out / '.draw.lock')  # noqa: F841 (held until this function returns or the process ends)
     except OSError:
         message = 'input error: another draw_figure.py is writing %s; wait for it to finish or use another --out' % out
         log(message)
@@ -666,7 +692,7 @@ def main(argv=None):
         ap.error('--out DIR is required for a full run')
 
     def log(line):
-        if (line.lstrip().startswith(('RESULT', 'FIX ', 'STEREO', 'AUDIT', '- [ ]', 'POSITIVE CONTROL', 'NEXT:', 'checks:', 'WARNING:', 'note:',
+        if (line.lstrip().startswith(('RESULT', 'FIX ', 'STEREO', 'AUDIT', '- [ ]', 'POSITIVE CONTROL', 'NEXT:', 'WARNING:', 'note:',
                                      'the last passing figure', 'input error', 'layout error',
                                      'drawing failed', 'checks could not', 'MISSED planted'))
                 and (not args.quiet or not line.lstrip().startswith(('FIX ', 'POSITIVE CONTROL')))):

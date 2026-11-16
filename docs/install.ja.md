@@ -88,3 +88,12 @@ python scripts/draw_figure.py --check-env
 ```
 
 `ENVIRONMENT OK` と表示されれば準備完了です。不足している項目が表示された場合は、指示に従ってインストールしてください。
+
+Windows では venv で動きます。スキルのディレクトリで、PowerShell から以下を実行してください。
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install rdkit playwright
+.venv\Scripts\python -m playwright install chromium
+.venv\Scripts\python scripts\draw_figure.py --check-env
+```

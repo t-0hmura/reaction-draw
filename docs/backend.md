@@ -148,7 +148,7 @@ node build.mjs --octet Octet-Draw --out dist/octet-adapter.html --record dist/oc
 
 ## Regression test
 
-`python tests/run_regression.py` draws every template and every input in `tests/specs/`, and fails unless each drawing passes all checks and its positive control. GitHub Actions runs it on every push to `main` and every pull request (`.github/workflows/regression.yml`).
+`python tests/run_regression.py` draws every template and every input in `tests/specs/`, and fails unless each drawing passes all checks and its positive control. `python tests/test_lock.py` checks that a second drawing into the same output directory is refused while one is running. GitHub Actions runs both on Linux and on Windows (in a venv) on every push to `main` and every pull request (`.github/workflows/regression.yml`).
 
 ## Limits
 
