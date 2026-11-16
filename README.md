@@ -1,4 +1,4 @@
-# `reaction-draw` skill v1.0.0
+# `reaction-draw` skill v1.1.0
 
 [![License](https://img.shields.io/github/license/t-0hmura/reaction-draw)](LICENSE) [![Release](https://img.shields.io/github/v/release/t-0hmura/reaction-draw)](https://github.com/t-0hmura/reaction-draw/releases/latest)
 

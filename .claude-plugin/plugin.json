@@ -1,6 +1,6 @@
 {
   "name": "reaction-draw",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Draw chemical structures and electron-pushing mechanisms from papers, hand-drawn images, reaction names or descriptions with Octet Draw. Templates and one command produce checked ChemDraw .cdxml, SVG and PNG files.",
   "author": {
     "name": "Takuto Ohmura"
