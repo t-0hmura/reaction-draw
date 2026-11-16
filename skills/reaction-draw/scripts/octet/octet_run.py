@@ -4,7 +4,7 @@
   python octet_run.py JOB.json
 
 Reads the job that octet_draw.py wrote, starts one headless browser for the whole job, opens the adapter page,
-draws the figure (adapter.ts drawFigure), writes figure.oct, figure.cdxml (Octet's CDXML writer alone, for ChemDraw)
+draws the figure (adapter.ts drawFigure), writes figure.cdxml (Octet's CDXML writer alone, for ChemDraw)
 and figure.svg, reads figure.cdxml in a fresh page with Octet's CDXML reader alone, renders figure.png (at the job's dpi, true size, on white) and
 figure_small.png (small_dpi), and writes report.json and reload.json into the job's output directory.  Prints one JSON line with
 the status and the time of each stage.  Uses only the standard library and Playwright, so it can run on another
@@ -124,7 +124,6 @@ def run_job(job_path):
                 t = time.perf_counter()
                 res = page.evaluate('async j => await drawFigure(j)', job['page'])
                 T['draw'] = time.perf_counter() - t
-                (out / 'figure.oct').write_text(res['oct'], encoding='utf-8')
                 # the ChemDraw file: Octet's own CDXML writer (toCdxml), without Octet's JSON layer
                 (out / 'figure.cdxml').write_text(res['cdxml'], encoding='utf-8')
                 (out / 'figure.svg').write_text(res['svg'], encoding='utf-8')
@@ -161,7 +160,7 @@ def run_job(job_path):
     tm.update({'page_' + k: round(v / 1000.0, 3) for k, v in report.pop('timings_ms', {}).items()})
     tm['runner_s'] = round(time.perf_counter() - t0, 3)
     report['timings_s'] = tm
-    files = {'oct': 'figure.oct', 'cdxml': 'figure.cdxml', 'svg': 'figure.svg', 'png': 'figure.png'}
+    files = {'cdxml': 'figure.cdxml', 'svg': 'figure.svg', 'png': 'figure.png'}
     if job.get('small_dpi'):
         files['preview'] = 'figure_small.png'
     report['files'] = files

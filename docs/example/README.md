@@ -9,7 +9,7 @@ Here, `OPP` and `Ado` denote the diphosphate and adenosyl groups, respectively, 
 
 ![BezA mechanism](beza_mechanism.png)
 
-**Input templates:** [`beza.json`](../../skills/reaction-draw/templates/beza.json) and two color-coded variants: [`beza_color_element.json`](../../skills/reaction-draw/templates/beza_color_element.json) (heteroatoms colored by element) and [`beza_color_origin.json`](../../skills/reaction-draw/templates/beza_color_origin.json) (groups colored by source molecule). The `beza_*` files in this directory are the renamed `.oct`, `.cdxml`, `.svg`, and `.png` (600 dpi) outputs generated from these templates.
+**Input templates:** [`beza.json`](../../skills/reaction-draw/templates/beza.json) and two color-coded variants: [`beza_color_element.json`](../../skills/reaction-draw/templates/beza_color_element.json) (heteroatoms colored by element) and [`beza_color_origin.json`](../../skills/reaction-draw/templates/beza_color_origin.json) (groups colored by source molecule). The `beza_*` files in this directory are the renamed `.cdxml`, `.svg`, and `.png` (600 dpi) outputs generated from these templates.
 
 To regenerate the figures from the skill directory (`skills/reaction-draw/`):
 

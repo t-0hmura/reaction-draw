@@ -17,6 +17,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -694,14 +695,31 @@ def ring_side(ring, styles, cross):
 
 def draw(resolved, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, small_dpi=150,
          browser='auto', cache_dir=None, node='node', options=None, dpi=None):
+    """Keep browser exchange files temporary; retain four figure files and one state file."""
+    out = Path(out_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    if isinstance(resolved, (str, Path)):
+        resolved = json.loads(Path(resolved).read_text(encoding='utf-8'))
+    with tempfile.TemporaryDirectory(prefix='.octet-', dir=str(out)) as scratch:
+        dest = Path(scratch)
+        report = _draw(resolved, dest, png_width, octet_dir, node_modules, browser_cmd, small_dpi,
+                       browser, cache_dir, node, options, dpi)
+        reload = json.loads((dest / 'reload.json').read_text(encoding='utf-8')) if (dest / 'reload.json').is_file() else {}
+        for name in ('figure.cdxml', 'figure.svg', 'figure.png', 'figure_small.png'):
+            if (dest / name).is_file():
+                shutil.copyfile(dest / name, out / name)
+        (out / '.state.json').write_text(json.dumps({'resolved': resolved, 'report': report, 'reload': reload},
+                                                   ensure_ascii=False, indent=1), encoding='utf-8')
+    return report
+
+
+def _draw(resolved, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, small_dpi=150,
+          browser='auto', cache_dir=None, node='node', options=None, dpi=None):
     """Draw a resolved figure with Octet into out_dir and return the report (dict); options: the repository's docs/backend.md."""
     t0 = time.perf_counter()
     timings = {}
     out = Path(out_dir).resolve()
-    if isinstance(resolved, (str, Path)):
-        resolved = json.loads(Path(resolved).read_text(encoding='utf-8'))
     page, notes = build_job(resolved, options)
-    out.mkdir(parents=True, exist_ok=True)
     timings['document'] = time.perf_counter() - t0
     t = time.perf_counter()
     octet_dir = octet_dir or os.environ.get('OCTET_DRAW_CHECKOUT')
@@ -753,7 +771,6 @@ def draw(resolved, out_dir, png_width=None, octet_dir=None, node_modules=None, b
     tm['total'] = round(time.perf_counter() - t0, 3)
     report['notes'] = notes + report.get('notes', [])
     report['adapter_page'] = {'file': html.name, 'source': source}       # (no local path: the report may be shared)
-    (out / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding='utf-8')
     return report
 
 

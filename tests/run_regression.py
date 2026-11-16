@@ -35,6 +35,9 @@ def run(spec, out):
     ok = rc == 0 and result == 'RESULT: all checks pass' and bool(control) and control.group(1) == control.group(2) \
         and control.group(3) == control.group(4)
     why = '' if ok else (result if result != 'RESULT: all checks pass' else 'positive control: ' + (control.group(0) if control else 'missing'))
+    if ok and {p.name for p in (out / name).iterdir()} != {
+            'figure.cdxml', 'figure.svg', 'figure.png', 'figure_small.png', '.state.json', '.draw.lock'}:
+        ok, why = False, 'unexpected output files'
     return name, ok, time.time() - start, why
 
 

@@ -1,6 +1,6 @@
 # Drawing scripts
 
-A single command converts a JSON input file into a validated figure drawn with [Octet Draw](https://github.com/SamChemMan/Octet-Draw)'s rendering code, producing `.oct`, `.cdxml` (for ChemDraw), SVG, PNG, and a check summary. See [`../SKILL.md`](../SKILL.md) for the full workflow.
+A single command converts a JSON input file into a validated figure drawn with [Octet Draw](https://github.com/SamChemMan/Octet-Draw)'s rendering code, producing `.cdxml` (for ChemDraw), SVG, PNG, and a check summary. See [`../SKILL.md`](../SKILL.md) for the full workflow.
 
 If any dependency is missing, run `python draw_figure.py --check-env` to see what to install.
 
@@ -136,4 +136,4 @@ python draw_figure.py INPUT.json --out DIR
 | `--dpi` | `figure.png` resolution at true size (default: `drawing.dpi` from the input, else `600`); `figure_small.png` is rendered at 150 dpi; the long edge is capped at 12,000 px |
 | `--quiet` | Suppress `FIX` and `POSITIVE CONTROL` lines |
 
-Each passing run saves the figure files, `summary.txt`, `resolved.json`, and a copy of the input (`input.json`) in `DIR/last_pass/`, replacing any previous passing snapshot.
+`DIR` contains `figure.cdxml`, `figure.svg`, `figure.png`, and `figure_small.png`.

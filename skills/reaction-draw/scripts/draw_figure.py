@@ -42,22 +42,26 @@ else:
 SMALL_DPI = 150
 ACS_COLUMNS_PT = ((234, 'single column (3.25 in)'), (504, 'double column (7 in)'))
 START = time.time()
+LAST_PROGRESS = None
 SPEC_NEXT = 'NEXT: fix each input error in the input file and rerun the same command; do not stop.'
 # what a run writes into DIR; the files of an earlier run are removed first, so that a failed run leaves no stale figure
-# or verdict behind (summary.txt then says why it failed)
-OUTPUTS = ('resolved.json', 'figure.oct', 'figure.cdxml', 'figure.svg', 'figure.png', 'figure_small.png', 'report.json', 'reload.json', 'checks.json', 'summary.txt')
-PASS_FILES = ('figure.oct', 'figure.cdxml', 'figure.svg', 'figure.png', 'figure_small.png',
-              'summary.txt', 'resolved.json')
+# or verdict behind (.state.json then says why it failed)
+OUTPUTS = ('figure.cdxml', 'figure.svg', 'figure.png', 'figure_small.png', '.state.json')
 
 
 def _progress(message):
-    """One line on stderr per drawing: a run takes minutes, and a log that stays empty looks like a hang."""
-    print('progress (%3.0f s): %s' % (time.time() - START, message), file=sys.stderr, flush=True)
+    """Print the first drawing and then at most one stage update per minute."""
+    global LAST_PROGRESS
+    now = time.time()
+    if LAST_PROGRESS is None or now - LAST_PROGRESS >= 60:
+        print('progress (%3.0f s): %s' % (now - START, message), file=sys.stderr, flush=True)
+        LAST_PROGRESS = now
 
 
-def _passing(out):
-    summary = out / 'summary.txt'
-    return summary.is_file() and 'RESULT: all checks pass' in summary.read_text(encoding='utf-8').splitlines()
+def _write_state(out, **parts):
+    state = check_rules.load_state(out) if (out / '.state.json').is_file() else {}
+    state.update(parts)
+    (out / '.state.json').write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding='utf-8')
 
 
 def _lock(path):
@@ -77,20 +81,9 @@ def _lock(path):
     return handle
 
 
-def _save_pass(out, spec_bytes=None):
-    """Copy only managed passing files; never remove other files in either directory."""
-    saved = out / 'last_pass'
-    saved.mkdir(exist_ok=True)
-    for name in PASS_FILES:
-        if (out / name).is_file():
-            shutil.copyfile(out / name, saved / name)
-    if spec_bytes is not None:
-        (saved / 'input.json').write_bytes(spec_bytes)
-
-
 def run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, positive_control=False,
         draw=None, log=print, dpi=None):
-    """Retain the last checked figure through failed checks and early-stage failures."""
+    """Draw and check while holding the output-directory lock."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     try:
@@ -99,26 +92,11 @@ def run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, b
         message = 'input error: another draw_figure.py is writing %s; wait for it to finish or use another --out' % out
         log(message)
         return 2, {'error': message}
-    # Read before the pipeline replaces its outputs (the input may be in DIR).
-    try:
-        spec_bytes = Path(spec_path).read_bytes()
-    except OSError:
-        spec_bytes = None
-    if _passing(out):
-        _save_pass(out)
-    status, result = _run(spec_path, out_dir, png_width, octet_dir, node_modules, browser_cmd, positive_control, draw, log, dpi)
-    if status == 0:
-        _save_pass(out, spec_bytes)
-    elif _passing(out / 'last_pass'):
-        message = ('the last passing figure is in %s/last_pass/; hand it over unless this change fixes a chemistry error' % out)
-        with (out / 'summary.txt').open('a', encoding='utf-8') as summary:
-            summary.write(message + '\n')
-        log(message)
-    return status, result
+    return _run(spec_path, out_dir, png_width, octet_dir, node_modules, browser_cmd, positive_control, draw, log, dpi)
 
 
 def _failed(out, what, message, notes, times, log, stereo_lines=()):
-    """A run that stopped before its checks: summary.txt says where and why; returns its lines."""
+    """A run that stopped before its checks: the state says where and why; returns its lines."""
     if what == 'input error':
         lines = list(stereo_lines) + ['input error: ' + problem for problem in message]
     else:
@@ -129,7 +107,7 @@ def _failed(out, what, message, notes, times, log, stereo_lines=()):
     lines.append('RESULT: FAILED (%s)' % what)
     if what == 'input error':
         lines.append(SPEC_NEXT)
-    (out / 'summary.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    _write_state(out, summary=lines)
     for line in lines:
         log(line)
     return lines
@@ -229,14 +207,14 @@ def _names(aid, text):
     return re.search(r'(?<![\w-])' + re.escape(aid) + r'(?![\w-])', text) is not None
 
 
-def _candidate(resolved, out, fig, draw, draw_args, options, accept, keep_resolved=False):
+def _candidate(resolved, out, fig, draw, draw_args, options, accept, stats, stage, keep_resolved=False):
     """Draw one retry candidate in a scratch folder and check it; copy its files into out when accept(checks).
     Returns (figure, checks, accepted, error); error names why nothing could be drawn or checked."""
-    _progress('extra drawing (%s)' % ', '.join(sorted(k for k, v in options.items() if v is True)))
+    _progress(stage)
     with tempfile.TemporaryDirectory(prefix='.retry-', dir=str(out)) as scratch:
         dest = Path(scratch)
-        (dest / 'resolved.json').write_text(json.dumps(resolved, ensure_ascii=False, indent=1), encoding='utf-8')
         try:
+            stats['draws'] += 1
             draw(resolved, dest, options=options, **draw_args)
             candidate = check_rules.load_figure(dest)
             candidate.name = fig.name
@@ -245,13 +223,15 @@ def _candidate(resolved, out, fig, draw, draw_args, options, accept, keep_resolv
             return None, None, False, '%s: %s' % (type(exc).__name__, exc)
         accepted = accept(checked)
         if accepted:
+            if keep_resolved:
+                _write_state(dest, resolved=check_rules.load_state(out)['resolved'])
             for name in OUTPUTS:
-                if (dest / name).is_file() and not (keep_resolved and name == 'resolved.json'):
+                if (dest / name).is_file():
                     shutil.copyfile(dest / name, out / name)
         return candidate, checked, accepted, None
 
 
-def retry_placements(resolved, out, fig, result, draw, draw_args):
+def retry_placements(resolved, out, fig, result, draw, draw_args, stats):
     """Try extra backend candidates only after an exact rule fails; keep checks and passing figures unchanged."""
     import copy
     notes, accepted = [], {}
@@ -274,7 +254,7 @@ def retry_placements(resolved, out, fig, result, draw, draw_args):
                                          if _names(c['id'], findings)]
             if not options['repairArrowIds']:
                 options.pop('repairArrowIds')
-        saved = json.loads((out / 'reload.json').read_text(encoding='utf-8'))
+        saved = check_rules.load_state(out)['reload']
         retry_resolved = copy.deepcopy(fig.resolved)
         atoms = {a['ref']: a for p in retry_resolved['panels'] for a in p['atoms']}
         for kept in saved.get('atoms', []):
@@ -292,7 +272,8 @@ def retry_placements(resolved, out, fig, result, draw, draw_args):
         def better(checked):
             after = _counts(checked)
             return all(after[n] <= before[n] for n in before) and any(after[n] < before[n] for n in failed)
-        candidate, checked, ok, error = _candidate(retry_resolved, out, fig, draw, draw_args, options, better, keep_resolved=True)
+        candidate, checked, ok, error = _candidate(retry_resolved, out, fig, draw, draw_args, options, better,
+                                                 stats, 'retry_placements', keep_resolved=True)
         if error:
             notes.append('extra placement candidates (%s): %s; kept the original drawing' % (', '.join(failed), error))
             continue
@@ -304,7 +285,7 @@ def retry_placements(resolved, out, fig, result, draw, draw_args):
     return fig, result, notes
 
 
-def retry_iupac_pairs(out, fig, result, draw, draw_args):
+def retry_iupac_pairs(out, fig, result, draw, draw_args, stats):
     """A free axial pair may need a small rigid turn of its molecule for a clear arrow.
 
     Keep connectivity, bond lengths, internal angles and stereo. Every candidate is
@@ -314,7 +295,7 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args):
     import math
     notes = []
     targets = {'arrows_ends', 'arrows_shape', 'overlap_arrow_bond', 'overlap_arrow_text', 'overlap_arrow_arrow', 'overlap_text_text', 'overlap_text_bond'}
-    for _ in range(3):
+    for round_number in range(1, 4):
         if not targets.intersection(result['failed']):
             break
         findings = ' '.join(x for n in targets for x in result['checks'][n]['findings'])
@@ -329,7 +310,7 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args):
             all_findings = ' '.join(x for check in result['checks'].values() for x in check['findings'])
             untouched = {c['id'] for p in fig.resolved['panels'] if p['id'] != panel_id for c in p['curved']
                          if not _names(c['id'], all_findings)}
-            saved = json.loads((out / 'reload.json').read_text(encoding='utf-8'))
+            saved = check_rules.load_state(out)['reload']
             fixed = _fixed_curved(saved, lambda i: i in untouched)
             fixed_numbers = {n['ref']: n for n in saved.get('numbers', [])
                              if not n['ref'].startswith(panel_id + '.') and n['ref'] not in all_findings}
@@ -344,6 +325,7 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args):
                         ((0, .7), (.7, 0), (0, -.7), (-.7, 0), (1, 0), (-1, 0), (0, 1), (0, -1))]
             trials = [(d, sx, sy, repair) for d, sx, sy in motions
                       for repair in ((False, True) if abs(d) in (5, 10) else (True,))]
+            drawn = 0
             for degree, sx, sy, repair in trials:
                 resolved = copy.deepcopy(fig.resolved)
                 atoms = {a['ref']: a for p in resolved['panels'] for a in p['atoms']}
@@ -360,11 +342,14 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args):
                     continue
                 options = {'repairArrows': True, 'repairCharges': repair, 'repairNumbers': repair, 'ownMarginPx': 8.5,
                            'reverseCurved': 'overlap_arrow_arrow' in result['failed'], 'fixedCurved': fixed, 'fixedNumbers': fixed_numbers}
-                candidate, checked, ok, error = _candidate(resolved, out, fig, draw, draw_args, options, _no_gain(result))
+                drawn += 1
+                candidate, checked, ok, error = _candidate(resolved, out, fig, draw, draw_args, options, _no_gain(result),
+                                                         stats, 'retry_iupac_pairs')
                 if error:
                     notes.append('axial-pair candidate %s %+g deg: %s' % (sid, degree, error))
                     continue
                 if ok:
+                    stats['accepted'].append({'arrow': aid, 'round': round_number, 'candidate': drawn})
                     notes.append('axial lone pair for %s: rigid move of %s (%+g deg, offset %.3f/%.3f bonds); findings %d -> %d' %
                                  (aid, sid, degree, sx, sy, sum(_counts(result).values()), sum(_counts(checked).values())))
                     fig, result, accepted = candidate, checked, True
@@ -377,7 +362,7 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args):
     return fig, result, notes
 
 
-def retry_forming_branch(out, fig, result, draw, draw_args):
+def retry_forming_branch(out, fig, result, draw, draw_args, stats):
     """Open a blocked intramolecular forming-bond corridor by rigid bridge rotation.
 
     Keep every bond length and branch configuration; accept only a saved drawing
@@ -388,7 +373,7 @@ def retry_forming_branch(out, fig, result, draw, draw_args):
     if 'overlap_arrow_bond' not in result['failed']:
         return fig, result, notes
     findings = ' '.join(result['checks']['overlap_arrow_bond']['findings'])
-    saved = json.loads((out / 'reload.json').read_text(encoding='utf-8'))
+    saved = check_rules.load_state(out)['reload']
     for panel in fig.resolved['panels']:
         graph = collections.defaultdict(set)
         for b in panel['bonds']:
@@ -427,13 +412,13 @@ def retry_forming_branch(out, fig, result, draw, draw_args):
                         queue.append(neighbor)
                 if other in branch or any(n != root and n in graph[pivot] for n in branch):
                     continue  # a ring is never cut or deformed
-                found = _turn_branch(out, fig, result, draw, draw_args, saved, panel, graph, arrow, pivot, branch, notes)
+                found = _turn_branch(out, fig, result, draw, draw_args, saved, panel, graph, arrow, pivot, branch, notes, stats)
                 if found:
                     return found
     return fig, result, notes
 
 
-def _turn_branch(out, fig, result, draw, draw_args, saved, panel, graph, arrow, pivot, branch, notes):
+def _turn_branch(out, fig, result, draw, draw_args, saved, panel, graph, arrow, pivot, branch, notes, stats):
     """Draw the branch turned rigidly about pivot by 120, -120, 60, -60 and 180 degrees (and with the terminal arms of an
     S, P or N exchanged); (fig, result, notes) of the first drawing that removes a finding without adding one, else None."""
     import copy
@@ -475,7 +460,8 @@ def _turn_branch(out, fig, result, draw, draw_args, saved, panel, graph, arrow, 
             continue
         options = {'fixedCurved': fixed, 'fixedNumbers': fixed_numbers, 'repairArrows': True,
                    'repairArrowIds': [c['id'] for c in panel['curved']], 'ownMarginPx': 8.5}
-        candidate, checked, ok, error = _candidate(resolved, out, fig, draw, draw_args, options, _no_gain(result))
+        candidate, checked, ok, error = _candidate(resolved, out, fig, draw, draw_args, options, _no_gain(result),
+                                                 stats, 'retry_forming_branch')
         if error:
             notes.append('forming-bond corridor %s %+d deg: %s' % (arrow['id'], degree, error))
         elif ok:
@@ -483,7 +469,7 @@ def _turn_branch(out, fig, result, draw, draw_args, saved, panel, graph, arrow, 
     return None
 
 
-def retry_layout(spec, out, fig, result, draw, draw_args):
+def retry_layout(spec, out, fig, result, draw, draw_args, stats):
     """Try bounded structural alternatives on failure, accepting only independently checked drawings."""
     import layout_repair
     notes = []
@@ -508,7 +494,7 @@ def retry_layout(spec, out, fig, result, draw, draw_args):
             safe = not checked['checks']['stereochemistry']['findings'] and all(
                 set(checked['checks'][n]['findings']) <= set(result['checks'][n]['findings']) for n in protected)
             return safe and rank(checked) < rank(result) and not _closer(result, checked)
-        candidate, checked, ok, error = _candidate(resolved, out, fig, draw, draw_args, options, better)
+        candidate, checked, ok, error = _candidate(resolved, out, fig, draw, draw_args, options, better, stats, 'retry_layout')
         if error:
             notes.append('automatic layout candidate %d: %s; kept the checked drawing' % (attempt, error))
             continue
@@ -554,9 +540,12 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     except Exception as e:                      # layout errors (e.g. RDKit missing) are reported, not raised
         _failed(out, 'layout error', '%s: %s' % (type(e).__name__, e), [], times, log, stereo_lines)
         return 2, {'error': str(e)}
-    (out / 'resolved.json').write_text(json.dumps(resolved, ensure_ascii=False, indent=1), encoding='utf-8')
+    _write_state(out, resolved=resolved)
     times['resolve'] = time.time() - t0
-    notes = list(resolved.get('notes', []))     # printed and kept in summary.txt with the result
+    notes = list(resolved.get('notes', []))     # kept in the state's summary with the result
+    retry_counts = {stage: {'draws': 0} for stage in
+                    ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs')}
+    retry_counts['retry_iupac_pairs']['accepted'] = []
     t1 = time.time()
     native_backend = draw is None
     _progress('first drawing')
@@ -572,24 +561,23 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
         fig = check_rules.load_figure(out)
         result = check_rules.run_checks(fig)
         if native_backend and result['failed']:
-            _progress('failed: %s; trying alternatives, one line per drawing' % ', '.join(result['failed']))
             retry_started = time.time()
             retry_args = {'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir,
                           'node_modules': node_modules, 'browser_cmd': browser_cmd}
             numbers_only = set(result['failed']) <= {'number_place', 'number_clear'}
             try:
                 # Resolve saved arrow/number placement before trying molecular motions.
-                fig, result, retried = retry_placements(resolved, out, fig, result, draw, retry_args)
+                fig, result, retried = retry_placements(resolved, out, fig, result, draw, retry_args, retry_counts['retry_placements'])
                 notes.extend(retried)
                 placed = fig
-                fig, result, retried = retry_layout(spec, out, fig, result, draw, retry_args)
+                fig, result, retried = retry_layout(spec, out, fig, result, draw, retry_args, retry_counts['retry_layout'])
                 notes.extend(retried)
-                fig, result, retried = retry_forming_branch(out, fig, result, draw, retry_args)
+                fig, result, retried = retry_forming_branch(out, fig, result, draw, retry_args, retry_counts['retry_forming_branch'])
                 notes.extend(retried)
-                fig, result, retried = retry_iupac_pairs(out, fig, result, draw, retry_args)
+                fig, result, retried = retry_iupac_pairs(out, fig, result, draw, retry_args, retry_counts['retry_iupac_pairs'])
                 notes.extend(retried)
                 if not numbers_only or fig is not placed:
-                    fig, result, retried = retry_placements(fig.resolved, out, fig, result, draw, retry_args)
+                    fig, result, retried = retry_placements(fig.resolved, out, fig, result, draw, retry_args, retry_counts['retry_placements'])
                     notes.extend(retried)
             except Exception as exc:     # a fault in a retry keeps the last accepted figure and its findings
                 notes.append('automatic retry stopped: %s: %s' % (type(exc).__name__, exc))
@@ -611,8 +599,8 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                                                  if isinstance(v, (int, float)) and not isinstance(v, bool)))
     raw = {}
     try:
-        raw = json.loads((out / 'report.json').read_text(encoding='utf-8'))
-    except (OSError, ValueError):
+        raw = check_rules.load_state(out)['report']
+    except (check_rules.InputError, KeyError):
         pass
     for p in raw.get('problems') or []:
         lines.append('backend problem: %s' % p)
@@ -622,13 +610,13 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
         lines.append('note: %s' % n)
     if (out / 'figure.svg').exists():
         lines.append(size_line(out))
-    files = sorted({p.name for p in out.iterdir() if p.is_file() and not p.name.startswith('.')} | {'checks.json', 'summary.txt'})
+    files = sorted(p.name for p in out.iterdir() if p.is_file() and not p.name.startswith('.'))
     lines.append('files: ' + ', '.join(files))
     lines.append('RESULT: %s' % ('all checks pass' if ok else 'CHECKS FAILED'))
-    (out / 'checks.json').write_text(json.dumps({'result': result, 'positive_control': pc, 'times_s': times,
-                                                 'backend_times_s': backend_times, 'files': files}, ensure_ascii=False, indent=1), encoding='utf-8')
     audit = check_rules.audit_lines(fig.features)
-    (out / 'summary.txt').write_text('\n'.join(lines + audit) + '\n', encoding='utf-8')
+    _write_state(out, checks={'result': result, 'positive_control': pc, 'times_s': times,
+                             'backend_times_s': backend_times, 'files': files, 'retry_counts': retry_counts},
+                 summary=lines + audit)
     for line in lines + (audit if ok else []):       # on a pass the audit items are the agent's next step
         log(line)
     return (0 if ok else 1), {'ok': ok, 'times_s': times, 'failed': result['failed'],
@@ -677,11 +665,11 @@ def main(argv=None):
     ap.add_argument('--node-modules', help='node_modules holding esbuild, with --octet')
     ap.add_argument('--browser-cmd', help='command that runs the browser part elsewhere, e.g. "ssh HOST /path/to/python"')
     ap.add_argument('--positive-control', action='store_true', help='also run the checker\'s positive control (the regression test does)')
-    ap.add_argument('--quiet', action='store_true', help='print the result, stereo notes and last passing figure location')
+    ap.add_argument('--quiet', action='store_true', help='print the result, stereo notes and audit')
     args = ap.parse_args(argv)
 
     def interrupted(signum, frame):
-        print('progress: stopped by a signal; DIR has no summary.txt, so its figure files are not checked', file=sys.stderr, flush=True)
+        print('progress: stopped by a signal; DIR/.state.json has no final summary, so its figure files are not checked', file=sys.stderr, flush=True)
         sys.exit(143)                              # unwinds the scratch folders and the browser job
     signal.signal(signal.SIGTERM, interrupted)
     if args.check_env:
@@ -692,8 +680,8 @@ def main(argv=None):
         ap.error('--out DIR is required for a full run')
 
     def log(line):
-        if (line.lstrip().startswith(('RESULT', 'FIX ', 'STEREO', 'AUDIT', '- [ ]', 'POSITIVE CONTROL', 'NEXT:', 'WARNING:', 'note:',
-                                     'the last passing figure', 'input error', 'layout error',
+        if (line.lstrip().startswith(('RESULT', 'FIX ', 'STEREO', 'AUDIT', '- [ ]', 'POSITIVE CONTROL', 'NEXT:', 'WARNING:',
+                                     'input error', 'layout error',
                                      'drawing failed', 'checks could not', 'MISSED planted'))
                 and (not args.quiet or not line.lstrip().startswith(('FIX ', 'POSITIVE CONTROL')))):
             print(line, flush=True)

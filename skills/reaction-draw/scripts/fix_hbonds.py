@@ -207,11 +207,12 @@ def repair(spec_path, out, png_width=None, browser_cmd=None, log=print):
         raise ValueError('--out must be a new or empty directory')
     out.mkdir(parents=True, exist_ok=True)
     status, _ = draw_figure.run(spec_path, out, png_width=png_width, browser_cmd=browser_cmd, log=lambda s: None)
+    state = rules.load_state(out)
     if status == 2:
-        raise ValueError((out / 'summary.txt').read_text(encoding='utf-8'))
+        raise ValueError('\n'.join(state['summary']))
     fig = rules.load_figure(out)
     result = rules.run_checks(fig)
-    current_pc = json.loads((out / 'checks.json').read_text(encoding='utf-8'))['positive_control']
+    current_pc = state['checks']['positive_control']
     initial = copy.deepcopy(result)
     log('HBONDS: before %d findings; %d failed checks' % (len(findings(result)), len(result['failed'])))
     chosen, accepted = None, []
@@ -255,7 +256,7 @@ def repair(spec_path, out, png_width=None, browser_cmd=None, log=print):
                     continue
                 candidate_fig = rules.load_figure(scratch / 'draw')
                 checked = rules.run_checks(candidate_fig)
-                pc = json.loads((scratch / 'draw' / 'checks.json').read_text(encoding='utf-8'))['positive_control']
+                pc = rules.load_state(scratch / 'draw')['checks']['positive_control']
                 better = (pc is None or pc['ok']) and improves(result, checked)
                 log('HBONDS: candidate %d %s; findings %d -> %d; failed checks %d -> %d; remaining: %s' % (
                     attempts, 'accepted' if better else 'rejected', len(findings(result)), len(findings(checked)),
@@ -284,19 +285,15 @@ def repair(spec_path, out, png_width=None, browser_cmd=None, log=print):
         for change in accepted:
             log('HBONDS: changed ' + change)
         log('HBONDS: chosen input ' + str(saved))
-        if result['ok']:
-            draw_figure._save_pass(out, saved.read_bytes())
     elapsed = time.monotonic() - started
     report = {'before': len(findings(initial)), 'after': len(findings(result)), 'attempts': attempts,
               'elapsed_s': round(elapsed, 3), 'changes': accepted, 'chosen_input': str(saved) if saved else None,
               'before_counts': {n: len(c['findings']) for n, c in initial['checks'].items()},
               'after_counts': {n: len(c['findings']) for n, c in result['checks'].items()}}
-    (out / 'hbond_repair.json').write_text(json.dumps(report, ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
     message = 'HBONDS: %d -> %d findings, %d candidates, %.2f s; %s' % (
         report['before'], report['after'], attempts, elapsed,
         'saved ' + str(saved) if saved else 'no improving candidate; input unchanged')
-    with (out / 'summary.txt').open('a', encoding='utf-8') as handle:
-        handle.write(message + '\n')
+    draw_figure._write_state(out, hbond_repair=report, summary=rules.load_state(out)['summary'] + [message])
     log(message)
     ok = result['ok'] and (current_pc is None or current_pc['ok'])
     log('RESULT: ' + ('all checks pass' if ok else 'CHECKS FAILED; see summary and manual hbond guidance'))

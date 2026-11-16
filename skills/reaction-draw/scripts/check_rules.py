@@ -4,8 +4,8 @@
 
   python check_rules.py OUTDIR [--json OUT.json] [--positive-control] [--quiet]
 
-OUTDIR is what draw_figure.py writes: resolved.json (the figure asked for), report.json (what the backend drew, measured
-with the tool's own glyph geometry, in points), reload.json (the saved file read back) and figure.svg.  No browser is
+OUTDIR is what draw_figure.py writes: .state.json (resolved layout, backend measurements, saved data and checks)
+and figure.svg. No browser is
 needed.  Exit status 0 when every check passes, 1 when a check fails (or, with --positive-control, a planted error is
 missed), 2 on bad input.
 
@@ -13,8 +13,8 @@ Each check is a detector (DETECTORS below, described in the repository's docs/ch
 figure's features make relevant run.  --positive-control plants one error per detector into a copy and requires a
 finding.
 
-The report and reload formats are documented in the repository's docs/backend.md (the backend writes them).  Coordinates of report.json
-are points in the frame of the SVG's user units; resolved.json is in bond lengths (y down).
+The report and reload formats are documented in the repository's docs/backend.md (the backend writes them). Coordinates
+of report are points in the frame of the SVG's user units; resolved is in bond lengths (y down).
 """
 import argparse
 import collections
@@ -149,7 +149,7 @@ def applicable_detectors(f):
 
 
 def audit_lines(features):
-    """Only summary.txt receives the applicable human audit; keep the file's wording."""
+    """Return the applicable human audit, keeping the checklist's wording."""
     rows = ['AUDIT (check by eye):']
     for line in (Path(__file__).resolve().parent.parent / 'references' / 'audit-checklist.md').read_text(encoding='utf-8').splitlines():
         if not line.startswith('- [ ] '):
@@ -295,7 +295,7 @@ class Figure(object):
 
     def __init__(self, resolved, report, reload, svg_text, name='figure'):
         if resolved.get('format') != 'resolved/1':
-            raise InputError('resolved.json must have "format": "resolved/1"')
+            raise InputError('the resolved figure must have "format": "resolved/1"')
         self.name = name
         self.resolved = resolved
         self.style = resolved['style']
@@ -2620,7 +2620,7 @@ def _arrow_in_own_species(f, finding):
 
 def repair_hints(f, name, findings):
     """Translate detector findings back to spec locations, with one concrete edit per finding ({move}: _spec_edit)."""
-    no_fix = ('the input cannot fix this (a drawing or saving defect): hand over DIR/last_pass/ when it exists; otherwise '
+    no_fix = ('the input cannot fix this (a drawing or saving defect): '
               'abbreviate a non-reacting group or split the step into two panels')
     actions = {
         'partial_dashes': 'restore the partial bond style; keep at least three round dots and separate adjacent labels',
@@ -3660,23 +3660,29 @@ def synthetic_figure():
 
 
 # ------------------------------------------------------------------------------------------ command line
-def load_figure(outdir):
-    d = Path(outdir)
-
-    def rd(name, required=True):
-        try:
-            return (d / name).read_text(encoding='utf-8')
-        except OSError as e:
-            if required:
-                raise InputError('cannot read %s: %s' % (d / name, e))
-            return None
+def load_state(outdir):
+    path = Path(outdir) / '.state.json'
     try:
-        res = json.loads(rd('resolved.json'))
-        rep = json.loads(rd('report.json'))
-        rl = json.loads(rd('reload.json', required=False) or '{}')
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except OSError as e:
+        raise InputError('cannot read %s: %s' % (path, e))
     except ValueError as e:
         raise InputError('bad JSON: %s' % e)
-    return Figure(res, rep, rl, rd('figure.svg', required=False), name=str(d))
+    return state
+
+
+def load_figure(outdir):
+    d = Path(outdir)
+    try:
+        svg = (d / 'figure.svg').read_text(encoding='utf-8')
+    except OSError:
+        svg = None
+    try:
+        state = load_state(d)
+        res, rep, rl = state['resolved'], state['report'], state.get('reload', {})
+    except KeyError as e:
+        raise InputError('%s/.state.json is missing %s' % (d, e))
+    return Figure(res, rep, rl, svg, name=str(d))
 
 
 def summary_lines(result, pc=None):
