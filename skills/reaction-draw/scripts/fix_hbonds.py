@@ -200,7 +200,9 @@ def _write_spec(raw, lay):
 def repair(spec_path, out, png_width=None, browser_cmd=None, log=print):
     started = time.monotonic()
     spec_path, out = Path(spec_path), Path(out)
-    raw = json.loads(spec_path.read_text(encoding='utf-8'))
+    # the layout below shows each hydrogen-bond donor's H as its own mapped atom ([NH:4] -> [N:4]([H:n])); candidates
+    # written from that layout must carry the same SMILES, or their new H maps are unknown to the input
+    raw = specutil.hbond_hydrogens(json.loads(spec_path.read_text(encoding='utf-8')))
     if out.exists() and any(out.iterdir()):
         raise ValueError('--out must be a new or empty directory')
     out.mkdir(parents=True, exist_ok=True)
