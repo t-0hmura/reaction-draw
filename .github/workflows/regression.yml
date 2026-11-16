@@ -8,11 +8,11 @@ on:
 
 jobs:
   draw:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install Liberation Sans, RDKit and Playwright with Chromium
@@ -27,7 +27,7 @@ jobs:
         run: python tests/run_regression.py -j 4 --out regression-out
       - name: Keep the drawings and logs of a failed run
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: regression-out
           path: regression-out
