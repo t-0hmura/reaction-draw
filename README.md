@@ -51,7 +51,7 @@ The agent (Claude Sonnet 5.5) redrew the figure from this image and the prompt a
 
 ## Benchmarked models
 
-We evaluated two Claude models and two GPT models on 11 reaction mechanisms at high effort, running all problems in parallel. Sonnet 5.5 high (~12 min/figure) and Sol 6.1 high (~8 min/figure) drew nearly all mechanisms correctly. Haiku 5.5 high (~7 min/figure) produced a usable figure for every problem, though often with minor chemistry gaps, while Luna 6 high (~12 min/figure) missed some enzyme mechanisms. See [docs/benchmark](docs/benchmark/README.md) for details.
+Four models (two Claude and two GPT) were benchmarked on 11 reaction mechanisms at high effort. Sonnet 5.5 high (~12 min/figure) and Sol 6.1 high (~8 min/figure) drew nearly all mechanisms correctly. Haiku 5.5 high (~7 min/figure) produced a usable figure for every problem, though often with minor chemistry gaps, while Luna 6 high (~12 min/figure) missed some enzyme mechanisms. See [docs/benchmark](docs/benchmark/README.md) for details.
 ## Limitations
 
 The figure may be wrong for complex mechanisms or when the paper leaves some atom movements implicit. In that case, describe the mechanism in more detail, or give specific instructions to correct the figure.
