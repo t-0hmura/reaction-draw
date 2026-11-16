@@ -3,10 +3,10 @@
 """Draw a figure from an input file in one command: layout, Octet Draw, save and reload, SVG and PNG, every check.
 
   python draw_figure.py INPUT.json --out DIR [--dpi 600 | --png-width N] [--browser-cmd "ssh HOST PYTHON"]
-                        [--no-positive-control] [--quiet] [--octet PATH --node-modules PATH]
+                        [--positive-control] [--quiet] [--octet PATH --node-modules PATH]
   python draw_figure.py --check-env [--browser-cmd "ssh HOST PYTHON"]
 
-Exit status: 0 when every check passes (and the positive control finds every planted error), 1 when a check fails,
+Exit status: 0 when every check passes (and, with --positive-control, the positive control finds every planted error), 1 when a check fails,
 2 when the input file is wrong or a stage cannot run. Stages, outputs and options: the repository's docs/backend.md.
 """
 import argparse
@@ -61,7 +61,7 @@ def _save_pass(out, spec_bytes=None):
         (saved / 'input.json').write_bytes(spec_bytes)
 
 
-def run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, positive_control=True,
+def run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, positive_control=False,
         draw=None, log=print, dpi=None):
     """Retain the last checked figure through failed checks and early-stage failures."""
     out = Path(out_dir)
@@ -498,7 +498,7 @@ def retry_layout(spec, out, fig, result, draw, draw_args):
     return fig, result, notes
 
 
-def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, positive_control=True,
+def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, positive_control=False,
         draw=None, log=print, dpi=None):
     """The whole pipeline; returns (exit status, summary dict).  draw: the backend function (default octet_draw.draw)."""
     out = Path(out_dir)
@@ -650,7 +650,7 @@ def main(argv=None):
                                     'default: the prebuilt page in octet/dist)')
     ap.add_argument('--node-modules', help='node_modules holding esbuild, with --octet')
     ap.add_argument('--browser-cmd', help='command that runs the browser part elsewhere, e.g. "ssh HOST /path/to/python"')
-    ap.add_argument('--no-positive-control', action='store_true', help='skip the checker\'s positive control')
+    ap.add_argument('--positive-control', action='store_true', help='also run the checker\'s positive control (the regression test does)')
     ap.add_argument('--quiet', action='store_true', help='print the result, stereo notes and last passing figure location')
     args = ap.parse_args(argv)
 
@@ -672,7 +672,7 @@ def main(argv=None):
                 and (not args.quiet or not line.lstrip().startswith(('FIX ', 'POSITIVE CONTROL')))):
             print(line, flush=True)
     status, _ = run(args.spec, args.out, args.png_width, args.octet, args.node_modules, args.browser_cmd,
-                    positive_control=not args.no_positive_control, log=log, dpi=args.dpi)
+                    positive_control=args.positive_control, log=log, dpi=args.dpi)
     return status
 
 

@@ -186,7 +186,7 @@ def warning_finding(name, message):
     if name == 'electron_flow':
         return any(s in message for s in ('homolysis needs', 'a new bond needs', 'more than two electrons leave'))
     if name == 'radical_marks':
-        return any(s in message for s in ('before or inside', 'radical-ion charge must follow', 'not from radicals'))
+        return any(s in message for s in ('before or inside', 'radical-ion charge must follow'))
     return False
 
 
@@ -2077,8 +2077,7 @@ def det_radical_marks(f):
         if sum(m.get('multiplier', 1) for m in marks) != n:
             out.append('%s: %d unpaired electrons requested, %d measured marks' % (ref, n, len(marks)))
         if n and a.get('radical_inferred'):
-            out.append('%s: %d unpaired electron(s) come from the bracket H count, charge and bonds, not from radicals; '
-                       'add the missing H to the SMILES, or list an intended radical in the species\' radicals' % (ref, n))
+            out.append('%s: %d unpaired electron(s) come from the bracket H count, charge and bonds, not from radicals' % (ref, n))
         for when, saved in (('native', f.reload), ('CDXML', f.reload.get('cdxml'))):
             if saved and int(saved['atoms'].get(ref, {}).get('radical') or 0) != n:
                 out.append('%s: %s lost the unpaired-electron count' % (ref, when))
@@ -2686,7 +2685,9 @@ def repair_hints(f, name, findings):
         if not places:
             places = ['panels %s (figure-wide %s)' % (', '.join(p['id'] for p in f.resolved['panels']), name)]
         action = ('run `python scripts/fix_hbonds.py INPUT --out NEW_DIR` once; if the line still overlaps, follow the hydrogen-bond '
-                  'note under "Hand placement" in scripts/README.md' if 'hbond ' in finding else actions.get(name, no_fix))
+                  'note under "Hand placement" in scripts/README.md' if 'hbond ' in finding else
+                  'first add the missing H to the bracket atom in the SMILES; only when the source draws an unpaired electron on '
+                  'this atom, list it in the species\' radicals' if 'not from radicals' in finding else actions.get(name, no_fix))
         action = action.replace('{move}', _spec_edit(f, refs or named))
         hints.append('%s: %s; %s. Action: %s.' % (name, '; '.join(dict.fromkeys(places)), finding, action))
     return hints
@@ -2930,7 +2931,11 @@ def plant(f, name):
         return g, 'all hydrogen-bond dots removed'
     if name in ('radical_marks', 'electron_flow', 'isotopes', 'hydrogen_display', 'coordination', 'metal_geometry', 'residue_codes', 'reaction_kinds'):
         ref = next(iter(g.atoms))
-        if name == 'radical_marks':
+        declared = [r for r, a in g.atoms.items() if a.get('radical') and not a.get('radical_inferred')]
+        if name == 'radical_marks' and declared:
+            # a figure with a declared radical: the same radical left to the bracket H count instead
+            g.atoms[declared[0]]['radical_inferred'] = True
+        elif name == 'radical_marks':
             g.atoms[ref]['radical'] = 1
             rep['radicals'] = [m for m in rep['radicals'] if m.get('ref') != ref]
         elif name == 'electron_flow':

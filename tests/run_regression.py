@@ -28,7 +28,7 @@ def run(spec, out):
     log = out / (name + '.log')
     start = time.time()
     with open(log, 'w') as fh:
-        rc = subprocess.call([sys.executable, str(DRAW), str(spec), '--out', str(out / name)], stdout=fh, stderr=subprocess.STDOUT)
+        rc = subprocess.call([sys.executable, str(DRAW), str(spec), '--out', str(out / name), '--positive-control'], stdout=fh, stderr=subprocess.STDOUT)
     text = log.read_text(errors='replace')
     result = next((l for l in text.splitlines() if l.startswith('RESULT:')), 'RESULT: (none)')
     control = CONTROL.search(text)

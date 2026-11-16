@@ -127,7 +127,7 @@ If a hydrogen-bond line crosses a label or bond, run `python fix_hbonds.py INPUT
 python draw_figure.py INPUT.json --out DIR
 ```
 
-- Exit `0`: All checks and the positive control pass.
+- Exit `0`: All checks pass (and, with `--positive-control`, the positive control).
 - Exit `1`: One or more checks fail.
 - Exit `2`: Invalid input file or a pipeline stage cannot run. Every input problem prints `input error: …`, followed by `NEXT: fix each input error in the input file and rerun the same command; do not stop.`
 

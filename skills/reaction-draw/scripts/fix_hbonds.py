@@ -254,7 +254,7 @@ def repair(spec_path, out, png_width=None, browser_cmd=None, log=print):
                 candidate_fig = rules.load_figure(scratch / 'draw')
                 checked = rules.run_checks(candidate_fig)
                 pc = json.loads((scratch / 'draw' / 'checks.json').read_text(encoding='utf-8'))['positive_control']
-                better = pc['ok'] and improves(result, checked)
+                better = (pc is None or pc['ok']) and improves(result, checked)
                 log('HBONDS: candidate %d %s; findings %d -> %d; failed checks %d -> %d; remaining: %s' % (
                     attempts, 'accepted' if better else 'rejected', len(findings(result)), len(findings(checked)),
                     len(result['failed']), len(checked['failed']), ', '.join(checked['failed']) or 'none'))
@@ -296,7 +296,7 @@ def repair(spec_path, out, png_width=None, browser_cmd=None, log=print):
     with (out / 'summary.txt').open('a', encoding='utf-8') as handle:
         handle.write(message + '\n')
     log(message)
-    ok = result['ok'] and current_pc['ok']
+    ok = result['ok'] and (current_pc is None or current_pc['ok'])
     log('RESULT: ' + ('all checks pass' if ok else 'CHECKS FAILED; see summary and manual hbond guidance'))
     return 0 if ok else 1
 
