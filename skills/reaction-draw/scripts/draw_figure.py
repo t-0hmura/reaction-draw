@@ -41,7 +41,7 @@ else:
     import fcntl
 
 SMALL_DPI = 150
-MAX_PAIR_DRAWS = 60        # drawings of the axial-pair moves per run; every accepted move recorded so far needed fewer
+MAX_PAIR_DRAWS = 30        # drawings of the axial-pair moves per run; the regression inputs that need them use at most 28
 PAIR_WORKERS = min(4, os.cpu_count() or 1)   # axial-pair candidates drawn side by side
 ACS_COLUMNS_PT = ((234, 'single column (3.25 in)'), (504, 'double column (7 in)'))
 START = time.time()
@@ -52,11 +52,11 @@ SPEC_NEXT = 'NEXT: fix each input error in the input file and rerun the same com
 OUTPUTS = ('figure.cdxml', 'figure.svg', 'figure.png', 'figure_small.png', '.state.json')
 
 
-def _progress(message):
+def _progress(message, always=False):
     """Print the first drawing and then at most one stage update per minute."""
     global LAST_PROGRESS
     now = time.time()
-    if LAST_PROGRESS is None or now - LAST_PROGRESS >= 60:
+    if always or LAST_PROGRESS is None or now - LAST_PROGRESS >= 60:
         print('progress (%3.0f s): %s' % (now - START, message), file=sys.stderr, flush=True)
         LAST_PROGRESS = now
 
@@ -588,6 +588,7 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
         fig = check_rules.load_figure(out)
         result = check_rules.run_checks(fig)
         if native_backend and result['failed']:
+            _progress('first drawing failed: %s; trying automatic fixes' % ', '.join(result['failed']), always=True)
             retry_started = time.time()
             retry_args = {'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir,
                           'node_modules': node_modules, 'browser_cmd': browser_cmd}
