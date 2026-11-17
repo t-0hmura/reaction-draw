@@ -19,6 +19,14 @@ import tempfile
 import time
 from pathlib import Path
 
+import chemdraw_compat                    # same directory: figure.cdxml for ChemDraw
+
+
+def canonical(cdxml):
+    """The XML of a CDXML text without its prolog, in canonical form."""
+    import xml.etree.ElementTree as ET
+    return ET.canonicalize(cdxml[cdxml.find('<CDXML'):], strip_text=True)
+
 
 def launch(pw, browser='auto', timeout=30000):
     """System Chrome, else Playwright's Chromium, else the executable at `browser`."""
@@ -124,8 +132,17 @@ def run_job(job_path):
                 t = time.perf_counter()
                 res = page.evaluate('async j => await drawFigure(j)', job['page'])
                 T['draw'] = time.perf_counter() - t
-                # the ChemDraw file: Octet's own CDXML writer (toCdxml), without Octet's JSON layer
-                (out / 'figure.cdxml').write_text(res['cdxml'], encoding='utf-8')
+                # the ChemDraw file: Octet's own CDXML writer (toCdxml), without Octet's JSON layer, adapted to how ChemDraw
+                # reads it (chemdraw_compat.py); the read-back below sees Octet's own document again
+                shown, compat_error = res['cdxml'], None
+                try:
+                    shown = chemdraw_compat.adapt(res['cdxml'], res['svg'], res['report'], (res.get('meta') or {}).get('refs', []),
+                                                  job['page'].get('chemdraw'))
+                    if canonical(chemdraw_compat.restore(shown)) != canonical(res['cdxml']):
+                        raise ValueError('the adapted file does not restore to the written one')
+                except Exception as e:                        # keep Octet's own file
+                    shown, compat_error = res['cdxml'], '%s: %s' % (type(e).__name__, e)
+                (out / 'figure.cdxml').write_text(shown, encoding='utf-8')
                 (out / 'figure.svg').write_text(res['svg'], encoding='utf-8')
                 # the .cdxml file, read in a fresh page with Octet's CDXML reader alone, is what reload.json gives as "cdxml_only"
                 t = time.perf_counter()
@@ -136,7 +153,7 @@ def run_job(job_path):
                 fresh.wait_for_function('() => typeof window.readCdxml === "function"', timeout=60000)
                 meta = res.get('meta') or {}
                 cdxml_file = fresh.evaluate('async q => await readCdxml(q.text, q.refs, q.numbers, q.ids, q.roles)',
-                                            {'text': (out / 'figure.cdxml').read_text(encoding='utf-8'), 'refs': meta.get('refs', []),
+                                            {'text': chemdraw_compat.restore((out / 'figure.cdxml').read_text(encoding='utf-8')), 'refs': meta.get('refs', []),
                                              'numbers': meta.get('numbers', []), 'ids': meta.get('curvedIds', []),
                                              'roles': meta.get('captionRoles', [])})
                 fresh.close()
@@ -153,6 +170,8 @@ def run_job(job_path):
                 browser.close()
     report = res['report']
     report['reload']['cdxml_file_lost'] = cdxml_file.get('lost')
+    if compat_error:
+        report['reload']['chemdraw_compat_error'] = compat_error
     res['reload']['cdxml_only'] = cdxml_file
     report['page_errors'] = errors + fresh_errors
     report['browser'] = version

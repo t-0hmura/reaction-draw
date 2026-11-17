@@ -32,6 +32,7 @@ DIST_RECORD = HERE / 'dist' / 'octet-adapter.json'
 FORMAT = 'resolved/1'
 CAP_HEIGHT = 0.716          # Arial cap height, em
 BOND_PT = 14.4
+NONMETALS = {'*', 'H', 'B', 'C', 'N', 'O', 'F', 'Si', 'P', 'S', 'Cl', 'As', 'Se', 'Br', 'Te', 'I', 'At', 'He', 'Ne', 'Ar', 'Kr', 'Xe'}
 ROOT_GAP = 0.15             # bond lengths between a residue's root vertex and its name
 ARROW_KINDS = {'single': 'reaction', 'reaction': 'reaction', 'equilibrium': 'equilibrium', 'resonance': 'resonance', 'retro': 'retro',
                'both': 'reaction', 'stoich': 'line'}
@@ -562,7 +563,11 @@ def build_job(resolved, options=None):
             'options': dict(options or {}), 'tsFrames': ts_frames,
             'metalCenters': [index[g['center']] for p in resolved['panels'] for g in p.get('metal_geometry', [])],
             'fixedLabelAligns': [index[a['ref']] for p in resolved['panels'] for a in p['atoms'] if 'native_align' in a],
-            'radicalAngles': {k: a['radical_angle'] for k, a in enumerate(atoms) if a.get('radical_angle') is not None}}
+            'radicalAngles': {k: a['radical_angle'] for k, a in enumerate(atoms) if a.get('radical_angle') is not None},
+            # for figure.cdxml (chemdraw_compat.py): coordination bonds as [ligand, metal], and the transition-state atoms
+            'chemdraw': {'coord': [[index[b['a']], index[b['b']]][::1 if (atoms[index[b['b']]].get('el') or 'C') not in NONMETALS else -1]
+                                   for b in bond_rows if b.get('style') == 'coord'],
+                         'ts': [k for k, a in enumerate(atoms) if a.get('ts')]}}
     return page, notes
 
 

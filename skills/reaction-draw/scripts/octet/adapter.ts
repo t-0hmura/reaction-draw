@@ -1156,6 +1156,26 @@ function tsCdxml(mol: any): string | undefined {
   });
 }
 
+// Keep the page grid large enough for the existing object coordinates.
+function fitChemDrawPages(cdxml: string): string {
+  const doc = new DOMParser().parseFromString(cdxml, 'text/xml');
+  const page = doc.querySelector('CDXML > page');
+  const parseBox = (el: Element | null) =>
+    (el?.getAttribute('BoundingBox') ?? '').trim().split(/\s+/).map(Number);
+  const drawing = parseBox(doc.documentElement), sheet = parseBox(page);
+  if (drawing.length !== 4 || sheet.length !== 4
+      || ![...drawing, ...sheet].every(Number.isFinite)
+      || drawing[0] < 0 || drawing[1] < 0 || sheet[0] !== 0 || sheet[1] !== 0
+      || sheet[2] <= 0 || sheet[3] <= 0) return cdxml;
+  // Use the smaller of Octet's page and the printable Letter page measured in ChemDraw 26 on Windows.
+  const margin = 12, pageWidth = Math.min(sheet[2], 540), pageHeight = Math.min(sheet[3], 719.75);
+  const widthPages = Math.max(1, Math.ceil((drawing[2] + margin) / pageWidth));
+  const heightPages = Math.max(1, Math.ceil((drawing[3] + margin) / pageHeight));
+  return cdxml.replace(/<page\b[^>]*>/, (tag) => tag
+    .replace(/\bWidthPages="1"/, `WidthPages="${widthPages}"`)
+    .replace(/\bHeightPages="1"/, `HeightPages="${heightPages}"`));
+}
+
 function placeTsMarks(mol: any, ctx: Ctx, frames: any[]) {
   for (const rq of frames ?? []) {
     const sh = mol.shapes[rq.shape], cap = mol.captions[rq.caption];
@@ -1524,7 +1544,7 @@ function viewOf(m: any, refs: string[], numberReqs: NumberReq[], placedIds: stri
   const oct = writeOct(mol, mol.style, {}, tsCdxml(mol));
   const re = readOct(oct), M = re.mol;
   restoreTsHydrogens(M);
-  const cdxmlText = oct.slice(0, oct.lastIndexOf('<!--Octet 1 '));     // Octet's toCdxml output: what a .cdxml holds
+  const cdxmlText = fitChemDrawPages(oct.slice(0, oct.lastIndexOf('<!--Octet 1 ')));     // Octet's toCdxml output: what a .cdxml holds
   T.save_reload = now() - t;
   t = now();
   const {d, cls, canvas, g, bounds} = paint(M, ctx);

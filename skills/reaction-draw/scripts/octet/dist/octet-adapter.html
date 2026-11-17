@@ -10130,6 +10130,17 @@ function tsCdxml(mol) {
     return tag.replace(/\sNumHydrogens="[^"]*"/, "").replace(/(\/?>)$/, ` NumHydrogens="${hs[key]}"$1`);
   });
 }
+function fitChemDrawPages(cdxml) {
+  const doc = new DOMParser().parseFromString(cdxml, "text/xml");
+  const page = doc.querySelector("CDXML > page");
+  const parseBox = (el2) => (el2?.getAttribute("BoundingBox") ?? "").trim().split(/\s+/).map(Number);
+  const drawing = parseBox(doc.documentElement), sheet = parseBox(page);
+  if (drawing.length !== 4 || sheet.length !== 4 || ![...drawing, ...sheet].every(Number.isFinite) || drawing[0] < 0 || drawing[1] < 0 || sheet[0] !== 0 || sheet[1] !== 0 || sheet[2] <= 0 || sheet[3] <= 0) return cdxml;
+  const margin = 12, pageWidth = Math.min(sheet[2], 540), pageHeight = Math.min(sheet[3], 719.75);
+  const widthPages = Math.max(1, Math.ceil((drawing[2] + margin) / pageWidth));
+  const heightPages = Math.max(1, Math.ceil((drawing[3] + margin) / pageHeight));
+  return cdxml.replace(/<page\b[^>]*>/, (tag) => tag.replace(/\bWidthPages="1"/, `WidthPages="${widthPages}"`).replace(/\bHeightPages="1"/, `HeightPages="${heightPages}"`));
+}
 function placeTsMarks(mol, ctx, frames) {
   for (const rq of frames ?? []) {
     const sh = mol.shapes[rq.shape], cap = mol.captions[rq.caption];
@@ -10519,7 +10530,7 @@ window.drawFigure = async (job) => {
   const oct = writeOct(mol, mol.style, {}, tsCdxml(mol));
   const re = readOct(oct), M = re.mol;
   restoreTsHydrogens(M);
-  const cdxmlText = oct.slice(0, oct.lastIndexOf("<!--Octet 1 "));
+  const cdxmlText = fitChemDrawPages(oct.slice(0, oct.lastIndexOf("<!--Octet 1 ")));
   T.save_reload = now() - t;
   t = now();
   const { d, cls, canvas, g, bounds } = paint(M, ctx);
