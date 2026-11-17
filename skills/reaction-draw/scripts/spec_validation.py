@@ -182,6 +182,8 @@ def inspect_spec(data):
                         attempt(lambda: su._abbrev(value, sw), sw + '.abbrev[' + str(mk) + ']')
                     else:
                         attempt(lambda: su._residue_text(value, sw), sw + '.residue[' + str(mk) + ']')
+                if field == 'label':
+                    attempt(lambda: su._label_text(str(value), sw), sw + '.label[' + str(mk) + ']')
                 if field == 'xy':
                     xy(value, sw + '.xy[' + str(mk) + ']')
         for mp, atom in maps.items():

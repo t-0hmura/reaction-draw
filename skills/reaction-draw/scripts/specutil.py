@@ -224,11 +224,20 @@ KNOWN_ABBREV_ELEMENT = {'OPP': 'O', 'OP': 'O', 'OPPP': 'O', 'OAc': 'O', 'OMe': '
                         'CoA': 'C', 'P': 'P', 'NHAc': 'N', 'NHBoc': 'N', 'Ph': 'C', 'Me': 'C', 'Et': 'C', 'Ac': 'C', 'Bn': 'C', 'Ts': 'S'}
 
 
+def _label_text(text, where):
+    """An atom's label or abbreviation is drawn as written, digits after letters as subscripts: no _{...} or ^{...}."""
+    if re.search(r'[_^]\{', text):
+        raise SpecError('%r: labels and abbreviations take no _{...} or ^{...} markup (digits after letters become '
+                        'subscripts by themselves; a charge goes in "charge"); write substituents as R, R′, R″' % text)
+    return text
+
+
 def _abbrev(value, where):
     if isinstance(value, str):
         value = {'text': value}
     if not isinstance(value, dict) or not isinstance(value.get('text'), str):
         raise SpecError('%s must be a string or {"text": ...}' % where)
+    _label_text(value['text'], where)
     element = value.get('element') or KNOWN_ABBREV_ELEMENT.get(plain_text(value['text']))
     return {'text': value['text'], 'element': element, 'charge': int(value.get('charge', 0)),
             'chemical': bool(value.get('chemical', False))}
@@ -688,7 +697,7 @@ def load_spec_v2(data, path=None):
                 near = {'species': nk, 'atom': nm, 'dir': near.get('dir'), 'dist': near.get('dist')}
             sp = {'id': sid, 'key': key, 'panel': pid, 'panel_index': pi, 'smiles': smiles, 'smiles_written': s['smiles'],
                   'graph': graph, 'map_to_index': maps, 'abbrev': abbrev, 'residue': residue, 'cut': cut, 'show': show,
-                  'label': keyed('label', lambda v, w: str(v)), 'xy': keyed('xy', _xy), 'near': near, 'flip': flip,
+                  'label': keyed('label', lambda v, w: _label_text(str(v), w)), 'xy': keyed('xy', _xy), 'near': near, 'flip': flip,
                   'rotate': float(rot), 'offset': _xy(s['offset'], '%s offset' % sw) if s.get('offset') is not None else None,
                   'bond_style': bond_style, 'ts': s.get('ts', False)}
             iupac_features.prepare_species(sp, s)
