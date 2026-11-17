@@ -44,8 +44,6 @@ else:
 SMALL_DPI = 150
 MAX_PAIR_DRAWS = 30        # drawings of the axial-pair moves per run; the regression inputs that need them use at most 28
 PAIR_WORKERS = min(4, int(os.environ.get('REACTION_DRAW_WORKERS') or os.cpu_count() or 1))   # candidates drawn side by side
-MAX_INPUT_EDITS = 5        # input edits adopted per run after the automatic retries still fail
-MAX_INPUT_BATCHES = 3      # side-by-side drawings of edited inputs per run, each input drawn once without retries
 ACS_COLUMNS_PT = ((234, 'single column (3.25 in)'), (504, 'double column (7 in)'))
 START = time.time()
 LAST_PROGRESS = None
@@ -228,10 +226,9 @@ def _candidate(resolved, out, fig, draw, draw_args, options, accept, stats, stag
     return _candidates([(resolved, options)], out, fig, draw, draw_args, accept, stats, stage, keep_resolved)[0]
 
 
-def _candidates(jobs, out, fig, draw, draw_args, accept, stats, stage, keep_resolved=False, rank=None):
-    """Draw the (resolved, options) jobs side by side and check each; copy the files of the first accepted job (with rank,
-    the accepted job of the lowest rank) into out. Returns one (figure, checks, accepted, error) per job, accepted True
-    for that job only."""
+def _candidates(jobs, out, fig, draw, draw_args, accept, stats, stage, keep_resolved=False):
+    """Draw the (resolved, options) jobs side by side and check each; copy the files of the first accepted job into out.
+    Returns one (figure, checks, accepted, error) per job, accepted True for that first job only."""
     def draw_and_check(job, dest):
         _progress(stage)
         try:
@@ -248,12 +245,9 @@ def _candidates(jobs, out, fig, draw, draw_args, accept, stats, stage, keep_reso
             dest.mkdir()
         with concurrent.futures.ThreadPoolExecutor(len(jobs)) as pool:
             checked_jobs = list(pool.map(draw_and_check, jobs, dests))
-        if rank:
-            eligible = [checked for _, checked, error in checked_jobs if error is None and accept(checked)]
-            best = min(eligible, key=rank) if eligible else None
         results, adopted = [], False
         for dest, (candidate, checked, error) in zip(dests, checked_jobs):
-            ok = error is None and not adopted and (checked is best if rank else accept(checked))
+            ok = error is None and not adopted and accept(checked)
             if ok:
                 if keep_resolved:
                     _write_state(dest, resolved=check_rules.load_state(out)['resolved'])
@@ -555,182 +549,6 @@ def retry_layout(spec, out, fig, result, draw, draw_args, stats):
     return fig, result, notes
 
 
-def _input_edits(data, fig, result):
-    """The placement edits that the FIX lines name (offset, rotate, bend, or a manual xy removed), each with nearby values
-    to try: {(panel index, 'species' or 'arrows', item index, key): [values]}. SMILES, arrow ends, charges and H stay."""
-    def num(v):
-        return int(v) if float(v).is_integer() else round(v, 4)
-    hints = []
-    for name in result['failed']:
-        check_rules.repair_hints(fig, name, result['checks'][name]['findings'], hints)
-    targets, dropped = {}, {}
-    for hint in hints:
-        pi = next((i for i, p in enumerate(data['panels']) if p.get('id') == hint['panel']), None)
-        if pi is None:
-            continue
-        panel, key = data['panels'][pi], hint['key']
-        if 'arrow' in hint:     # a panel's curved arrows keep the input order; their ids can be generated or prefixed
-            collection, curved = 'arrows', next(p['curved'] for p in fig.resolved['panels'] if p['id'] == hint['panel'])
-            index = next((i for i, a in enumerate(curved) if a['id'] == hint['arrow']), None)
-        else:
-            collection = 'species'
-            index = next((i for i, s in enumerate(panel.get('species') or []) if s.get('id') == hint['species']), None)
-        if index is None or index >= len(panel.get(collection) or []):
-            continue
-        target, current = (pi, collection, index, key), panel[collection][index].get(key)
-        if key == 'offset':
-            (x, y), (dx, dy) = current or (0, 0), hint['delta']
-            values = [[num(x + a * dx - b * dy), num(y + a * dy + b * dx)]
-                      for a, b in ((1, 0), (.5, 0), (1.5, 0), (1, .5), (1, -.5), (-1, 0))]
-        elif key == 'rotate':
-            values = [hint['value'], -hint['value'], 15, -15, 60, -60]
-        elif key == 'bend':
-            sign, size = (-1 if current < 0 else 1, min(1.6, round(abs(current) + .4, 4))) if current else (1, 1)
-            values = ([None, -current] if current else [.6, -.6]) + [sign * size, -sign * size, sign * 1.6, -sign * 1.6]
-        elif isinstance(current, dict) and hint['atom'] in current:     # xy: let the automatic layout place these atoms
-            dropped.setdefault(target, []).append(hint['atom'])
-            names = dropped[target]
-            values = [{k: v for k, v in current.items() if k not in names}] + [
-                {k: v for k, v in current.items() if k != name} for name in names]
-            targets.pop(target, None)
-        else:
-            continue
-        for value in values:
-            if value != current and value not in targets.setdefault(target, []):
-                targets[target].append(value)
-    return targets
-
-
-def _patch_input(text, edits):
-    """The input text with only the edited values replaced and new keys added after the last key of their object, keeping
-    every other byte and the file's own spacing; edits: {(panel index, collection, item index, key): value}."""
-    decoder, spans = json.JSONDecoder(), {}
-    def visit(pos, path):
-        pos = re.compile(r'\s*').match(text, pos).end()
-        value, end = decoder.raw_decode(text, pos)
-        spans[path] = (pos, end)
-        if isinstance(value, (dict, list)):
-            cursor = pos + 1
-            for key in (value if isinstance(value, dict) else range(len(value))):
-                cursor = re.compile(r'[\s,]*').match(text, cursor).end()
-                if isinstance(value, dict):
-                    _, cursor = decoder.raw_decode(text, cursor)
-                    cursor = re.compile(r'\s*:\s*').match(text, cursor).end()
-                cursor = visit(cursor, path + (key,))
-        return end
-    visit(0, ())
-    changes, additions = [], {}
-    for (pi, collection, index, key), value in edits.items():
-        path = ('panels', pi, collection, index)
-        start, end = spans[path + (key,)] if path + (key,) in spans else spans[path]
-        comma = re.search(r',(?![\r\n])[ \t]*', text[start:end])
-        encoded = json.dumps(value, ensure_ascii=False, separators=(comma.group() if comma else ', ', ': '))
-        if path + (key,) not in spans:
-            additions.setdefault(path, []).append((key, encoded))
-            continue
-        old = json.loads(text[start:end])
-        if isinstance(old, list) and isinstance(value, list) and len(old) == len(value):
-            changes += [spans[path + (key, i)] + (json.dumps(b),) for i, (a, b) in enumerate(zip(old, value)) if a != b]
-        else:
-            changes.append((start, end, encoded))
-    for path, members in additions.items():
-        start, end = spans[path]
-        sample = text[start:end]
-        newline = re.search(r'(\r?\n)([ \t]*)"', sample)
-        inline = re.search(r',([ \t]*)(?=")', sample)
-        separator = newline.group(1) + newline.group(2) if newline else inline.group(1) if inline else ' '
-        colon = re.search(r'"\s*:(\s*)', sample)
-        last = max((b for p, (_, b) in spans.items() if p[:-1] == path), default=None)
-        pairs = [json.dumps(k) + ':' + (colon.group(1) if colon else ' ') + v for k, v in members]
-        changes.append((last or start + 1, last or start + 1,
-                        (',' if last else '') + separator + (',' + separator).join(pairs)))
-    for start, end, replacement in sorted(changes, reverse=True):
-        text = text[:start] + replacement + text[end:]
-    return text
-
-
-def retry_input(spec_path, data, out, fig, result, draw, draw_args, stats, notes):
-    """After the automatic retries still fail: draw the edits that the FIX lines name and nearby values, each edited
-    input once as its first drawing (no retries, so a rerun of the saved input draws the same figure first), side by
-    side; adopt the one with the fewest findings, write it into the input file and repeat from its FIX lines. Returns
-    (figure, checks, the 'input updated' line or None)."""
-    import copy
-    from spec_validation import inspect_spec
-    path = Path(spec_path)
-    original = path.read_bytes().decode('utf-8')
-    first, adopted, labels = copy.deepcopy(data), {}, {}
-    def rank(checked):
-        return sum(_counts(checked).values()), len(checked['failed'])
-    stats.update(start={'findings': rank(result)[0], 'failed': list(result['failed'])}, batches=[])
-    started = time.time()
-    try:
-        while (stats['accepted'] < MAX_INPUT_EDITS and not result['ok'] and len(stats['batches']) < MAX_INPUT_BATCHES
-               and os.access(path, os.W_OK)):
-            targets = _input_edits(data, fig, result)
-            trials = [[(t, values[0]) for t, values in targets.items()]] if len(targets) > 1 else []
-            for i in range(max(map(len, targets.values()), default=0)):
-                trials += [[(t, values[i])] for t, values in targets.items() if i < len(values)]
-            accept = _no_gain(result)    # as for the molecule moves: no check gains a finding and the total falls
-            chosen = None
-            while trials and chosen is None and len(stats['batches']) < MAX_INPUT_BATCHES:
-                jobs = []
-                while trials and len(jobs) < PAIR_WORKERS:
-                    edits = trials.pop(0)
-                    raw = copy.deepcopy(data)
-                    for (pi, collection, index, key), value in edits:
-                        raw['panels'][pi][collection][index][key] = value
-                        if value is None and key not in first['panels'][pi][collection][index]:
-                            del raw['panels'][pi][collection][index][key]      # back to no key, as in the file
-                    try:        # what a run of the saved input would resolve and draw first
-                        text = _patch_input(original, {t: value for t, value in {**adopted, **dict(edits)}.items()
-                                                       if value is not None or t[3] in first['panels'][t[0]][t[1]][t[2]]})
-                        if json.loads(text) != raw or inspect_spec(copy.deepcopy(raw))[0]:
-                            continue
-                        spec = specutil.load_spec_v2(copy.deepcopy(raw), path)
-                        spec['drawing'] = specutil.drawing_options(raw.get('drawing'))
-                        resolved = specutil.resolve(spec)
-                        if not check_rules.run_checks(check_rules.Figure(resolved, {}, {}, None), input_only=True)['ok']:
-                            continue
-                    except Exception:
-                        continue
-                    jobs.append(((resolved, {}), (raw, edits, text)))
-                if not jobs:
-                    break
-                checked_jobs = _candidates([job for job, _ in jobs], out, fig, draw, draw_args, accept, stats, 'retry_input',
-                                           rank=rank)
-                stats['batches'].append([stats['draws'], round(time.time() - started, 1), min(
-                    (rank(checked)[0] for _, checked, _, error in checked_jobs if error is None), default=None)])
-                for (_, trial), (candidate, checked, ok, error) in zip(jobs, checked_jobs):
-                    if ok:
-                        chosen = trial + (candidate, checked)
-            if chosen is None:
-                break
-            data, edits, text, candidate, checked = chosen
-            path.write_bytes(text.encode('utf-8'))     # the input and DIR change together
-            for (pi, collection, index, key), value in edits:
-                pid = data['panels'][pi]['id']
-                adopted[(pi, collection, index, key)] = value
-                item = (next(p['curved'] for p in fig.resolved['panels'] if p['id'] == pid)[index]['id']
-                        if collection == 'arrows' else data['panels'][pi][collection][index]['id'])
-                labels[(pi, collection, index, key)] = '%s: %s on %s %s in panel %s' % (
-                    json.dumps(key), json.dumps(value, ensure_ascii=False), 'arrow' if collection == 'arrows' else 'species',
-                    item, pid)
-            notes.append('automatic input edit %d: %s; findings %d -> %d' % (
-                stats['accepted'] + 1, '; '.join(labels[t] for t, _ in edits), rank(result)[0], rank(checked)[0]))
-            fig, result = candidate, checked
-            stats['accepted'] += 1
-            stats.setdefault('edits', []).append({'draws': stats['draws'], 'findings': rank(result)[0],
-                                                  'failed': list(result['failed'])})
-    except Exception as exc:        # a fault keeps the last adopted figure, which matches the input file
-        notes.append('automatic input edit stopped: %s: %s' % (type(exc).__name__, exc))
-    changed = [labels[t] for t, value in adopted.items()
-               if value != first['panels'][t[0]][t[1]][t[2]].get(t[3])]
-    if not changed:
-        return fig, result, None
-    return fig, result, 'input updated: ' + '; '.join(changed[:3]) + (
-        '; and %d more edits' % (len(changed) - 3) if len(changed) > 3 else '')
-
-
 def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, positive_control=False,
         draw=None, log=print, dpi=None):
     """The whole pipeline; returns (exit status, summary dict).  draw: the backend function (default octet_draw.draw)."""
@@ -817,19 +635,11 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 notes.append('automatic retry stopped: %s: %s' % (type(exc).__name__, exc))
             resolved = fig.resolved
             times['placement_retry'] = time.time() - retry_started
-        updated = None
-        if native_backend and not result['ok']:
-            retry_started = time.time()
-            retry_counts['retry_input'] = {'draws': 0, 'accepted': 0}
-            fig, result, updated = retry_input(spec_path, data, out, fig, result, draw, {
-                'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
-                'browser_cmd': browser_cmd}, retry_counts['retry_input'], notes)
-            times['input_retry'] = time.time() - retry_started
         pc = check_rules.positive_control(fig, checked=result['checks']) if positive_control else None
     except check_rules.InputError as e:
         _failed(out, 'checks could not run', str(e), notes, times, log, stereo_lines)
         return 2, {'error': str(e), 'times_s': times}
-    times['check'] = time.time() - t2 - times.get('placement_retry', 0) - times.get('input_retry', 0)
+    times['check'] = time.time() - t2 - times.get('placement_retry', 0)
     times['total'] = time.time() - t0
     backend_times = fig.report.get('timings_s') or {}
     ok = result['ok'] and (pc is None or pc['ok'])
@@ -854,8 +664,6 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
         lines.append(size_line(out))
     files = sorted(p.name for p in out.iterdir() if p.is_file() and not p.name.startswith('.'))
     lines.append('files: ' + ', '.join(files))
-    if updated:
-        lines.append(updated)
     lines.append('RESULT: %s' % ('all checks pass' if ok else 'CHECKS FAILED'))
     audit = check_rules.audit_lines(fig.features)
     _write_state(out, checks={'result': result, 'positive_control': pc, 'times_s': times,
@@ -973,7 +781,7 @@ def main(argv=None):
 
     def log(line):
         if (line.lstrip().startswith(('RESULT', 'FIX ', 'STEREO', 'AUDIT', '- [ ]', 'POSITIVE CONTROL', 'NEXT:', 'WARNING:',
-                                     'input updated:', 'input error', 'layout error',
+                                     'input error', 'layout error',
                                      'drawing failed', 'checks could not', 'MISSED planted'))
                 and (not args.quiet or not line.lstrip().startswith(('FIX ', 'POSITIVE CONTROL')))):
             print(line, flush=True)
