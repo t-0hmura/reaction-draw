@@ -27,7 +27,7 @@ What was changed
 ----------------
   * No Octet Draw source file was modified.
   * The adapter can draw a local curved arrow (a bond to one of its own atoms, or a lone pair into one of its own bonds)
-    as a short hook when asked.
+    as a short hook when asked, and lengthen that bond to at most 1.2 standard lengths to make room for it.
   * The adapter tries automatic bends after an unroutable manual bend, and exhausts its existing route candidates
     before reporting that no route was found.
   * The adapter uses Octet's dashed single/double bonds and square brackets for optional transition states.

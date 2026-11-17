@@ -36,6 +36,7 @@ from octet_draw import delocalized_ring, ring_side  # noqa: E402  (the backend's
 
 ANGLE_TOL = 10.0               # degrees from 120 (chains) and from the four-bond layout
 LENGTH_TOL_PT = 0.3            # a standard bond may differ this much from style.bond_length_pt
+STRETCH_MAX = 1.2              # a bond a short local curved arrow sits on may grow to this many standard lengths
 LINE_SHOW, LINE_DOT = 0.6, 0.25  # two-label bonds (bond lengths): line shown after lengthening; below LINE_DOT a line reads as a dot (adapter.ts)
 CIRCLE_TOL_PT = 0.15           # outer diameter of a charge circle against the default
 CIRCLE_RATIO = 0.34            # Octet: circle radius (center line) = 0.34 x label size
@@ -338,6 +339,7 @@ class Figure(object):
         self.unrouted = {m[1] for problem in (report or {}).get('problems', [])
                          if (m := re.fullmatch(r'arrow (\S+): no route found', problem)) and m[1] not in reported}
         self.report = self._norm_report(report or {})
+        self.routes = {r.get('id'): r for r in (report or {}).get('routes', [])}   # the router's own measures, by arrow
         self.reload = self._norm_reload(reload or {})
         self.svg_text = svg_text
         self._scene = None
@@ -356,7 +358,8 @@ class Figure(object):
                 continue
             out['bonds'].append({'key': tuple(sorted((b['a'], b['b']))), 'a': b['a'], 'b': b['b'],
                                  'length': _num(b.get('length_pt')), 'visible': _num(b.get('visible_line_pt')),
-                                 'lengthened': bool(b.get('lengthened'))})
+                                 'lengthened': bool(b.get('lengthened')),
+                                 'stretched_for': b.get('stretched_for'), 'stretch_ratio': _num(b.get('stretch_ratio'))})
         for c in rep.get('curved') or []:
             out['curved'].append({'id': c.get('id'), 'start': _pt(c.get('start_pt')), 'end': _pt(c.get('end_pt')),
                                   'start_ref': _refs(c.get('start_ref')), 'end_ref': _refs(c.get('end_ref')),
@@ -1470,9 +1473,18 @@ def _report_bonds(f):
             if not any(f.atoms[r].get('hidden_h') or f.atoms[r].get('center') for r in (b['a'], b['b']))]
 
 
+def _stretch_ok(f, b, r):
+    """A bond grown for the local curved arrow named in the report (one that starts or ends at this bond), to at most
+    STRETCH_MAX standard lengths."""
+    arrow = next((c for c in f.curved if c['id'] == r.get('stretched_for')), None)
+    ends = [e['refs'] for e in (arrow['from'], arrow['to']) if e['kind'] == 'bond'] if arrow else []
+    return (any(set(x) == {b['a'], b['b']} for x in ends) and r['length'] is not None
+            and r['length'] <= STRETCH_MAX * f.bond_pt + LENGTH_TOL_PT)
+
+
 def one_label_reference(f):
     vis = [r['visible'] for b, r in _report_bonds(f) if r and r['visible'] and _bond_kind(f, b) == 1 and float(b['order']) == 1
-           and not r['lengthened']]
+           and not r['lengthened'] and not r.get('stretched_for')]
     return statistics.median(vis) if vis else None
 
 
@@ -1486,7 +1498,8 @@ def det_label_bonds(f):
             out.append('%s: missing standard-length/visible-line measurement' % name)
             continue
         # longer than standard only as far as needed to show LINE_SHOW of line (a dot-like line, or a bond a curved arrow uses)
-        if abs(r['length'] - f.bond_pt) > LENGTH_TOL_PT and r['visible'] > LINE_SHOW * f.bond_pt + LENGTH_TOL_PT:
+        if abs(r['length'] - f.bond_pt) > LENGTH_TOL_PT and r['visible'] > LINE_SHOW * f.bond_pt + LENGTH_TOL_PT \
+                and not _stretch_ok(f, b, r):
             out.append('%s (two labels): %.2f pt long; standard is %.1f pt' % (name, r['length'], f.bond_pt))
         if r['visible'] < LINE_DOT * f.bond_pt - LENGTH_TOL_PT and tuple(sorted((b['a'], b['b']))) not in _ring_bonds(f):
             out.append('%s (two labels): its line shows only %.1f pt and reads as a dot' % (name, r['visible']))
@@ -1504,7 +1517,7 @@ def det_one_label_bonds(f):
         if r['visible'] <= float(f.style['line_width_pt']):
             out.append('%s-%s (one label): no readable visible bond line' % (b['a'], b['b']))
         name = '%s-%s' % (b['a'], b['b'])
-        if r['lengthened'] or (r['length'] is not None and abs(r['length'] - f.bond_pt) > LENGTH_TOL_PT):
+        if (r['lengthened'] or (r['length'] is not None and abs(r['length'] - f.bond_pt) > LENGTH_TOL_PT)) and not _stretch_ok(f, b, r):
             out.append('%s (label at one end): %.2f pt long%s; it keeps the standard %.1f pt' % (
                 name, r['length'] or float('nan'), ', marked lengthened' if r['lengthened'] else '', f.bond_pt))
     return out
@@ -1518,7 +1531,7 @@ def det_bond_lengths(f):
             continue
         if _bond_kind(f, b) != 0 or r['length'] is None:
             continue
-        if abs(r['length'] - f.bond_pt) > LENGTH_TOL_PT:
+        if abs(r['length'] - f.bond_pt) > LENGTH_TOL_PT and not _stretch_ok(f, b, r):
             out.append('%s-%s: %.2f pt long, the standard is %.1f pt' % (b['a'], b['b'], r['length'], f.bond_pt))
     return out
 

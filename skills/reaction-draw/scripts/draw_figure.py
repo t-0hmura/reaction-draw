@@ -13,6 +13,7 @@ Exit status (of the BEST version when several are drawn): 0 when every check pas
 import argparse
 import concurrent.futures
 import json
+import math
 import os
 import signal
 import sys
@@ -226,8 +227,9 @@ def _candidate(resolved, out, fig, draw, draw_args, options, accept, stats, stag
     return _candidates([(resolved, options)], out, fig, draw, draw_args, accept, stats, stage, keep_resolved)[0]
 
 
-def _candidates(jobs, out, fig, draw, draw_args, accept, stats, stage, keep_resolved=False):
-    """Draw the (resolved, options) jobs side by side and check each; copy the files of the first accepted job into out.
+def _candidates(jobs, out, fig, draw, draw_args, accept, stats, stage, keep_resolved=False, fit=None):
+    """Draw the (resolved, options) jobs side by side and check each; copy the files of the first accepted job (and,
+    with fit, one whose figure fit(figure) takes) into out.
     Returns one (figure, checks, accepted, error) per job, accepted True for that first job only."""
     def draw_and_check(job, dest):
         _progress(stage)
@@ -247,7 +249,7 @@ def _candidates(jobs, out, fig, draw, draw_args, accept, stats, stage, keep_reso
             checked_jobs = list(pool.map(draw_and_check, jobs, dests))
         results, adopted = [], False
         for dest, (candidate, checked, error) in zip(dests, checked_jobs):
-            ok = error is None and not adopted and accept(checked)
+            ok = error is None and not adopted and accept(checked) and (fit is None or fit(candidate))
             if ok:
                 if keep_resolved:
                     _write_state(dest, resolved=check_rules.load_state(out)['resolved'])
@@ -576,23 +578,81 @@ def _local_arrows(fig, result):
     return sorted(chosen | {i for i, atoms in local.items() if any(atoms & local[j] for j in chosen)})
 
 
+STRETCH_RATIOS = (1.05, 1.1, 1.15, 1.2)    # a local arrow's bond grows only as far as its short hook needs
+HOOK_MAX_LEN = 0.85                        # bond lengths: a longer route is a wide arc, not a short hook
+HOOK_AIM_DEG = 60                          # a hook's head turned further from its atom's center does not point at it
+
+
+def _clear_of_arrows(result, ids):
+    """No arrows_clear warning, touching arrows or loop names one of the arrows ids."""
+    ids = set(ids)
+    for w in result['checks'].get('arrows_clear', {}).get('warnings', []):
+        m = re.match(r'^arrow (\S+): -?[\d.]+ pt from arrow (\S+),', w)
+        if m and ids & set(m.groups()):
+            return False
+    for x in result['checks'].get('overlap_arrow_arrow', {}).get('findings', []):
+        m = re.match(r'^arrows (\S+) and (\S+) touch', x)
+        if m and ids & set(m.groups()):
+            return False
+    return not any('a loop, not an arc' in x and x.split(':', 1)[0] in ids
+                   for x in result['checks'].get('arrows_shape', {}).get('findings', []))
+
+
+def _hooks_fit(fig, ids):
+    """Each of the arrows ids is short (at most HOOK_MAX_LEN), and a head at a lettered atom points at that atom (turned
+    at most HOOK_AIM_DEG from the direction to its center)."""
+    for i in ids:
+        if fig.routes.get(i, {}).get('length_bonds', HOOK_MAX_LEN + 1) > HOOK_MAX_LEN:
+            return False
+        c = next((c for c in fig.curved if c['id'] == i), None)
+        r = next((r for r in fig.report['curved'] if r['id'] == i), None)
+        if not c or not r or c['to']['kind'] != 'atom' or r['end'] is None or not fig.labeled(c['to']['refs'][0]):
+            continue
+        u, o = check_rules._head_dir(fig, i, r['end']), fig.xy(c['to']['refs'][0])
+        v = (o[0] - r['end'][0], o[1] - r['end'][1])
+        n = math.hypot(*v)
+        if not u or not n or math.degrees(math.acos(max(-1.0, min(1.0, (u[0] * v[0] + u[1] * v[1]) / n)))) > HOOK_AIM_DEG:
+            return False
+    return True
+
+
 def retry_short_hooks(out, fig, result, draw, draw_args, stats):
-    """Redraw the local arrows that come close to another arrow as short hooks (adapter option compactArrows); keep the
-    drawing when no check gains a finding and the findings or the arrows_clear warnings fall. Returns (figure, checks,
-    the arrows made short or [])."""
+    """Redraw the local arrows that come close to another arrow as short hooks (adapter option compactArrows), at the
+    standard bond length and with their bonds grown to each of STRETCH_RATIOS, side by side.  Keep the first of these
+    (the shortest bonds first) whose hooks fit (_hooks_fit) and clear those arrows, else the
+    standard-length one with short hooks; either only when no check gains a finding and the findings or the
+    arrows_clear warnings fall.  Returns (figure, checks, the adapter options kept
+    or {})."""
     ids = _local_arrows(fig, result)
     if not ids:
-        return fig, result, []
+        return fig, result, {}
     before, warned = _counts(result), len(result['checks'].get('arrows_clear', {}).get('warnings', []))
     def accept(checked):
         after = _counts(checked)
         fewer = len(checked['checks'].get('arrows_clear', {}).get('warnings', []))
         return (all(after.get(n, 0) <= before.get(n, 0) for n in after) and not _closer(result, checked)
                 and (sum(after.values()) < sum(before.values()) or fewer < warned))
-    candidate, checked, ok, _ = _candidate(fig.resolved, out, fig, draw, draw_args, {'compactArrows': ids}, accept, stats,
-                                           'retry_short_hooks')
-    return (candidate, checked, ids) if ok else (fig, result, [])
+    options = [{'compactArrows': ids}] + [{'compactArrows': ids, 'stretchArrows': {'ids': ids, 'ratio': r}} for r in STRETCH_RATIOS]
+    def short(candidate):
+        return _hooks_fit(candidate, ids)
+    results = _candidates([(fig.resolved, o) for o in options], out, fig, draw, draw_args,
+                          lambda checked: accept(checked) and _clear_of_arrows(checked, ids), stats, 'retry_short_hooks',
+                          fit=short)
+    for opts, (candidate, checked, ok, _) in zip(options, results):
+        if ok:
+            return candidate, checked, opts
+    first, checked = results[0][0], results[0][1]
+    if checked is not None and accept(checked) and short(first):     # no bond length clears them: the standard length
+        candidate, checked, ok, _ = _candidate(fig.resolved, out, fig, draw, draw_args, options[0], accept, stats,
+                                               'retry_short_hooks')
+        if ok:
+            return candidate, checked, options[0]
+    return fig, result, {}
 
+
+def _hook_note(short):
+    ratio = short.get('stretchArrows', {}).get('ratio')
+    return 'short hooks: %s%s' % (', '.join(short['compactArrows']), ' (bonds %.2f standard lengths)' % ratio if ratio else '')
 
 def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, positive_control=False,
         draw=None, log=print, dpi=None):
@@ -655,17 +715,17 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     try:
         fig = check_rules.load_figure(out)
         result = check_rules.run_checks(fig)
-        short = []
+        short = {}
         if native_backend:
             retry_counts['retry_short_hooks'] = {'draws': 0}
             fig, result, short = retry_short_hooks(out, fig, result, draw, {
                 'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
                 'browser_cmd': browser_cmd}, retry_counts['retry_short_hooks'])
             if short:
-                notes.append('short hooks: %s' % ', '.join(short))
+                notes.append(_hook_note(short))
                 plain = draw         # the later retries keep these arrows short
                 def draw(resolved, dest, options=None, **kw):
-                    return plain(resolved, dest, options=dict(options or {}, compactArrows=short), **kw)
+                    return plain(resolved, dest, options=dict(options or {}, **short), **kw)
         if native_backend and _retryable(result):
             _progress('fixing automatically: %s' % ', '.join(result['failed']), always=True)
             retry_started = time.time()
@@ -696,7 +756,7 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
                 'browser_cmd': browser_cmd}, retry_counts['retry_short_hooks'])
             if short:
-                notes.append('short hooks: %s' % ', '.join(short))
+                notes.append(_hook_note(short))
                 resolved = fig.resolved
         pc = check_rules.positive_control(fig, checked=result['checks']) if positive_control else None
     except check_rules.InputError as e:

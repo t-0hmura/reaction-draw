@@ -91,7 +91,7 @@ Exit codes: `0` when rendering succeeds (any layout/drawing failures are printed
 
 `draw_figure.py` retries after a failed check (step 0 also after an `arrows_clear` warning between two arrows), logging each attempt in `.state.json` → `summary`:
 
-0. Right after the first drawing (and again after the retries below), a local curved arrow (a bond's electrons moving onto one of its own atoms, or an atom's pair moving into one of its own bonds) that comes close to another arrow (an `arrows_clear` warning between two arrows, two arrows touching, or a loop) is redrawn as a short hook, together with the local arrows that share an atom with it. The short hooks are kept, also in the later retries, only if no check gains a finding and the findings or the `arrows_clear` warnings fall.
+0. Right after the first drawing (and again after the retries below), a local curved arrow (a bond's electrons moving onto one of its own atoms, or an atom's pair moving into one of its own bonds) that comes close to another arrow (an `arrows_clear` warning between two arrows, two arrows touching, or a loop) is redrawn as a short hook, together with the local arrows that share an atom with it. Every local arrow bulges away from its own bond, so the concave side of the arc faces the bond and the atom. The hooks are drawn at the standard bond length and with their bonds (outside rings) grown to 1.05, 1.10, 1.15 and 1.20 standard lengths, side by side; the shortest bond whose hooks stay short (at most 0.85 bond lengths), point at their atoms and clear the other arrows is kept, else the standard length. The short hooks are kept, also in the later retries, only if no check gains a finding and the findings or the `arrows_clear` warnings fall.
 
 1. The backend searches additional charge, arrow, and number candidates for the failed checks, keeping a change only if no detector's violation count increases.
 2. After a layout, overlap, or arrow-endpoint failure, `layout_repair.py` evaluates up to 3 bounded alternatives (keeping rings rigid, moving branches as intact units, and shifting manual coordinates by at most 0.3 bond lengths). It keeps an alternative only if it fails fewer checks overall, has no stereochemistry finding, and adds no findings to basic checks (`graph`, `charges`, `cdxml`, etc.).
@@ -129,7 +129,7 @@ Produced by `specutil.resolve()` (in bond-length units where `1.0` = `style.bond
 - `figure.svg` roles: `data-role="bond"` (structure ink, including `data-kind="hbond"` and `data-kind="box"`), `data-role="mark"` (circled charges, lone pairs), and `data-role="arrow" data-id="<id>"`; captions are `<text>` elements.
 - `.state.json` → `report` (in pt, SVG frame, *x* right, *y* down; `check_rules.py` measures the gaps itself):
   - `atoms`: `{ref: x_pt, y_pt, label_box_pt, moved_pt}`
-  - `bonds`: `[a, b, order (0 with hbond: true), length_pt, visible_line_pt, labels, lengthened, length_before_pt, target_pt]`
+  - `bonds`: `[a, b, order (0 with hbond: true), length_pt, visible_line_pt, labels, lengthened, length_before_pt, target_pt, stretched_for, stretch_ratio]` (`stretched_for` names the local arrow whose bond was grown)
   - `curved`: `[id, kind, electrons, color, start_head, end_head, start_pt, end_pt, start_ref, end_ref ({kind, refs, distance_pt}: resolved target at each end), bend, length_pt, requested]`
   - `numbers`: `[ref, text, box_pt (glyph ink), size_pt, placed, own_gap_pt, nearest_other_gap_pt, direction_deg]`
   - `charges`: `[ref, charge, kind (circle | text), center_pt, outer_d_pt, default_outer_d_pt, sign_bars, angle_deg]`

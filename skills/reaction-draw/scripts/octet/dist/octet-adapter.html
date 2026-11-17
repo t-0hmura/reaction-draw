@@ -9279,27 +9279,28 @@ function readEnd(mol, px, symbolBox, p) {
   const middle2 = bond >= 0 && along > 0.2 && along < 0.8;
   return { kind: middle2 && dB < dA ? "bond" : "atom", atom, bond, center, dA, dB, middle: middle2 };
 }
+function branchSide(mol, start, across, cut) {
+  const seen = /* @__PURE__ */ new Set([start]), todo = [start];
+  while (todo.length) {
+    const i = todo.pop();
+    mol.bonds.forEach((b, k) => {
+      if (k === cut || b.type === HBOND2 || !b.atoms.includes(i)) return;
+      const j = b.atoms[0] === i ? b.atoms[1] : b.atoms[0];
+      if (!seen.has(j)) {
+        seen.add(j);
+        todo.push(j);
+      }
+    });
+  }
+  return seen.has(across) ? null : [...seen];
+}
 var LINE_SHOW = 0.6 * L;
 var LINE_DOT = 0.25 * L;
 function lengthenLabelBonds(mol, ctx, job, extra = /* @__PURE__ */ new Set()) {
   const t0 = now(), rows = [], skipped = [], moveEnds = job.moveEnds ?? [];
   const bondOf = (e) => mol.bonds.findIndex((b) => b.type !== HBOND2 && b.atoms.includes(e.atoms[0]) && b.atoms.includes(e.atoms[1]));
   const withArrow = new Set((job.curved ?? []).flatMap((r) => [r.src, r.snk]).filter((e) => e.kind === "bond").map(bondOf));
-  const side = (start, across, cut) => {
-    const seen = /* @__PURE__ */ new Set([start]), todo = [start];
-    while (todo.length) {
-      const i = todo.pop();
-      mol.bonds.forEach((b, k) => {
-        if (k === cut || b.type === HBOND2 || !b.atoms.includes(i)) return;
-        const j = b.atoms[0] === i ? b.atoms[1] : b.atoms[0];
-        if (!seen.has(j)) {
-          seen.add(j);
-          todo.push(j);
-        }
-      });
-    }
-    return seen.has(across) ? null : [...seen];
-  };
+  const side = (start, across, cut) => branchSide(mol, start, across, cut);
   mol.bonds.forEach((b, bi) => {
     if (b.type === HBOND2 || b.atoms.some((i) => mol.atoms[i].hidden) || extra.size && !extra.has(bi)) return;
     const { d, cls } = drawn2(mol, ctx);
@@ -9333,6 +9334,36 @@ function lengthenLabelBonds(mol, ctx, job, extra = /* @__PURE__ */ new Set()) {
     });
   });
   return { target_px: LINE_SHOW, rows, skipped, ms: now() - t0 };
+}
+var STRETCH_MAX = 1.2;
+function localBondOf(r) {
+  if (r.src.kind === "bond" && r.snk.kind === "atom" && r.src.atoms.includes(r.snk.atoms[0])) return [r.src.atoms[0], r.src.atoms[1]];
+  if (r.src.kind === "atom" && r.snk.kind === "bond" && r.snk.atoms.includes(r.src.atoms[0])) return [r.snk.atoms[0], r.snk.atoms[1]];
+  return null;
+}
+function stretchArrowBonds(mol, job) {
+  const ask = job.options?.stretchArrows, rows = [];
+  if (!ask?.ids?.length) return rows;
+  const ratio = Math.min(STRETCH_MAX, Math.max(1, Number(ask.ratio) || 1));
+  for (const r of job.curved ?? []) {
+    const pair2 = ask.ids.includes(r.id) ? localBondOf(r) : null;
+    const bi = pair2 ? mol.bonds.findIndex((b2) => b2.type !== HBOND2 && b2.atoms.includes(pair2[0]) && b2.atoms.includes(pair2[1])) : -1;
+    if (bi < 0 || rows.some((x) => x.bond === bi)) continue;
+    const b = mol.bonds[bi];
+    const ends = b.atoms.map((i) => ({ i, atoms: branchSide(mol, i, b.atoms[0] === i ? b.atoms[1] : b.atoms[0], bi) })).filter((c) => c.atoms).sort((p, q) => p.atoms.length - q.atoms.length);
+    if (!ends.length) continue;
+    const { i: moving, atoms } = ends[0], anchor = b.atoms[0] === moving ? b.atoms[1] : b.atoms[0];
+    const from = mol.atoms[anchor].location, to = mol.atoms[moving].location, length = Math.hypot(to[0] - from[0], to[1] - from[1]);
+    const grow = ratio - length;
+    if (grow <= 1e-6) continue;
+    const ux = (to[0] - from[0]) / length, uy = (to[1] - from[1]) / length;
+    for (const j of atoms) {
+      const q = mol.atoms[j].location;
+      mol.atoms[j].location = [q[0] + ux * grow, q[1] + uy * grow, ...q.slice(2)];
+    }
+    rows.push({ bond: bi, arrow: r.id, ratio });
+  }
+  return rows;
 }
 function placeCharges(mol, ctx, job) {
   const { f, measure, ratio } = ctx, t0 = now(), fixed = new Set(job.fixedChargeAngles ?? []);
@@ -9924,8 +9955,10 @@ function routeArrows(mol, ctx, job, seats = []) {
       const snkPts = ends(req.snk, 0.19 * L, [0.16 * L, 0.22 * L, 0.3 * L]).filter((s) => !repair || matches(s.p, req.snk)).map((s) => s.atom === void 0 ? s : { ...s, pen: s.pen + headAtPair(s.atom, s.p) });
       const compactHook = req.electrons === 1 && req.src.kind === "atom" && req.snk.kind === "gap";
       const ownEndHook = (req.src.kind === "bond" && req.snk.kind === "atom" && req.src.atoms.includes(req.snk.atoms[0]) || req.src.kind === "atom" && req.snk.kind === "bond" && req.snk.atoms.includes(req.src.atoms[0])) && (opts.compactArrows ?? []).includes(req.id);
-      const minLen = (compactHook ? 0.3 : ownEndHook ? 0.4 : 0.62) * L, kind = req.electrons === 1 ? "fishhook" : "curved";
+      const minLen = (compactHook ? 0.3 : ownEndHook ? 0.45 : 0.62) * L, kind = req.electrons === 1 ? "fishhook" : "curved";
       const tight = req.src.kind === "bond" && req.snk.kind === "bond" && req.src.atoms.some((x) => req.snk.atoms.includes(x));
+      const localPair = req.src.kind === "bond" && req.snk.kind === "atom" && req.src.atoms.includes(req.snk.atoms[0]) ? req.src.atoms : req.src.kind === "atom" && req.snk.kind === "bond" && req.snk.atoms.includes(req.src.atoms[0]) ? req.snk.atoms : null;
+      const localBond = localPair ? [(px[localPair[0]][0] + px[localPair[1]][0]) / 2, (px[localPair[0]][1] + px[localPair[1]][1]) / 2] : null;
       const wishLen = (tight ? 0.6 : ownEndHook ? 0.5 : 0.85) * L, wishChord = (tight ? 0.5 : ownEndHook ? 0.35 : 0.8) * L;
       let bestFree = null;
       const withEnds = /* @__PURE__ */ new Map();
@@ -9933,7 +9966,7 @@ function routeArrows(mol, ctx, job, seats = []) {
         const bendMin = Math.min(...bends.map((b) => Math.abs(b)));
         for (const s of srcPts) for (const e of snkPts) {
           const chord = dist(s.p, e.p);
-          if (chord < (compactHook || ownEndHook ? 0.12 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
+          if (chord < (compactHook ? 0.12 : ownEndHook ? 0.42 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
           const amb = (s.atom !== void 0 ? chargeAmbiguity(s.p, s.atom) : 0) + (e.atom !== void 0 ? chargeAmbiguity(e.p, e.atom) : 0);
           const key = s.tag + "|" + e.tag;
           const nFrom = native(s.p), nTo = native(e.p), endGap = Math.min(field.at([nFrom[0] * L, -nFrom[1] * L]), field.at([nTo[0] * L, -nTo[1] * L]));
@@ -10013,7 +10046,9 @@ function routeArrows(mol, ctx, job, seats = []) {
               }
             const pivot = tight ? px[req.src.atoms.find((x) => req.snk.atoms.includes(x))] : null, mid = path[Math.floor(n / 2)], half = [(s.p[0] + e.p[0]) / 2, (s.p[1] + e.p[1]) / 2];
             const inward = pivot && (mid[0] - half[0]) * (pivot[0] - half[0]) + (mid[1] - half[1]) * (pivot[1] - half[1]) > 0 ? 600 : 0;
-            const cost = inward + hard + amb + aimDir + atBond + loop + s.pen + e.pen + soft * 20 + len3 * 0.04 + Math.max(0, wishLen - len3) * 1.5 + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
+            const side = (q) => (e.p[0] - s.p[0]) * (q[1] - s.p[1]) - (e.p[1] - s.p[1]) * (q[0] - s.p[0]);
+            const outward = localBond && side(mid) * side(localBond) > 0 ? 5e3 : 0;
+            const cost = inward + outward + hard + amb + aimDir + atBond + loop + s.pen + e.pen + soft * 20 + len3 * 0.04 + Math.max(0, wishLen - len3) * 1.5 + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
             const cand = { a, polys, cost, seat, worst, len: len3, chord, s: s.tag, e: e.tag, hard, key };
             if (!bestFree || cost < bestFree.cost) bestFree = cand;
             if (!prev || cost + seat < prev.cost + prev.seat) withEnds.set(key, cand);
@@ -10439,6 +10474,7 @@ window.drawFigure = async (job) => {
   keepHydrogenSides(mol, ctx, job);
   T.labels = now() - t;
   const lengthen = lengthenLabelBonds(mol, ctx, job);
+  const stretched = stretchArrowBonds(mol, job);
   T.lengthen = lengthen.ms;
   const followCaptions = (was) => {
     const after = atomPxOf(mol);
@@ -10524,6 +10560,7 @@ window.drawFigure = async (job) => {
   });
   const radicalsOut = d.electrons.filter((e) => e.key?.startsWith("radical")).map((e) => ({ ref: refOf(e.atom), key: e.key, center_pt: PP(e.at), multiplier: e.multiplier ?? 1, radius_pt: P(0.1 * f.size * ctx.ratio(M.atoms[e.atom])) }));
   const lengthened = new Map(lengthen.rows.map((r) => [r.bond, r]));
+  const stretchedBy = new Map(stretched.map((r) => [r.bond, r]));
   const bondsOut = M.bonds.map((b, bi) => {
     const v = bondVisible(M, d, ctx, cls, bi), labels = (d.label[b.atoms[0]] ? 1 : 0) + (d.label[b.atoms[1]] ? 1 : 0), lr = lengthened.get(bi);
     return {
@@ -10533,6 +10570,7 @@ window.drawFigure = async (job) => {
       hbond: b.type === HBOND2 || void 0,
       length_pt: P(dist(px[b.atoms[0]], px[b.atoms[1]])),
       visible_line_pt: v ? P(v.visible) : null,
+      ...stretchedBy.has(bi) ? { stretched_for: stretchedBy.get(bi).arrow, stretch_ratio: stretchedBy.get(bi).ratio } : {},
       labels,
       hidden_h: b.atoms.some((i) => M.atoms[i].hidden),
       lengthened: !!lr && lr.moved_px > 0.05,

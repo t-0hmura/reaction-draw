@@ -333,6 +333,20 @@ function readEnd(mol: any, px: Pt[], symbolBox: (j: number) => Box | null, p: Pt
   return {kind: (middle && dB < dA ? 'bond' : 'atom') as 'atom' | 'bond', atom, bond, center, dA, dB, middle};
 }
 
+// the atoms on start's side of bond `cut` (hydrogen bonds do not join); null when the bond is in a ring
+function branchSide(mol: any, start: number, across: number, cut: number): number[] | null {
+  const seen = new Set<number>([start]), todo = [start];
+  while (todo.length) {
+    const i = todo.pop()!;
+    mol.bonds.forEach((b: any, k: number) => {
+      if (k === cut || b.type === HBOND || !b.atoms.includes(i)) return;
+      const j = b.atoms[0] === i ? b.atoms[1] : b.atoms[0];
+      if (!seen.has(j)) { seen.add(j); todo.push(j); }
+    });
+  }
+  return seen.has(across) ? null : [...seen];
+}
+
 // ---------------------------------------------------------------- 1. label-label bonds ---------
 // A bond between two labels keeps the standard length.  Only when its line would read as a dot (under LINE_DOT), a
 // curved arrow starts from or ends at it, or a circled charge sits squeezed between the two labels (`extra`), the
@@ -342,18 +356,7 @@ function lengthenLabelBonds(mol: any, ctx: Ctx, job: any, extra: Set<number> = n
   const t0 = now(), rows: any[] = [], skipped: any[] = [], moveEnds = job.moveEnds ?? [];
   const bondOf = (e: End) => mol.bonds.findIndex((b: any) => b.type !== HBOND && b.atoms.includes(e.atoms[0]) && b.atoms.includes(e.atoms[1]));
   const withArrow = new Set<number>(((job.curved ?? []) as CurvedReq[]).flatMap((r) => [r.src, r.snk]).filter((e) => e.kind === 'bond').map(bondOf));
-  const side = (start: number, across: number, cut: number): number[] | null => {   // the atoms on start's side of bond `cut`; null in a ring
-    const seen = new Set<number>([start]), todo = [start];
-    while (todo.length) {
-      const i = todo.pop()!;
-      mol.bonds.forEach((b: any, k: number) => {
-        if (k === cut || b.type === HBOND || !b.atoms.includes(i)) return;
-        const j = b.atoms[0] === i ? b.atoms[1] : b.atoms[0];
-        if (!seen.has(j)) { seen.add(j); todo.push(j); }
-      });
-    }
-    return seen.has(across) ? null : [...seen];
-  };
+  const side = (start: number, across: number, cut: number) => branchSide(mol, start, across, cut);
   mol.bonds.forEach((b: any, bi: number) => {
     if (b.type === HBOND || b.atoms.some((i: number) => mol.atoms[i].hidden) || (extra.size && !extra.has(bi))) return;
     const {d, cls} = drawn(mol, ctx);
@@ -372,6 +375,38 @@ function lengthenLabelBonds(mol: any, ctx: Ctx, job: any, extra: Set<number> = n
       visible_before_px: visible, visible_px: LINE_SHOW, target_px: LINE_SHOW});
   });
   return {target_px: LINE_SHOW, rows, skipped, ms: now() - t0};
+}
+
+// A local curved arrow (a bond's electrons onto one of its own atoms, or an atom's pair into one of its own bonds) with
+// too little room is given some on request (opts.stretchArrows {ids, ratio}): its bond grows to `ratio` (at most
+// STRETCH_MAX) standard bond lengths, the smaller side moving out along the bond.  A ring bond keeps its length.
+const STRETCH_MAX = 1.2;
+function localBondOf(r: CurvedReq): [number, number] | null {
+  if (r.src.kind === 'bond' && r.snk.kind === 'atom' && r.src.atoms.includes(r.snk.atoms[0])) return [r.src.atoms[0], r.src.atoms[1]];
+  if (r.src.kind === 'atom' && r.snk.kind === 'bond' && r.snk.atoms.includes(r.src.atoms[0])) return [r.snk.atoms[0], r.snk.atoms[1]];
+  return null;
+}
+function stretchArrowBonds(mol: any, job: any) {
+  const ask = job.options?.stretchArrows, rows: any[] = [];
+  if (!ask?.ids?.length) return rows;
+  const ratio = Math.min(STRETCH_MAX, Math.max(1, Number(ask.ratio) || 1));
+  for (const r of (job.curved ?? []) as CurvedReq[]) {
+    const pair = ask.ids.includes(r.id) ? localBondOf(r) : null;
+    const bi = pair ? mol.bonds.findIndex((b: any) => b.type !== HBOND && b.atoms.includes(pair[0]) && b.atoms.includes(pair[1])) : -1;
+    if (bi < 0 || rows.some((x) => x.bond === bi)) continue;
+    const b = mol.bonds[bi];
+    const ends = b.atoms.map((i: number) => ({i, atoms: branchSide(mol, i, b.atoms[0] === i ? b.atoms[1] : b.atoms[0], bi)}))
+      .filter((c: any) => c.atoms).sort((p: any, q: any) => p.atoms.length - q.atoms.length);
+    if (!ends.length) continue;
+    const {i: moving, atoms} = ends[0], anchor = b.atoms[0] === moving ? b.atoms[1] : b.atoms[0];
+    const from = mol.atoms[anchor].location, to = mol.atoms[moving].location, length = Math.hypot(to[0] - from[0], to[1] - from[1]);
+    const grow = ratio - length;           // locations are in standard bond lengths
+    if (grow <= 1e-6) continue;
+    const ux = (to[0] - from[0]) / length, uy = (to[1] - from[1]) / length;
+    for (const j of atoms) { const q = mol.atoms[j].location; mol.atoms[j].location = [q[0] + ux * grow, q[1] + uy * grow, ...q.slice(2)]; }
+    rows.push({bond: bi, arrow: r.id, ratio});
+  }
+  return rows;
 }
 
 // ---------------------------------------------------------------- 2. circled charges ---------
@@ -940,9 +975,12 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     const ownEndHook = ((req.src.kind === 'bond' && req.snk.kind === 'atom' && req.src.atoms.includes(req.snk.atoms[0])) ||
       (req.src.kind === 'atom' && req.snk.kind === 'bond' && req.snk.atoms.includes(req.src.atoms[0]))) &&
       (opts.compactArrows ?? []).includes(req.id);
-    const minLen = (compactHook ? 0.3 : ownEndHook ? 0.4 : 0.62) * L, kind = req.electrons === 1 ? 'fishhook' : 'curved';
+    const minLen = (compactHook ? 0.3 : ownEndHook ? 0.45 : 0.62) * L, kind = req.electrons === 1 ? 'fishhook' : 'curved';
     // a bond's electrons moving to a neighboring bond of the same atom: a short arrow in the angle between them is natural
     const tight = req.src.kind === 'bond' && req.snk.kind === 'bond' && req.src.atoms.some((x) => req.snk.atoms.includes(x));
+    const localPair = req.src.kind === 'bond' && req.snk.kind === 'atom' && req.src.atoms.includes(req.snk.atoms[0]) ? req.src.atoms
+      : req.src.kind === 'atom' && req.snk.kind === 'bond' && req.snk.atoms.includes(req.src.atoms[0]) ? req.snk.atoms : null;
+    const localBond: Pt | null = localPair ? [(px[localPair[0]][0] + px[localPair[1]][0]) / 2, (px[localPair[0]][1] + px[localPair[1]][1]) / 2] : null;
     const wishLen = (tight ? 0.6 : ownEndHook ? 0.5 : 0.85) * L, wishChord = (tight ? 0.5 : ownEndHook ? 0.35 : 0.8) * L;
     // The ends come from the cost without the numbers' seats (an arrow end never moves for a number); among the routes
     // with those two ends, the bend that keeps off the seats is taken.
@@ -952,7 +990,9 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     const bendMin = Math.min(...bends.map((b) => Math.abs(b)));
     for (const s of srcPts) for (const e of snkPts) {
       const chord = dist(s.p, e.p);
-      if (chord < (compactHook || ownEndHook ? 0.12 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
+      // a short local hook keeps at least the ends' distance of the shortest one that still reads as an arrow (0.42 L;
+      // a tighter curl hides its line behind the head)
+      if (chord < (compactHook ? 0.12 : ownEndHook ? 0.42 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
       const amb = (s.atom !== undefined ? chargeAmbiguity(s.p, s.atom) : 0) + (e.atom !== undefined ? chargeAmbiguity(e.p, e.atom) : 0);
       const key = s.tag + '|' + e.tag;
       // The part of the cost known before a route is traced: the gap at its two end points (its first and last points,
@@ -1028,7 +1068,11 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
           }
         const pivot = tight ? px[req.src.atoms.find((x) => req.snk.atoms.includes(x))!] : null, mid = path[Math.floor(n / 2)], half: Pt = [(s.p[0] + e.p[0]) / 2, (s.p[1] + e.p[1]) / 2];
         const inward = pivot && (mid[0] - half[0]) * (pivot[0] - half[0]) + (mid[1] - half[1]) * (pivot[1] - half[1]) > 0 ? 600 : 0;
-        const cost = inward + hard + amb + aimDir + atBond + loop + s.pen + e.pen + soft * 20 + len * 0.04 + Math.max(0, wishLen - len) * 1.5 + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
+        // a local arrow (a bond onto one of its own atoms, or a pair into one of its own bonds) bulges away from that bond:
+        // its concave side faces the bond and the atom
+        const side = (q: Pt) => (e.p[0] - s.p[0]) * (q[1] - s.p[1]) - (e.p[1] - s.p[1]) * (q[0] - s.p[0]);
+        const outward = localBond && side(mid) * side(localBond) > 0 ? 5000 : 0;
+        const cost = inward + outward + hard + amb + aimDir + atBond + loop + s.pen + e.pen + soft * 20 + len * 0.04 + Math.max(0, wishLen - len) * 1.5 + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
         const cand = {a, polys, cost, seat, worst, len, chord, s: s.tag, e: e.tag, hard, key};
         if (!bestFree || cost < bestFree.cost) bestFree = cand;
         if (!prev || cost + seat < prev.cost + prev.seat) withEnds.set(key, cand);
@@ -1426,6 +1470,7 @@ function viewOf(m: any, refs: string[], numberReqs: NumberReq[], placedIds: stri
   keepHydrogenSides(mol, ctx, job);
   T.labels = now() - t;
   const lengthen = lengthenLabelBonds(mol, ctx, job);
+  const stretched = stretchArrowBonds(mol, job);
   T.lengthen = lengthen.ms;
   // captions tied to an atom (residue labels) move with it
   const followCaptions = (was: Pt[]) => {
@@ -1518,9 +1563,11 @@ function viewOf(m: any, refs: string[], numberReqs: NumberReq[], placedIds: stri
   const radicalsOut = d.electrons.filter((e: any) => e.key?.startsWith('radical')).map((e: any) => ({ref: refOf(e.atom), key: e.key, center_pt: PP(e.at), multiplier: e.multiplier ?? 1, radius_pt: P(.1 * f.size * ctx.ratio(M.atoms[e.atom]))}));
   // bonds: atom-to-atom length, visible line, labels at the ends, lengthened or not
   const lengthened = new Map<number, any>(lengthen.rows.map((r: any) => [r.bond, r]));
+  const stretchedBy = new Map<number, any>(stretched.map((r: any) => [r.bond, r]));
   const bondsOut = M.bonds.map((b: any, bi: number) => {
     const v = bondVisible(M, d, ctx, cls, bi), labels = (d.label[b.atoms[0]] ? 1 : 0) + (d.label[b.atoms[1]] ? 1 : 0), lr = lengthened.get(bi);
     return {a: refOf(b.atoms[0]), b: refOf(b.atoms[1]), order: b.type === HBOND ? 0 : b.type, hbond: b.type === HBOND || undefined, length_pt: P(dist(px[b.atoms[0]], px[b.atoms[1]])), visible_line_pt: v ? P(v.visible) : null,
+      ...(stretchedBy.has(bi) ? {stretched_for: stretchedBy.get(bi).arrow, stretch_ratio: stretchedBy.get(bi).ratio} : {}),
       labels, hidden_h: b.atoms.some((i: number) => M.atoms[i].hidden), lengthened: !!lr && lr.moved_px > 0.05, ...(lr ? {length_before_pt: P(lr.length_before_px), target_pt: lr.target_px === null ? null : P(lr.target_px)} : {})};
   });
   // curved arrows: ends, and what each end reads as (readEnd: an atom's symbol letters or bare vertex, or a bond's axis)
