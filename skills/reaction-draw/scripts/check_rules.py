@@ -233,6 +233,18 @@ def shape_clear(a, b, overlap_only=False):
     return co.clearance(a, b)
 
 
+def _union_bbox(shapes):
+    if not shapes:
+        return None
+    return (min(s.bbox[0] for s in shapes), min(s.bbox[1] for s in shapes), max(s.bbox[2] for s in shapes), max(s.bbox[3] for s in shapes))
+
+
+def _far(box, b, limit):
+    """True when the bbox of every shape inside box (a union of their bboxes) is more than limit from bbox b: then
+    co.bbox_gap is above limit for each of them too."""
+    return box is not None and max(box[0] - b[2], b[0] - box[2], box[1] - b[3], b[1] - box[3]) > limit
+
+
 def angle_of(p, q):
     return math.degrees(math.atan2(-(q[1] - p[1]), q[0] - p[0])) % 360.0
 
@@ -626,7 +638,10 @@ def det_overlap_arrow_text(f):
     out = []
     texts = [(kind, text, box_shape(box)) for _, kind, text, box in f.texts()]
     for aid, shapes in sc['arrows']:
+        box = _union_bbox(shapes)
         for kind, text, tb in texts:
+            if _far(box, tb.bbox, 1.0):
+                continue
             c = min(shape_clear(s, tb, overlap_only=True) for s in shapes)
             if c <= 0.0:
                 out.append('arrow %s touches %s %r (%.2f pt)' % (aid, kind, text, c))
@@ -637,7 +652,10 @@ def det_overlap_arrow_bond(f):
     sc = f.scene()
     out = []
     for aid, shapes in sc['arrows']:
+        box = _union_bbox(shapes)
         for s in sc['bonds'] + sc['marks']:
+            if _far(box, s.bbox, 1.0):
+                continue
             c = min(shape_clear(a, s, overlap_only=True) for a in shapes)
             if c <= 0.0:
                 out.append('arrow %s touches %s (%.2f pt)' % (aid, _ink_name(s), c))
@@ -647,8 +665,11 @@ def det_overlap_arrow_bond(f):
 def det_overlap_arrow_arrow(f):
     arrows = f.scene()['arrows']
     out = []
+    boxes = [_union_bbox(shapes) for _, shapes in arrows]
     for i in range(len(arrows)):
         for j in range(i + 1, len(arrows)):
+            if boxes[j] is not None and _far(boxes[i], boxes[j], 1.0):
+                continue
             c = min(shape_clear(a, b, overlap_only=True) for a in arrows[i][1] for b in arrows[j][1])
             if c <= 0.0:
                 out.append('arrows %s and %s touch (%.2f pt)' % (arrows[i][0], arrows[j][0], c))
@@ -667,20 +688,20 @@ def det_overlap_charge(f):
         for s in sc['bonds'] + sc['marks']:
             if s.owner == ('charge', c['ref']):
                 continue
-            g = shape_clear(disk, s)
+            g = shape_clear(disk, s, overlap_only=True)
             if g < CHARGE_CLEAR_PT:
                 out.append('circle of %s is %.2f pt from %s' % (c['ref'], g, _ink_name(s)))
         for aid, shapes in sc['arrows']:
-            g = min(shape_clear(disk, s) for s in shapes)
+            g = min(shape_clear(disk, s, overlap_only=True) for s in shapes)
             if g < CHARGE_CLEAR_PT:
                 out.append('circle of %s is %.2f pt from arrow %s' % (c['ref'], g, aid))
         for owner, kind, text, box in texts:
             if owner == c['ref'] and kind == 'label':
-                g = shape_clear(disk, box_shape(box))
+                g = shape_clear(disk, box_shape(box), overlap_only=True)
                 if g < -CIRCLE_OWN_OVERLAP_PT:
                     out.append('circle of %s overlaps its own label by %.2f pt' % (c['ref'], -g))
                 continue
-            g = shape_clear(disk, box_shape(box))
+            g = shape_clear(disk, box_shape(box), overlap_only=True)
             if g < CHARGE_CLEAR_PT:
                 out.append('circle of %s is %.2f pt from %s %r' % (c['ref'], g, kind, text))
         for d in _circles(f):
@@ -1838,7 +1859,7 @@ def det_charge_open(f):
             for sign in signs:
                 shape = box_shape(sign['box'])
                 obstacles = f.scene()['bonds'] + f.scene()['marks'] + [s for _, ss in f.scene()['arrows'] for s in ss]
-                if any(shape_clear(shape, s) < CHARGE_CLEAR_PT for s in obstacles):
+                if any(shape_clear(shape, s, overlap_only=True) < CHARGE_CLEAR_PT for s in obstacles):
                     out.append('%s: charge text touches a bond, mark or arrow' % ref)
                 for owner, kind, text, box in texts:
                     if owner != ref and box_gap(sign['box'], box) < CHARGE_CLEAR_PT:
@@ -1859,7 +1880,8 @@ def _axial_pairs_blocked(f, pair, labels):
         t = math.radians(degree)
         center = (point[0] + distance * math.cos(t), point[1] - distance * math.sin(t))
         dots = [(center[0] + sign * .19 * f.size * math.sin(t), center[1] + sign * .19 * f.size * math.cos(t)) for sign in (-1, 1)]
-        if all(shape_clear(disk_shape(dot, radius), obstacle) >= CHARGE_CLEAR_PT for dot in dots for obstacle in obstacles):
+        disks = [disk_shape(dot, radius) for dot in dots]
+        if all(shape_clear(disk, obstacle, overlap_only=True) >= CHARGE_CLEAR_PT for disk in disks for obstacle in obstacles):
             return False
     return True
 
@@ -1880,10 +1902,10 @@ def det_lone_pair_geometry(f):
         for dot in pair['dots']:
             shape = disk_shape(dot, pair.get('radius') or .09 * f.size)
             for text, label in labels:
-                if shape_clear(shape, label) < 0:
+                if shape_clear(shape, label, overlap_only=True) < 0:
                     out.append('%s: lone pair touches label %r' % (ref, text))
             for s in f.scene()['bonds']:
-                if s.owner and s.owner[0] in ('bond', 'hbond') and shape_clear(shape, s) < 0:
+                if s.owner and s.owner[0] in ('bond', 'hbond') and shape_clear(shape, s, overlap_only=True) < 0:
                     out.append('%s: lone pair touches bond ink' % ref)
     for ref in set(f.lone_pairs):
         if sum(p['ref'] == ref for p in f.report['lone_pairs']) != f.lone_pairs.count(ref):
@@ -1917,7 +1939,7 @@ def det_lone_pair_geometry(f):
                 if s.pts and any(all(math.dist(p, dot) <= radius + .05 for p in s.pts) for own in pairs for dot in own['dots']):
                     continue
                 obstacles.append(s)
-            if all(shape_clear(a, b) >= CHARGE_CLEAR_PT for a in shapes for b in obstacles):
+            if all(shape_clear(a, b, overlap_only=True) >= CHARGE_CLEAR_PT for a in shapes for b in obstacles):
                 out.append('%s: reacting lone pair does not face the target although the %.0f-degree axial seat is free' % (ref, degree))
                 break
     return out
@@ -2298,7 +2320,10 @@ def det_arrows_clear(f):
             continue
         own = set(arrow['from']['refs'] + arrow['to']['refs'])
         near = (99.0, '')
+        box = _union_bbox(shapes)
         def look(s, what):
+            if _far(box, s.bbox, limit):
+                return near                             # no shape within the limit: (99.0, what) is not below near
             gap = min((shape_clear(a, s) for a in shapes if co.bbox_gap(a.bbox, s.bbox) <= limit), default=99.0)
             return min(near, (gap, what))
         for s in sc['bonds'] + sc['marks']:

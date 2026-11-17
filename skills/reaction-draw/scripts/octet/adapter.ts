@@ -134,9 +134,12 @@ function dt1d(f: Float64Array, n: number, d: Float64Array, v: Int32Array, z: Flo
 }
 function edt(mask: Uint8Array, w: number, h: number): Float32Array {
   const INF = 1e12, n = Math.max(w, h), f = new Float64Array(n), d = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1);
-  const g = new Float64Array(w * h);
-  for (let i = 0; i < w * h; i++) g[i] = mask[i] ? 0 : INF;
-  for (let x = 0; x < w; x++) { for (let y = 0; y < h; y++) f[y] = g[y * w + x]; dt1d(f, h, d, v, z); for (let y = 0; y < h; y++) g[y * w + x] = d[y]; }
+  const g = new Float64Array(w * h), last = new Int32Array(w).fill(-1);
+  // columns: the squared distance to the nearest ink in the same column (INF in a column without any), by one scan down
+  // and one up; on a 0/INF column dt1d gives these same integers
+  for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i++) { if (mask[i]) last[x] = y; g[i] = last[x] < 0 ? INF : (y - last[x]) * (y - last[x]); }
+  last.fill(-1);
+  for (let y = h - 1; y >= 0; y--) for (let x = 0, i = y * w; x < w; x++, i++) { if (mask[i]) last[x] = y; if (last[x] >= 0) { const e = (last[x] - y) * (last[x] - y); if (e < g[i]) g[i] = e; } }
   for (let y = 0; y < h; y++) { for (let x = 0; x < w; x++) f[x] = g[y * w + x]; dt1d(f, w, d, v, z); for (let x = 0; x < w; x++) g[y * w + x] = d[x]; }
   const out = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) out[i] = Math.sqrt(g[i]);
@@ -593,14 +596,18 @@ function logicalStraight(mol: any, rows: any[]) {
     return [{...row, kind: group?.kind ?? row.kind, segments: group ? group.indices.map((j: number) => rows[j]).filter(Boolean) : [row]}];
   });
 }
-// The drawing of the document with its polygon classes and label pieces, kept until an atom, a bond or the style changes:
-// the label passes ask for it once per atom and per alignment tried.
-const drawnMemo = new WeakMap<any, {key: string; d: any; cls: string[]; pcs: ReturnType<typeof piecesOf>}>();
+// The drawing of the document with its polygon classes and label pieces, by its atoms, bonds and style (the last 8 of
+// them): the label passes ask for it once per atom and per alignment tried, and come back to the alignment they keep.
+const drawnMemo = new WeakMap<any, Map<string, {key: string; d: any; cls: string[]; pcs: ReturnType<typeof piecesOf>}>>();
 function drawn(mol: any, ctx: Ctx) {
-  const key = JSON.stringify([mol.atoms, mol.bonds, ctx.f]), hit = drawnMemo.get(mol);
-  if (hit?.key === key) return hit;
+  const key = JSON.stringify([mol.atoms, mol.bonds, ctx.f]);
+  let memo = drawnMemo.get(mol);
+  if (!memo) drawnMemo.set(mol, (memo = new Map()));
+  const hit = memo.get(key);
+  if (hit) return hit;
   const d = render(mol, ctx.f, ctx.measure, L), made = {key, d, cls: classify(mol, d, ctx), pcs: piecesOf(mol, d, ctx)};
-  drawnMemo.set(mol, made);
+  memo.set(key, made);
+  if (memo.size > 8) memo.delete(memo.keys().next().value!);
   return made;
 }
 // How badly atom i's label sits: its bonds without a visible line, and its letters on other letters or on bond ink.
@@ -657,10 +664,20 @@ function pairSeat(mol: any, job: any, i: number): number | null {
   const free = [0, 90, 180, 270].filter((deg) => angDiff(deg, want) <= 90 && bondDirs.every((b: number) => angDiff(deg, b) >= 35));
   return free.length ? free.reduce((a, b) => (angDiff(b, want) < angDiff(a, want) ? b : a)) : null;
 }
+// Octet's render.ts reads an atom's alignment only to lay out the rest of its label (H, counts, a sign, more letters)
+// and to turn a label: one glyph alone (an O without H) or no label at all is drawn alike in every alignment, so every
+// alignment costs the same and the current one stays.  The label's own runs are those drawn at the atom (labelAt).
+function alignFree(mol: any, ctx: Ctx, i: number): boolean {
+  const a = mol.atoms[i], {d} = drawn(mol, ctx), p: Pt = [a.location[0] * L, -a.location[1] * L];
+  if (a.text || a.labelAngle) return false;
+  const runs = d.labels.filter((_: any, k: number) => d.labelAt[k] && d.labelAt[k][0] === p[0] && d.labelAt[k][1] === p[1]);
+  return !runs.length || (runs.length === 1 && a.label.length === 1 && runs[0].text === a.label);
+}
 function placeFoldedHydrogens(mol: any, ctx: Ctx, job: any) {
   for (let i = 0; i < mol.atoms.length; i++) {
     if (mol.atoms[i].hidden || (job.fixedLabelAligns ?? []).includes(i) || !mol.bonds.some((b: any) => b.atoms.includes(i))) continue;
     const stacked = ['above', 'below'].includes(mol.atoms[i].align) && !stackable(mol, i);
+    if (!stacked && alignFree(mol, ctx, i)) continue;
     // written H on the reacting pair's seat count as H on bond ink
     const seat = pairSeat(mol, job, i);
     const cost = () => labelClash(mol, ctx, i) + (seat !== null && SIDE_DEG[hydrogenSide(mol, ctx, i) ?? ''] === seat ? 200000 : 0);
@@ -762,7 +779,8 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
   const textBoxes: Box[] = [...pcs.flat().map((p) => p.box), ...rings.map(ringBox), ...obstacleCaps(mol, caps0, job).map((c: any) => c.box)];
   const basePolys = [...d0.polygons, ...straight.flatMap((a: any) => arrowShapes(a, f, L)), ...(mol.shapes ?? []).flatMap((s: any) => shapeInk(s, f, L))];
   const bb = union([...px.map((p) => [p[0], p[1], p[0], p[1]] as Box), ...textBoxes]) ?? [0, 0, 1, 1], bounds = pad(bb, 2 * L);
-  const atomBox = (i: number): Box | null => ownSymbol(mol, pcs, px, i);
+  const symbols = px.map((_, i) => ownSymbol(mol, pcs, px, i));
+  const atomBox = (i: number): Box | null => symbols[i];
   const besideMates = (i: number, p: Pt): number => {
     const own = atomBox(i);
     if (!own) return 0;
@@ -926,20 +944,49 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     let bestFree: any = null;
     const withEnds = new Map<string, any>();
     for (const bends of typeof req.bend === 'number' ? [[req.bend], autoBends] : [autoBends]) {
+    const bendMin = Math.min(...bends.map((b) => Math.abs(b)));
     for (const s of srcPts) for (const e of snkPts) {
       const chord = dist(s.p, e.p);
       if (chord < (compactHook ? 0.12 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
+      const amb = (s.atom !== undefined ? chargeAmbiguity(s.p, s.atom) : 0) + (e.atom !== undefined ? chargeAmbiguity(e.p, e.atom) : 0);
+      const key = s.tag + '|' + e.tag;
+      // The part of the cost known before a route is traced: the gap at its two end points (its first and last points,
+      // as arrowPath makes them), the ends' terms, the chord and the bend, summed in the cost's order; the cost only adds
+      // terms >= 0 to them.  Ends (with the smallest bend) or a bend already past the best route plus a seat's full cost
+      // are never taken and are not traced (the bound of the centerline test below).
+      const nFrom = native(s.p), nTo = native(e.p), endGap = Math.min(field.at([nFrom[0] * L, -nFrom[1] * L]), field.at([nTo[0] * L, -nTo[1] * L]));
+      const pre = (endGap < 5.5 ? (5.5 - endGap) * 1e4 : 0) + amb + s.pen + e.pen + Math.max(0, wishChord - chord) * 2.5;
+      const preEx = (s.ex + e.ex) * 1.2, preT = (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
+      const known = (b: number) => pre + b * 18 + preEx + preT;
+      if (bestFree && known(bendMin) > bestFree.cost + (seatField ? 100 : 0)) continue;
       for (const bend of bends) {
+        if (bestFree && known(Math.abs(bend)) > bestFree.cost + (seatField ? 100 : 0)) continue;
         const a: any = {id: 900 + done.length, kind, from: native(s.p), to: native(e.p), bend, colour: '#000000'};
         if (kind === 'curved') { a.start = 'none'; a.end = 'full'; }
         const path = arrowPath(a, L) as Pt[];
         let len = 0; for (let k = 1; k < path.length; k++) len += dist(path[k - 1], path[k]);
         if (len < minLen) continue;
         if ((repair || req.snk.kind === 'gap') && len > 2 * chord) continue;
-        const polys = arrowShapes(a, f, L) as number[][][];
-        let worst = 1e9, soft = 0;
+        // A seat costs at most 60 + 4 * 10. Even the best route's full seat penalty cannot rescue this path.
+        // Sample the centerline first; surviving candidates keep the original order of all cost additions.
+        if (bestFree && path.some((p) => {
+          const dd = field.at(p), hard = dd < 5.5 ? (5.5 - dd) * 1e4 : 0;
+          return hard > bestFree.cost + (seatField ? 100 : 0);
+        })) continue;
         // the deliberate gaps at both ends (within 0.17 bond length of the end points) are not penalized again
         const exempt = (p: Pt) => dist(p, s.p) < 0.17 * L || dist(p, e.p) < 0.17 * L;
+        // an arc, not a loop: a route much longer than the distance between its ends reads as a loop (check_rules.py
+        // arrows_shape allows 2.0 times); it is taken only when nothing else is left
+        const loop = len > ARC_MAX * chord ? 300 + (len / chord - ARC_MAX) * 200 : 0;
+        // the same bound with what the centerline alone gives (its gaps and softness, the length terms), in the cost's order
+        if (bestFree) {
+          let lineWorst = 1e9, lineSoft = 0;
+          for (const p of path) { const dd = field.at(p); if (dd < lineWorst) lineWorst = dd; if (dd < 8 && !exempt(p)) lineSoft += (8 - dd) * 0.5; }
+          if ((lineWorst < 5.5 ? (5.5 - lineWorst) * 1e4 : 0) + amb + loop + s.pen + e.pen + lineSoft * 20 + len * 0.04 + Math.max(0, wishLen - len) * 1.5
+            + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45 > bestFree.cost + (seatField ? 100 : 0)) continue;
+        }
+        const polys = arrowShapes(a, f, L) as number[][][];
+        let worst = 1e9, soft = 0;
         for (const poly of polys) for (let j = 0; j < poly.length; j++) {
           const p = poly[j] as Pt, q = poly[(j + 1) % poly.length] as Pt;
           const count = repair ? Math.max(1, Math.ceil(dist(p, q) / 2)) : 1;
@@ -951,7 +998,7 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         for (const p of path) { const dd = field.at(p); if (dd < worst) worst = dd; if (dd < 8 && !exempt(p)) soft += (8 - dd) * 0.5; }
         // the end points must keep a visible gap (>= 5 px) to the nearest ink, and so must the rest
         const hard = worst < 5.5 ? (5.5 - worst) * 1e4 : 0;
-        const amb = (s.atom !== undefined ? chargeAmbiguity(s.p, s.atom) : 0) + (e.atom !== undefined ? chargeAmbiguity(e.p, e.atom) : 0);
+        const prev = withEnds.get(key);
         // a number's seat costs only where the arrow's body crosses it, not near its ends (an arrow end never moves for a number)
         let seat = 0;
         if (seatField) { let m = 1e9; for (const poly of polys) for (const p of poly) if (dist(p as Pt, s.p) > 0.45 * L && dist(p as Pt, e.p) > 0.45 * L) m = Math.min(m, seatField.at(p as Pt)); if (m < 4) seat = 60 + (4 - m) * 10; }
@@ -974,15 +1021,11 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
             const sl = raySeg(e.p, uHead, px[b.atoms[0]], px[b.atoms[1]]);
             if (sl !== null && sl <= L) { atBond = 700; break; }
           }
-        // an arc, not a loop: a route much longer than the distance between its ends reads as a loop (check_rules.py
-        // arrows_shape allows 2.0 times); it is taken only when nothing else is left
-        const loop = len > ARC_MAX * chord ? 300 + (len / chord - ARC_MAX) * 200 : 0;
         const pivot = tight ? px[req.src.atoms.find((x) => req.snk.atoms.includes(x))!] : null, mid = path[Math.floor(n / 2)], half: Pt = [(s.p[0] + e.p[0]) / 2, (s.p[1] + e.p[1]) / 2];
         const inward = pivot && (mid[0] - half[0]) * (pivot[0] - half[0]) + (mid[1] - half[1]) * (pivot[1] - half[1]) > 0 ? 600 : 0;
         const cost = inward + hard + amb + aimDir + atBond + loop + s.pen + e.pen + soft * 20 + len * 0.04 + Math.max(0, wishLen - len) * 1.5 + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
-        const key = s.tag + '|' + e.tag, cand = {a, polys, cost, seat, worst, len, chord, s: s.tag, e: e.tag, hard, key};
+        const cand = {a, polys, cost, seat, worst, len, chord, s: s.tag, e: e.tag, hard, key};
         if (!bestFree || cost < bestFree.cost) bestFree = cand;
-        const prev = withEnds.get(key);
         if (!prev || cost + seat < prev.cost + prev.seat) withEnds.set(key, cand);
       }
     }
@@ -1169,15 +1212,18 @@ function placeNumbers(mol: any, ctx: Ctx, job: any, curvedPolys: number[][][], d
     for (let deg = 0; deg < 360; deg += opts.repairNumbers ? 2.5 : 5) for (let r = r0 - (opts.repairNumbers ? 0.4 : 0.25); r <= r0 + (opts.repairNumbers ? 0.9 : 0.6) + 1e-9; r += opts.repairNumbers ? 0.0125 : 0.025) {
       const th = (deg * Math.PI) / 180, cx = px[i][0] + r * L * Math.cos(th), cy = px[i][1] - r * L * Math.sin(th), base = cy + asc / 2;
       const adv: Box = [cx - w / 2, cy - asc / 2, cx + w / 2, base], box: Box = [cx + ink[0], base + ink[1], cx + ink[2], base + ink[3]];
+      const ang = gaps.length ? Math.min(...gaps.map((g: any) => (angDiff(deg, g.mid) / 30) ** 2 + 3 * (1 - g.size / maxGap))) : 0;
+      const rad = ((r - r0) / 0.15) ** 2 * 0.5;
+      if (best && ang + rad > best.cost) continue;
       let clear = field.overBox(box);
       pcs.forEach((list) => { for (const p of list) if (!ownSet.has(p.k)) clear = Math.min(clear, boxGap(box, pad(p.box, 0.5))); });
       for (const c of otherCaps) clear = Math.min(clear, boxGap(box, pad(c.box, 0.5)));
       for (const b of put) clear = Math.min(clear, boxGap(box, b));
-      const ang = gaps.length ? Math.min(...gaps.map((g: any) => (angDiff(deg, g.mid) / 30) ** 2 + 3 * (1 - g.size / maxGap))) : 0;
-      const rad = ((r - r0) / 0.15) ** 2 * 0.5;
       // room around the glyphs' ink: 12 px (3 pt) wished, 6.5 px (1.6 pt) at least
       const clr = (clear >= 12 ? 0 : ((12 - clear) / 4) ** 2) + (clear < 6.5 ? 100 + (6.5 - clear) * 50 : 0);
       const lb: Box = [adv[0], adv[1] - 0.189 * sizePx, adv[2], adv[3] + 0.212 * sizePx];
+      const lineHit = lbs.some((o) => lb[0] < o[2] + 0.5 && lb[2] > o[0] - 0.5 && lb[1] < o[3] + 0.5 && lb[3] > o[1] - 0.5) ? 200 : 0;
+      if (best && ang + rad + clr + lineHit > best.cost) continue;
       const gapB = (b: Box) => boxGap(box, b);
       // gaps to letters are taken between glyph inks (the number's and the letter's), as a reader sees them
       const gapTo = (j: number) => (pcs[j].length ? Math.min(...pcs[j].map((p) => gapB(p.ink))) : boxDist(px[j], box));
@@ -1192,7 +1238,6 @@ function placeNumbers(mol: any, ctx: Ctx, job: any, curvedPolys: number[][][], d
       const between = (nearestLetter < LETTER_MIN ? 150 + (LETTER_MIN - nearestLetter) * 5 : 0) + (nearestLetter < LETTER_CLEAR ? ((LETTER_CLEAR - nearestLetter) / 4) ** 2 * 0.6 : 0);
       // on the side of the symbol: not past it toward the rest of the label (after the H3 of CH3)
       const side = si && si.tails.length && ((si.dir > 0 && cx > si.sym[2]) || (si.dir < 0 && cx < si.sym[0])) ? 300 : 0;
-      const lineHit = lbs.some((o) => lb[0] < o[2] + 0.5 && lb[2] > o[0] - 0.5 && lb[1] < o[3] + 0.5 && lb[3] > o[1] - 0.5) ? 200 : 0;
       const ownTerm = si ? (own < OWN_MIN ? 100 + (OWN_MIN - own) * 50 : ((own - OWN_WISH) / 4) ** 2 * 0.6) : 0;
       const cost = ang + rad + clr + lineHit + assoc + between + side + ownTerm;
       const terms = {angle: r2(ang), radius: r2(rad), clearance: r2(clr), line_box: lineHit, ownership: r2(assoc), between_labels: r2(between), symbol_side: side, own_gap: r2(ownTerm)};
