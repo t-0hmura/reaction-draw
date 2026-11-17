@@ -91,6 +91,8 @@ Exit codes: `0` when rendering succeeds (any layout/drawing failures are printed
 
 `draw_figure.py` retries only after a failed check, logging each attempt in `.state.json` → `summary`:
 
+0. Right after the first drawing (and again after the retries below), a local curved arrow (a bond's electrons moving onto one of its own atoms, or an atom's pair moving into one of its own bonds) that comes close to another arrow (an `arrows_clear` warning between two arrows, two arrows touching, or a loop) is redrawn as a short hook, together with the local arrows that share an atom with it. The short hooks are kept, also in the later retries, only if no check gains a finding and the findings or the `arrows_clear` warnings fall.
+
 1. The backend searches additional charge, arrow, and number candidates for the failed checks, keeping a change only if no detector's violation count increases.
 2. After a layout, overlap, or arrow-endpoint failure, `layout_repair.py` evaluates up to 3 bounded alternatives (keeping rings rigid, moving branches as intact units, and shifting manual coordinates by at most 0.3 bond lengths). It keeps an alternative only if it fails fewer checks overall, has no stereochemistry finding, and adds no findings to basic checks (`graph`, `charges`, `cdxml`, etc.).
 3. A blocked intramolecular forming-bond arrow receives a rigid rotation around a bridge along its path, preserving bond lengths and stereochemistry without adding new findings.

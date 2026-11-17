@@ -9923,7 +9923,7 @@ function routeArrows(mol, ctx, job, seats = []) {
       const headAtPair = (i, p) => d0.electrons.some((e) => e.atom === i && (e.key?.startsWith("pair") || e.key?.startsWith("radical")) && angDiff(pageDeg(px[i], p), pageDeg(px[i], e.at)) < 50) ? 500 : 0;
       const snkPts = ends(req.snk, 0.19 * L, [0.16 * L, 0.22 * L, 0.3 * L]).filter((s) => !repair || matches(s.p, req.snk)).map((s) => s.atom === void 0 ? s : { ...s, pen: s.pen + headAtPair(s.atom, s.p) });
       const compactHook = req.electrons === 1 && req.src.kind === "atom" && req.snk.kind === "gap";
-      const ownEndHook = req.src.kind === "bond" && req.snk.kind === "atom" && req.src.atoms.includes(req.snk.atoms[0]) && (opts.compactArrows ?? []).includes(req.id);
+      const ownEndHook = (req.src.kind === "bond" && req.snk.kind === "atom" && req.src.atoms.includes(req.snk.atoms[0]) || req.src.kind === "atom" && req.snk.kind === "bond" && req.snk.atoms.includes(req.src.atoms[0])) && (opts.compactArrows ?? []).includes(req.id);
       const minLen = (compactHook ? 0.3 : ownEndHook ? 0.4 : 0.62) * L, kind = req.electrons === 1 ? "fishhook" : "curved";
       const tight = req.src.kind === "bond" && req.snk.kind === "bond" && req.src.atoms.some((x) => req.snk.atoms.includes(x));
       const wishLen = (tight ? 0.6 : ownEndHook ? 0.5 : 0.85) * L, wishChord = (tight ? 0.5 : ownEndHook ? 0.35 : 0.8) * L;

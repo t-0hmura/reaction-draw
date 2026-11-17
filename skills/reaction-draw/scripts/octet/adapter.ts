@@ -935,9 +935,10 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     const snkPts = ends(req.snk, 0.19 * L, [0.16 * L, 0.22 * L, 0.3 * L]).filter((s) => !repair || matches(s.p, req.snk))
       .map((s) => s.atom === undefined ? s : {...s, pen: s.pen + headAtPair(s.atom, s.p)});
     const compactHook = req.electrons === 1 && req.src.kind === 'atom' && req.snk.kind === 'gap';
-    // a bond's electrons moving onto one of its own atoms, asked to be short (opts.compactArrows): a small hook from the
-    // bond to the atom, like the short arrow from a lone pair, instead of a wide arc
-    const ownEndHook = req.src.kind === 'bond' && req.snk.kind === 'atom' && req.src.atoms.includes(req.snk.atoms[0]) &&
+    // a local arrow asked to be short (opts.compactArrows): a bond's electrons moving onto one of its own atoms, or an
+    // atom's pair moving into one of its own bonds, drawn as a small hook instead of a wide arc
+    const ownEndHook = ((req.src.kind === 'bond' && req.snk.kind === 'atom' && req.src.atoms.includes(req.snk.atoms[0])) ||
+      (req.src.kind === 'atom' && req.snk.kind === 'bond' && req.snk.atoms.includes(req.src.atoms[0]))) &&
       (opts.compactArrows ?? []).includes(req.id);
     const minLen = (compactHook ? 0.3 : ownEndHook ? 0.4 : 0.62) * L, kind = req.electrons === 1 ? 'fishhook' : 'curved';
     // a bond's electrons moving to a neighboring bond of the same atom: a short arrow in the angle between them is natural

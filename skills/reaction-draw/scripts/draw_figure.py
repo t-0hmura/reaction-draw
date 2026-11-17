@@ -549,6 +549,51 @@ def retry_layout(spec, out, fig, result, draw, draw_args, stats):
     return fig, result, notes
 
 
+def _local_arrows(fig, result):
+    """The local curved arrows (a bond's electrons moving onto one of its own atoms, or an atom's pair moving into one of
+    its own bonds) that come close to another arrow (an arrows_clear warning between two arrows, two arrows touching, or
+    a loop), with the local arrows that share an atom with them."""
+    near = set()
+    for w in result['checks'].get('arrows_clear', {}).get('warnings', []):
+        m = re.match(r'^arrow (\S+): -?[\d.]+ pt from arrow (\S+),', w)
+        if m:
+            near.update(m.groups())
+    for x in result['checks'].get('overlap_arrow_arrow', {}).get('findings', []):
+        m = re.match(r'^arrows (\S+) and (\S+) touch', x)
+        if m:
+            near.update(m.groups())
+    for x in result['checks'].get('arrows_shape', {}).get('findings', []):
+        if 'a loop, not an arc' in x:
+            near.add(x.split(':', 1)[0])
+    local = {}
+    for panel in fig.resolved['panels']:
+        for c in panel['curved']:
+            a, b = c['from'], c['to']
+            if (a['kind'] == 'bond' and b['kind'] == 'atom' and b['refs'][0] in a['refs']) or \
+                    (a['kind'] == 'atom' and b['kind'] == 'bond' and a['refs'][0] in b['refs']):
+                local[c['id']] = set(a['refs']) | set(b['refs'])
+    chosen = {i for i in near if i in local}
+    return sorted(chosen | {i for i, atoms in local.items() if any(atoms & local[j] for j in chosen)})
+
+
+def retry_short_hooks(out, fig, result, draw, draw_args, stats):
+    """Redraw the local arrows that come close to another arrow as short hooks (adapter option compactArrows); keep the
+    drawing when no check gains a finding and the findings or the arrows_clear warnings fall. Returns (figure, checks,
+    the arrows made short or [])."""
+    ids = _local_arrows(fig, result)
+    if not ids:
+        return fig, result, []
+    before, warned = _counts(result), len(result['checks'].get('arrows_clear', {}).get('warnings', []))
+    def accept(checked):
+        after = _counts(checked)
+        fewer = len(checked['checks'].get('arrows_clear', {}).get('warnings', []))
+        return (all(after.get(n, 0) <= before.get(n, 0) for n in after) and not _closer(result, checked)
+                and (sum(after.values()) < sum(before.values()) or fewer < warned))
+    candidate, checked, ok, _ = _candidate(fig.resolved, out, fig, draw, draw_args, {'compactArrows': ids}, accept, stats,
+                                           'retry_short_hooks')
+    return (candidate, checked, ids) if ok else (fig, result, [])
+
+
 def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, positive_control=False,
         draw=None, log=print, dpi=None):
     """The whole pipeline; returns (exit status, summary dict).  draw: the backend function (default octet_draw.draw)."""
@@ -610,6 +655,17 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     try:
         fig = check_rules.load_figure(out)
         result = check_rules.run_checks(fig)
+        short = []
+        if native_backend:
+            retry_counts['retry_short_hooks'] = {'draws': 0}
+            fig, result, short = retry_short_hooks(out, fig, result, draw, {
+                'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
+                'browser_cmd': browser_cmd}, retry_counts['retry_short_hooks'])
+            if short:
+                notes.append('short hooks: %s' % ', '.join(short))
+                plain = draw         # the later retries keep these arrows short
+                def draw(resolved, dest, options=None, **kw):
+                    return plain(resolved, dest, options=dict(options or {}, compactArrows=short), **kw)
         if native_backend and _retryable(result):
             _progress('fixing automatically: %s' % ', '.join(result['failed']), always=True)
             retry_started = time.time()
@@ -635,6 +691,13 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 notes.append('automatic retry stopped: %s: %s' % (type(exc).__name__, exc))
             resolved = fig.resolved
             times['placement_retry'] = time.time() - retry_started
+        if native_backend and not short:     # arrows that the retries brought close
+            fig, result, short = retry_short_hooks(out, fig, result, draw, {
+                'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
+                'browser_cmd': browser_cmd}, retry_counts['retry_short_hooks'])
+            if short:
+                notes.append('short hooks: %s' % ', '.join(short))
+                resolved = fig.resolved
         pc = check_rules.positive_control(fig, checked=result['checks']) if positive_control else None
     except check_rules.InputError as e:
         _failed(out, 'checks could not run', str(e), notes, times, log, stereo_lines)
