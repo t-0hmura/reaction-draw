@@ -302,6 +302,8 @@ def build_job(resolved, options=None):
         if a.get('preserve_h') or a.get('ts'):
             e['implicitHCount'] = int(a.get('h') or 0)
         color = (a.get('color') or '').lower() or None
+        if a.get('kind') == 'cut':
+            e['attach'] = True       # Octet's wavy attachment point: the chain is cut here (CDXML: a wavy external connection)
         residue = label if label and (a.get('kind') == 'residue' or el in ('*', 'R')) else None
         if residue:
             # A residue's name (Glu170) beside a bare root vertex: Octet draws the digits of an atom label as subscripts.

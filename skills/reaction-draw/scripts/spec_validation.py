@@ -185,8 +185,8 @@ def inspect_spec(data):
                 if field == 'xy':
                     xy(value, sw + '.xy[' + str(mk) + ']')
         for mp, atom in maps.items():
-            if atom['dummy'] and str(mp) not in fields['abbrev'] and str(mp) not in fields['residue']:
-                bad(sw, 'dummy atom %d needs an abbrev or residue label' % mp)
+            if atom['dummy'] and str(mp) not in fields['abbrev'] and str(mp) not in fields['residue'] and mp not in (s.get('cut') or []):
+                bad(sw, 'dummy atom %d needs an abbrev or residue label, or to be listed in cut' % mp)
         for mp in seq(s.get('show') or [], sw + '.show'):
             if not isinstance(mp, int) or isinstance(mp, bool) or mp not in maps:
                 bad(sw + '.show', 'unknown atom map %r; correct the map' % mp)

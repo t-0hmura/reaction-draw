@@ -57,7 +57,8 @@ Using the same `id` across panels represents **the same molecule**: non-reacting
 | `id` | Molecule identifier, kept consistent across panels |
 | `smiles` | SMILES **as drawn in this panel**. Every atom requires a map number (`[CH3:8]`, `[H:13]`, `[*:12]`) kept consistent across panels. Supports charges, isotopes (`[13CH3:8]`, `[2H:13]`), branches, rings, aromatic atoms, donor bonds `->`/`<-` (drawn plain), `/` `\`, and `@` |
 | `abbrev` | `{"<map>": "OPP"}` draws a dummy atom `[*:n]` as an abbreviation; or `{"text", "element", "chemical", "charge"}` (`element` specifies the attachment atom, already known for `OPP`, `Ado`, `SCoA`, and other common abbreviations; `chemical: true` parses `text` as a formula). Expand charged groups (`C(=O)[O-]`) in full when touched by an arrow or hydrogen bond |
-| `residue` | `{"<map>": "Glu170"}` draws a plain-text residue name at a dummy side-chain root ([style guide](../SKILL.md#amino-acid-residue-labels)); mixing styles within a figure fails |
+| `residue` | `{"<map>": "Glu170"}` draws a plain-text residue name at a dummy side-chain root ([style guide](../SKILL.md#amino-acid-residue-labels)); mixing styles within a figure fails, and so does showing one residue twice in a panel |
+| `cut` | `[map, ...]` dummy atoms where a chain is cut, drawn as wavy truncation marks (both backbone ends of a residue drawn with its backbone) |
 | `show` | `[map, ...]` carbons whose `C` symbol is explicitly shown (e.g., methyl `CH3` or the C of CO₂) |
 | `label` | `{"<map>": "text"}` overrides an atom's label |
 | `near` | Places a species that has no curved arrows connecting it to others (e.g., an ion or water): `"species:map"` or `{"atom": "species:map", "dir": 60, "dist": 1.3}` (falls back to the nearest open spot if occupied, with a note). Omit `near` for a group that detached in the previous panel (e.g., Cl⁻ or a released product)—it automatically stays beside the atom it left |

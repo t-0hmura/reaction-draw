@@ -19,6 +19,7 @@ of report are points in the frame of the SVG's user units; resolved is in bond l
 import argparse
 import collections
 import copy
+import itertools
 import json
 import math
 import pickle
@@ -62,7 +63,7 @@ DETECTORS = ('overlap_text_text', 'overlap_text_bond', 'overlap_arrow_text', 'ov
              'number_size', 'number_place', 'number_clear', 'number_on_h', 'label_bonds', 'one_label_bonds', 'bond_lengths',
              'colors', 'cdxml', 'frame', 'partial_dashes', 'delocalized_bonds', 'ts_brackets',
              'charge_open', 'lone_pair_geometry', 'ring_substituents', 'carbon_labels', 'stereo_display', 'hbond_dots',
-             'radical_marks', 'electron_flow', 'isotopes', 'hydrogen_display', 'coordination', 'metal_geometry', 'residue_codes', 'reaction_kinds', 'radical_direction', 'figure_style', 'species_gap', 'bond_crossing', 'plus_place',
+             'radical_marks', 'electron_flow', 'isotopes', 'hydrogen_display', 'coordination', 'metal_geometry', 'residue_codes', 'residue_once', 'reaction_kinds', 'radical_direction', 'figure_style', 'species_gap', 'bond_crossing', 'plus_place',
              'arrows_steps', 'arrows_clear')
 # A declaration is an OR of features; undeclared extensions run always.
 DETECTOR_FEATURES = {
@@ -82,7 +83,7 @@ DETECTOR_FEATURES = {
     'carbon_labels': ('carbon',), 'stereo_display': ('stereo',), 'hbond_dots': ('hbonds',),
     'radical_marks': ('radicals',), 'electron_flow': ('curved',), 'isotopes': ('isotopes',),
     'hydrogen_display': ('explicit_h',), 'coordination': ('metals',), 'metal_geometry': ('metals',),
-    'residue_codes': ('residues',), 'reaction_kinds': ('reaction_arrows',),
+    'residue_codes': ('residues',), 'residue_once': ('residues', 'residue_texts'), 'reaction_kinds': ('reaction_arrows',),
     'radical_direction': ('radicals',), 'figure_style': ('always',), 'species_gap': ('species_pairs',), 'bond_crossing': ('bonds',), 'plus_place': ('plus',),
     'arrows_steps': ('reaction_arrows',), 'arrows_clear': ('curved',),
 }
@@ -103,6 +104,7 @@ def figure_features(resolved):
         'ions': any(a.get('ion_text') for a in atoms), 'numbers': any(a.get('number') for a in atoms),
         'radicals': any(a.get('radical') for a in atoms), 'isotopes': any(a.get('isotope') for a in atoms),
         'explicit_h': any(a['el'] == 'H' for a in atoms), 'residues': any(a.get('kind') == 'residue' for a in atoms),
+        'residue_texts': any(RESIDUE_NAME.search(t.get('text') or '') for p in panels for t in p.get('texts', [])),
         'ts': any(a.get('ts') for a in atoms), 'partial': any(b.get('style') == 'partial' for b in bonds),
         'delocalized': any(b.get('style') == '1.5' for b in bonds),
         'hbonds': any(p.get('hbonds') or p.get('pseudobonds') for p in panels),
@@ -2466,6 +2468,50 @@ def det_residue_codes(f):
     return ['mixed one-letter and three-letter residue codes in one figure'] if len(styles) > 1 else []
 
 
+RESIDUE_NAME = re.compile(r'(?<![A-Za-z])([A-Z][a-z]{2})[- ]?(\d+)(?![\d])')
+
+
+def _residue_marks(f):
+    """{panel: [(name, code, number, species, backbone)]}: the residue names a panel shows, as residue labels (backbone
+    when the dummy root is bonded to an N or a carbonyl C, i.e. the piece is main chain) and as texts naming a
+    three-letter residue (the species of the atom the text is put near; backbone when that species is cut)."""
+    out = collections.defaultdict(list)
+    def carbonyl(r):
+        return f.atoms[r]['el'] == 'C' and any(
+            r in (b['a'], b['b']) and f.atoms[b['b'] if b['a'] == r else b['a']]['el'] == 'O' and float(b['order']) == 2
+            for b in f.bonds)
+    for ref, a in f.atoms.items():
+        if a.get('kind') != 'residue' or not a.get('label'):
+            continue
+        m = RESIDUE_NAME.search(a['label']) or re.search(r'(?<![A-Za-z])([A-Z])[- ]?(\d+)(?![\d])', a['label'])
+        backbone = any(f.atoms[n]['el'] == 'N' or carbonyl(n) for n in f.nbrs.get(ref, ()))
+        out[ref.split('.', 1)[0]].append((a['label'], m.group(1) if m else None, int(m.group(2)) if m else None,
+                                          ref.rsplit(':', 1)[0], backbone))
+    for p in f.resolved['panels']:
+        for t in p.get('texts', []):
+            species = (t.get('near') or '').rsplit(':', 1)[0] or None
+            cut = species is not None and any(r.rsplit(':', 1)[0] == species and a.get('kind') == 'cut' for r, a in f.atoms.items())
+            for m in RESIDUE_NAME.finditer(t.get('text') or ''):
+                out[p['id']].append((m.group(0), m.group(1), int(m.group(2)), species, cut))
+    return out
+
+
+def det_residue_once(f):
+    out = []
+    for pid, marks in sorted(_residue_marks(f).items()):
+        count = collections.Counter(name for name, *_ in marks)
+        for name, n in sorted(count.items()):
+            if n > 1:
+                where = sorted({s or 'text' for nm, _, _, s, _ in marks if nm == name})
+                out.append('panel %s: residue %s is shown %d times (%s); show it once' % (pid, name, n, ', '.join(where)))
+        pieces = [(c, k, s, nm) for nm, c, k, s, bb in marks if bb and k is not None]
+        for (c1, k1, s1, n1), (c2, k2, s2, n2) in itertools.combinations(sorted(set(pieces), key=lambda x: x[1]), 2):
+            if abs(k1 - k2) == 1 and s1 != s2 and (len(c1) == 3) == (len(c2) == 3):
+                out.append('panel %s: consecutive residues %s and %s are drawn with their backbone as separate pieces '
+                           '(%s, %s); join them into one species' % (pid, n1, n2, s1, s2))
+    return out
+
+
 def det_reaction_kinds(f):
     from iupac_features import REACTION_KINDS
     out = []
@@ -2690,6 +2736,7 @@ def repair_hints(f, name, findings):
         'coordination': 'use coord plain bonds, explicit ligand H, and the correct eta attachment atoms',
         'metal_geometry': 'use geometry with ligand order matching the specified coordination template',
         'residue_codes': 'use one residue code style in the whole figure (three-letter by default)',
+        'residue_once': 'show each residue once per panel: draw a residue whose backbone takes part, with its side chain if that takes part too, and consecutive residues drawn with their backbone, as one species; end the backbone with dummy atoms listed in "cut" (wavy truncation marks) and name each residue with a text near its alpha carbon; a residue whose side chain alone takes part keeps its "residue" label',
         'reaction_kinds': 'choose single, equilibrium, resonance, both, stoich or retro and redraw',
         'delocalized_bonds': 'restore the 1.5 bond style; keep the dashed line parallel and inside the ring',
         'ts_brackets': 'use ts: true and leave room around the automatic brackets and upper-right double dagger',
@@ -2777,7 +2824,7 @@ def repair_hints(f, name, findings):
     return hints
 
 
-INPUT_CHECKS = ('arrows_steps', 'residue_codes', 'radical_marks', 'electron_flow')
+INPUT_CHECKS = ('arrows_steps', 'residue_codes', 'residue_once', 'radical_marks', 'electron_flow')
 
 
 def run_checks(f, input_only=False):
@@ -3025,7 +3072,7 @@ def plant(f, name):
         sc = g.scene()
         sc['bonds'] = [s for s in sc['bonds'] if not (s.owner and s.owner[0] == 'hbond')]
         return g, 'all hydrogen-bond dots removed'
-    if name in ('radical_marks', 'electron_flow', 'isotopes', 'hydrogen_display', 'coordination', 'metal_geometry', 'residue_codes', 'reaction_kinds'):
+    if name in ('radical_marks', 'electron_flow', 'isotopes', 'hydrogen_display', 'coordination', 'metal_geometry', 'residue_codes', 'residue_once', 'reaction_kinds'):
         ref = next(iter(g.atoms))
         declared = [r for r, a in g.atoms.items() if a.get('radical') and not a.get('radical_inferred')]
         if name == 'radical_marks' and declared:
@@ -3065,6 +3112,12 @@ def plant(f, name):
                 return None, 'fewer than two atoms'
             g.atoms[refs[0]].update(kind='residue', label='Glu170')
             g.atoms[refs[1]].update(kind='residue', label='K123')
+        elif name == 'residue_once':
+            panel = next((p for p in g.resolved['panels'] if len(p['atoms']) >= 2), None)
+            if panel is None:
+                return None, 'no panel with two atoms'
+            for a in panel['atoms'][:2]:
+                g.atoms[a['ref']].update(kind='residue', label='Glu170')
         else:
             g.resolved['reaction_arrows'].append({'kind': 'invalid-arrow'})
         return g, name + ': planted a missing or incorrect IUPAC feature'

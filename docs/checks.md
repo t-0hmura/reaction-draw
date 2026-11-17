@@ -15,7 +15,7 @@ These checks cover overlaps, hidden atom symbols, and the [rules](rules.md). The
 | Charges | `charges`, `charge_circled`, `charge_own_atom`, `charge_size`, `charge_open`, `ion_text` |
 | Atom numbers | `number_size`, `number_place`, `number_clear`, `number_on_h` |
 | Bonds and angles | `chain_angles`, `four_bond`, `ring_substituents`, `label_bonds`, `one_label_bonds`, `bond_lengths`, `partial_dashes`, `delocalized_bonds`, `hbond_dots` |
-| Figure | `column_arrows`, `reaction_kinds`, `ts_brackets`, `colors`, `residue_codes`, `figure_style`, `coordination`, `metal_geometry` |
+| Figure | `column_arrows`, `reaction_kinds`, `ts_brackets`, `colors`, `residue_codes`, `residue_once`, `figure_style`, `coordination`, `metal_geometry` |
 
 Each detector runs only when its target feature is present in the figure (e.g., `charge_size` runs only when charges are present); the summary lists applicable and non-applicable detectors. With `--positive-control`, which the regression test always uses, every active detector must also catch a planted error.
 

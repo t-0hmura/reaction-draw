@@ -82,7 +82,7 @@ def near_candidates(direction, d):
     else:
         d0 = float(direction)
         dirs = [d0] + [(d0 + s * k) % 360.0 for k in (30, 60, 90, 120, 150) for s in (1, -1)] + [(d0 + 180.0) % 360.0]
-    return dirs, [d, d + 0.4, d + 0.8]
+    return dirs, [d, d + 0.4, d + 0.8, d + 1.2]
 
 
 def rigid_fit(old, new):
@@ -441,7 +441,8 @@ def depict(sp, force_rdkit=False):
     mol = Mol(sp)
     if mol.n == 1:
         return {mol.map[0]: (0.0, 0.0)}, [mol.map[0]]
-    if not mol.ring_bonds:
+    intra = [(mol.idx[a], mol.idx[b]) for a, b in sp.get('intra_hbonds') or [] if a in mol.idx and b in mol.idx]
+    if not mol.ring_bonds and not intra:
         want = _stereo_wanted(mol)
         best = None
         for phase in (1, -1):
@@ -467,6 +468,17 @@ def depict(sp, force_rdkit=False):
     # rings: RDKit CoordGen, turned so that the longest chain runs to the right, heavy branches up
     Chem, rdDepictor = _rdkit()
     m = _rd_mol(mol, sp['smiles_written'])
+    if intra:
+        # a hydrogen bond inside the species is two bonds through a stand-in atom while the 2D shape is made: the H faces
+        # its acceptor across the ring they close, about the dotted-bond span apart
+        rw = Chem.RWMol(m)
+        for a, b in intra:
+            x = rw.AddAtom(Chem.Atom(0))
+            rw.AddBond(a, x, Chem.BondType.SINGLE)
+            rw.AddBond(x, b, Chem.BondType.SINGLE)
+        m = rw.GetMol()
+        m.UpdatePropertyCache(strict=False)
+        Chem.FastFindRings(m)
     rdDepictor.SetPreferCoordGen(True)
     if force_rdkit:
         rdDepictor.Compute2DCoords(m, forceRDKit=True)
@@ -1064,7 +1076,7 @@ class Layout(object):
         was, broken = self.before(sid)
         if not was:
             return None
-        kept = self.kept_shape(sid, was)
+        kept = None if sp.get('intra_hbonds') else self.kept_shape(sid, was)
         pos = kept or self.refit(sid, was)
         if broken:
             m, q, _ = broken[0]
@@ -1106,6 +1118,9 @@ class Layout(object):
         mol, rmol = self.mol[sid], self.mol[ref_sid]
         ref = self.xy[ref_sid]
         common = [m for m in mol.idx if m in rmol.idx and m in ref]
+        if self.sp[sid].get('intra_hbonds') and len(common) >= 2:
+            # a hydrogen bond inside it shapes this molecule: its own drawing, laid over the earlier places
+            return self.refit(sid, {m: ref[m] for m in common})
         pos = {m: ref[m] for m in common}
         self.chain[sid] = [m for m in self.chain.get(ref_sid, []) if m in mol.idx]
         reacting = [m for m in common if mol.nb_maps(m) != rmol.nb_maps(m)]
@@ -1678,8 +1693,111 @@ class Layout(object):
                 if sid not in self.xy:
                     ref = self.reference(sid)
                     self.place(sid, self.clear_of_panel(sid, self.derive(sid, ref)) if ref else self.history(sid) or self.place_free(sid))
+        self.fit_intra_hbonds()
         self.iupac_hbond_spacing()
         return self.arrange()
+
+    def fit_intra_hbonds(self):
+        """A hydrogen bond inside one species (a residue's backbone N-H to an oxyanion of the same chain): on the path
+        between the H and its acceptor, reflect the part beyond each atom about the bond toward the acceptor, or turn the
+        branch holding the H by 120 degrees, keeping the change that brings the H to the dotted-bond span the IUPAC
+        spacing asks for without crowding other atoms.  Hand-placed atoms do not move."""
+        bpt = self.style['bond_length_pt']
+        height = CAP * self.style['font_size_pt'] / bpt
+        margin = self.style['label_margin_pt'] / bpt
+        for panel in self.panels:
+            for a, b in panel['hbonds']:
+                if a['sid'] != b['sid']:
+                    continue
+                sid, mol = a['sid'], self.mol[a['sid']]
+                hand = set(self.sp[sid]['xy'])
+                h, acc = mol.idx[a['atom']], mol.idx[b['atom']]
+                prev, todo = {h: None}, [h]
+                while todo:
+                    x = todo.pop(0)
+                    for y in mol.adj[x]:
+                        if y not in prev:
+                            prev[y] = x
+                            todo.append(y)
+                if acc not in prev:
+                    continue
+                path = [acc]
+                while path[-1] != h:
+                    path.append(prev[path[-1]])
+                path.reverse()                                # h ... acc
+                others = [q for s2 in self.xy if s2 != sid and self.sp[s2]['panel'] == panel['id'] for q in self.xy[s2].values()]
+                bonded = {frozenset(e) for e in mol.order}
+                def crossed(p1, p2, q1, q2):
+                    def side(o, a_, b_):
+                        return (a_[0] - o[0]) * (b_[1] - o[1]) - (a_[1] - o[1]) * (b_[0] - o[0])
+                    return (side(p1, p2, q1) * side(p1, p2, q2) < 0) and (side(q1, q2, p1) * side(q1, q2, p2) < 0)
+                def wanted(xy):
+                    pa, pb = xy[a['atom']], xy[b['atom']]
+                    d = dist(pa, pb) or 1.0
+                    u = ((pb[0] - pa[0]) / d, (pb[1] - pa[1]) / d)
+                    cut = 0.0
+                    for e in (a, b):
+                        box = self.label_box(sid, e['atom'], xy)
+                        if box is not None:
+                            cut += (box[2] - box[0]) / 2 * abs(u[0]) + (box[3] - box[1]) / 2 * abs(u[1]) + margin
+                    return 2 * height + cut + .05
+                def score(xy):
+                    d = dist(xy[a['atom']], xy[b['atom']])
+                    w = wanted(xy)
+                    crowd = 0.0
+                    maps = list(xy)
+                    for i, m in enumerate(maps):
+                        for n in maps[i + 1:]:
+                            if {m, n} == {a['atom'], b['atom']} or frozenset((mol.idx[m], mol.idx[n])) in bonded:
+                                continue
+                            crowd += max(0.0, 0.75 - dist(xy[m], xy[n])) * 20
+                        crowd += sum(max(0.0, 0.9 - dist(xy[m], q)) * 20 for q in others)
+                    # the dotted line crosses no bond of this species
+                    ends = (xy[a['atom']], xy[b['atom']])
+                    crowd += 10 * sum(crossed(ends[0], ends[1], xy[mol.map[i]], xy[mol.map[j]])
+                                      for i, j in map(tuple, mol.order) if not {mol.map[i], mol.map[j]} & {a['atom'], b['atom']})
+                    return max(0.0, d - w) + 5 * max(0.0, w - d) + crowd
+                def reflect(xy, idxs, p, q):
+                    (px, py), (qx, qy) = xy[mol.map[p]], xy[mol.map[q]]
+                    ux, uy = qx - px, qy - py
+                    n2 = ux * ux + uy * uy or 1.0
+                    out = dict(xy)
+                    for k in idxs:
+                        x, y = xy[mol.map[k]]
+                        t = ((x - px) * ux + (y - py) * uy) / n2
+                        out[mol.map[k]] = (2 * (px + t * ux) - x, 2 * (py + t * uy) - y)
+                    return out
+                def turn(xy, idxs, r, deg):
+                    c = xy[mol.map[r]]
+                    out = dict(xy)
+                    moved = transform({mol.map[k]: (xy[mol.map[k]][0] - c[0], xy[mol.map[k]][1] - c[1]) for k in idxs}, deg)
+                    out.update({m: (c[0] + x, c[1] + y) for m, (x, y) in moved.items()})
+                    return out
+                xy = dict(self.xy[sid])
+                best = score(xy)
+                start = best
+                for _ in range(4):
+                    improved = False
+                    for k in range(1, len(path) - 1):
+                        r, toward, back = path[k], path[k - 1], path[k + 1]
+                        beyond = [i for i in mol.subtree(r, back) if i != r]
+                        if acc in beyond or frozenset((r, back)) in mol.ring_bonds:
+                            continue
+                        branch = mol.subtree(toward, r)
+                        cands = [reflect(xy, beyond, r, back)]
+                        if acc not in branch and frozenset((r, toward)) not in mol.ring_bonds:
+                            cands += [reflect(xy, branch, r, back), turn(xy, branch, r, 120), turn(xy, branch, r, -120)]
+                        for cand in cands:
+                            if any(dist(cand[m], xy[m]) > 1e-6 for m in hand):
+                                continue
+                            s_ = score(cand)
+                            if s_ < best - 1e-6:
+                                best, xy, improved = s_, cand, True
+                    if not improved:
+                        break
+                if best < start - 1e-6:
+                    self.xy[sid] = xy
+                    self.notes.append('%s: turned toward its hydrogen bond %d-%d' % (sid, a['atom'], b['atom']))
 
     def iupac_hbond_spacing(self):
         """Leave a two-label-height visible dotted span, moving whole species only."""
@@ -1788,14 +1906,16 @@ class Layout(object):
                             oy = min(b[3], b2[3]) - max(b[1], b2[1])
                             if ox > -0.15 and oy > -0.15:
                                 coll += (ox + 0.15) * (oy + 0.15) * 4
-                        key = (coll > 1e-9, k + j, k, round(coll, 6))
+                        # a free place nearest the asked one; when every place touches something, the least touched
+                        key = (coll > 1e-9, k + j if coll <= 1e-9 else 0, round(coll, 6), k + j, k)
                         if best is None or key < best[0]:
                             best = (key, (x, y), dg, dd)
                 (x, y) = best[1]
                 if best[0][1] > 0 and t.get('dir') is not None:
                     self.notes.append('panel %s text %r: the place asked by "near" (%.0f degrees, %.2f) is taken; put at '
                                       '%.0f degrees, %.2f' % (pid, t['text'], float(t['dir']), d, best[2] % 360.0, best[3]))
-            out.append({'text': t['text'], 'x': x, 'y': y, 'size': t['size'], 'align': t['align'], 'box': box_at(x, y)})
+            out.append({'text': t['text'], 'x': x, 'y': y, 'size': t['size'], 'align': t['align'], 'box': box_at(x, y),
+                        **({'near': '%s:%s' % (t['near']['sid'], t['near']['atom'])} if 'xy' not in t else {})})
         return out
 
     def plus_pairs(self, p):
@@ -1978,8 +2098,8 @@ class Layout(object):
         for p in self.panels:
             pid = p['id']
             ox, oy = offsets[pid]
-            texts = [{'text': t['text'], 'x': t['x'] + ox, 'y': t['y'] + oy, 'size': t['size'], 'align': t['align']}
-                     for t in ptexts[pid]]
+            texts = [{'text': t['text'], 'x': t['x'] + ox, 'y': t['y'] + oy, 'size': t['size'], 'align': t['align'],
+                      **({'near': t['near']} if t.get('near') else {})} for t in ptexts[pid]]
             boxes = []
             for b in p['boxes']:
                 sids = ['%s.%s' % (pid, k) for k in b['species']]

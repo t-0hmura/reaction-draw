@@ -444,7 +444,7 @@ V2_TOP_KEYS = {'format', 'name', 'source', 'style', 'rows', 'numbers', 'colors',
                'expected_stereo', 'drawing'}
 V2_PANEL_KEYS = {'id', 'title', 'species', 'arrows', 'hbonds', 'lone_pairs', 'boxes', 'texts', 'plus', 'angle_exceptions',
                  'eta', 'pseudobonds', 'polyhedron'}
-V2_SPECIES_KEYS = {'id', 'smiles', 'abbrev', 'residue', 'show', 'label', 'xy', 'near', 'flip', 'rotate', 'offset',
+V2_SPECIES_KEYS = {'id', 'smiles', 'abbrev', 'residue', 'cut', 'show', 'label', 'xy', 'near', 'flip', 'rotate', 'offset',
                    'bond_style', 'note', 'expected_stereo', 'ts', 'radicals', 'oxidation', 'geometry', 'keep_h', 'radical_angles'}
 
 
@@ -638,12 +638,22 @@ def load_spec_v2(data, path=None):
 
             abbrev = keyed('abbrev', _abbrev)
             residue = keyed('residue', _residue_text)
-            for mp in list(abbrev) + list(residue):
+            cut = []                       # dummy atoms drawn as a wavy truncation mark: the chain goes on there
+            for mp in s.get('cut') or []:
+                if not isinstance(mp, int) or isinstance(mp, bool) or mp not in maps:
+                    raise SpecError('%s (%s): "cut" names atom map %r, which is not in the SMILES' % (sw, sid, mp))
+                cut.append(mp)
+            for mp in list(abbrev) + list(residue) + cut:
                 if not graph['atoms'][maps[mp]]['dummy']:
-                    raise SpecError('%s (%s): abbrev/residue map %d must be a dummy atom [*:%d]' % (sw, sid, mp, mp))
+                    raise SpecError('%s (%s): abbrev/residue/cut map %d must be a dummy atom [*:%d]' % (sw, sid, mp, mp))
+            for mp in cut:
+                if mp in abbrev or mp in residue:
+                    raise SpecError('%s (%s): dummy atom [*:%d] is a cut; it takes no "abbrev" or "residue"' % (sw, sid, mp))
+                if sum(maps[mp] in (b['a'], b['b']) for b in graph['bonds']) != 1:
+                    raise SpecError('%s (%s): cut [*:%d] must have exactly one bond' % (sw, sid, mp))
             for a in graph['atoms']:
-                if a['dummy'] and a['map'] not in abbrev and a['map'] not in residue:
-                    raise SpecError('%s (%s): dummy atom [*:%d] needs an "abbrev" or "residue" entry' % (sw, sid, a['map']))
+                if a['dummy'] and a['map'] not in abbrev and a['map'] not in residue and a['map'] not in cut:
+                    raise SpecError('%s (%s): dummy atom [*:%d] needs an "abbrev", "residue" or "cut" entry' % (sw, sid, a['map']))
             show = []
             for mp in s.get('show') or []:
                 if not isinstance(mp, int) or mp not in maps:
@@ -677,7 +687,7 @@ def load_spec_v2(data, path=None):
                     raise SpecError('%s (%s): "near" must name one atom of the same panel' % (sw, sid))
                 near = {'species': nk, 'atom': nm, 'dir': near.get('dir'), 'dist': near.get('dist')}
             sp = {'id': sid, 'key': key, 'panel': pid, 'panel_index': pi, 'smiles': smiles, 'smiles_written': s['smiles'],
-                  'graph': graph, 'map_to_index': maps, 'abbrev': abbrev, 'residue': residue, 'show': show,
+                  'graph': graph, 'map_to_index': maps, 'abbrev': abbrev, 'residue': residue, 'cut': cut, 'show': show,
                   'label': keyed('label', lambda v, w: str(v)), 'xy': keyed('xy', _xy), 'near': near, 'flip': flip,
                   'rotate': float(rot), 'offset': _xy(s['offset'], '%s offset' % sw) if s.get('offset') is not None else None,
                   'bond_style': bond_style, 'ts': s.get('ts', False)}
@@ -734,6 +744,8 @@ def load_spec_v2(data, path=None):
             if any(x['atom2'] is not None for x in r):
                 raise SpecError('%s: a hydrogen bond joins two atoms, not bonds' % where)
             panel['hbonds'].append(r)
+            if r[0]['sid'] == r[1]['sid']:          # within one species: its 2D shape closes the ring the bond makes
+                by_id[r[0]['sid']].setdefault('intra_hbonds', []).append((r[0]['atom'], r[1]['atom']))
         panel['lone_pairs'] = []
         for li, l in enumerate(p.get('lone_pairs') or []):
             r = atom_ref(l, pid, 'panel %s lone_pairs[%d]' % (pid, li))
@@ -891,9 +903,9 @@ def _is_monatomic_ion(sp, a):
 
 
 def atom_kind(sp, a):
-    """'abbrev', 'residue' or 'atom'."""
+    """'abbrev', 'residue', 'cut' or 'atom'."""
     if a['dummy']:
-        return 'abbrev' if a['map'] in sp['abbrev'] else 'residue'
+        return 'abbrev' if a['map'] in sp['abbrev'] else 'cut' if a['map'] in sp.get('cut', ()) else 'residue'
     return 'atom'
 
 
@@ -905,7 +917,7 @@ def label_text(sp, a, xy):
     if a.get('hidden_h'):
         return None
     if a['dummy']:
-        return sp['abbrev'][mp]['text'] if mp in sp['abbrev'] else sp['residue'][mp]
+        return sp['abbrev'][mp]['text'] if mp in sp['abbrev'] else None if mp in sp.get('cut', ()) else sp['residue'][mp]
     if mp in sp['label']:
         return sp['label'][mp]
     sym, h = a['symbol'], a.get('display_h', a['h']) or 0

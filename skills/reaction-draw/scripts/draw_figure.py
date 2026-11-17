@@ -11,7 +11,9 @@ Exit status (of the BEST version when several are drawn): 0 when every check pas
 2 when the input file is wrong or a stage cannot run. Stages, outputs and options: the repository's docs/backend.md.
 """
 import argparse
+import collections
 import concurrent.futures
+import copy
 import json
 import math
 import os
@@ -508,6 +510,100 @@ def _turn_branch(out, fig, result, draw, draw_args, saved, panel, graph, arrow, 
     return None
 
 
+HBOND_FLIP_MAX = 6          # mirrored hydrogen-bonded groups drawn side by side
+HBOND_FLIP_CHECKS = ('overlap_text_bond', 'overlap_text_text', 'overlap_arrow_bond', 'overlap_arrow_text',
+                     'overlap_arrow_arrow', 'bond_crossing', 'arrows_ends', 'arrows_shape')
+HBOND_FLIP_KEEP = ('graph', 'stereochemistry', 'charges', 'hydrogens', 'labels_drawn', 'arrows_count', 'arrows_head',
+                   'arrows_color', 'colors', 'cdxml', 'frame')
+
+
+def _mirrored(resolved, pid, group, axis):
+    """A copy of resolved in which the species of group in panel pid are mirrored left-right (axis 'x') or up-down
+    ('y') about the middle of their extent; wedges and hashes swap so that every configuration stays, a manual bend
+    between two of their atoms turns the other way, and a text put near one of their atoms goes along."""
+    r = copy.deepcopy(resolved)
+    p = next(q for q in r['panels'] if q['id'] == pid)
+    atoms = [a for a in p['atoms'] if a['species'] in group]
+    k = 'x' if axis == 'x' else 'y'
+    c = (min(a[k] for a in atoms) + max(a[k] for a in atoms)) / 2
+    refs = {a['ref'] for a in atoms}
+    for a in atoms:
+        a[k] = round(2 * c - a[k], 4)
+    for b in p['bonds']:
+        if b['a'] in refs and b['b'] in refs and b.get('style') in ('wedge', 'hash'):
+            b['style'] = 'hash' if b['style'] == 'wedge' else 'wedge'
+    for arrow in p['curved']:
+        if arrow.get('bend') is not None and all(x in refs for x in arrow['from']['refs'] + arrow['to']['refs']):
+            arrow['bend'] = -arrow['bend']
+    for t in p.get('texts', []):
+        if t.get('near') in refs:
+            t[k] = round(2 * c - t[k], 4)
+    return r
+
+
+def _hbond_groups(resolved, pids):
+    """(panel, species, group) for each species of the panels pids that takes part in a hydrogen bond: the group is it
+    and the species joined to it by hydrogen bonds alone (no arrow or other hydrogen bond ties them elsewhere), most
+    atoms first."""
+    out = []
+    for p in resolved['panels']:
+        if p['id'] not in pids or not p.get('hbonds'):
+            continue
+        of = lambda ref: ref.rsplit(':', 1)[0]
+        hb, tied = collections.defaultdict(set), collections.defaultdict(set)
+        for a, b in p['hbonds']:
+            hb[of(a)].add(of(b))
+            hb[of(b)].add(of(a))
+        for arrow in p['curved']:
+            ends = {of(x) for x in arrow['from']['refs'] + arrow['to']['refs']}
+            for e in ends:
+                tied[e] |= ends - {e}
+        if any(b.get('ts') for b in p.get('boxes', [])):
+            continue
+        size = collections.Counter(a['species'] for a in p['atoms'])
+        for sid in sorted(hb, key=lambda x: -size[x]):
+            group = {sid} | {t for t in hb[sid] if t != sid and hb[t] <= {sid} and not tied[t] - {sid}}
+            out.append((p['id'], sid, group, size[sid] + sum(size[t] for t in group - {sid})))
+    out.sort(key=lambda g: -g[3])
+    return [(pid, sid, group) for pid, sid, group, _ in out]
+
+
+def retry_hbond_flips(out, fig, result, draw, draw_args, stats):
+    """When a panel with hydrogen bonds fails an overlap, crossing or arrow check: draw its hydrogen-bonded groups
+    mirrored to the other side (left-right and up-down, at most HBOND_FLIP_MAX side by side) and keep the one that most
+    lowers the failed checks and findings, gains none in HBOND_FLIP_KEEP and brings no two species closer."""
+    failed = [n for n in HBOND_FLIP_CHECKS if n in result['failed']]
+    if not failed:
+        return fig, result, []
+    panels = {q['id'] for q in fig.resolved['panels']}
+    pids = {m.group(1) for n in failed for x in result['checks'][n]['findings']
+            for m in re.finditer(r'(?<![\w.])([\w-]+)\.[\w-]+:\d+', x) if m.group(1) in panels}
+    groups = _hbond_groups(fig.resolved, pids)
+    jobs = [(pid, sid, group, axis) for pid, sid, group in groups for axis in ('y', 'x')][:HBOND_FLIP_MAX]
+    if not jobs:
+        return fig, result, []
+    def rank(checked):
+        return len(checked['failed']), sum(len(c['findings']) for c in checked['checks'].values())
+    def better(checked):
+        return (not checked['checks']['stereochemistry']['findings']
+                and all(set(checked['checks'][n]['findings']) <= set(result['checks'][n]['findings']) for n in HBOND_FLIP_KEEP)
+                and rank(checked) < rank(result) and not _closer(result, checked)
+                and not any('no route found' in x and x not in result['checks']['arrows_ends']['findings']
+                            for x in checked['checks']['arrows_ends']['findings']))
+    drawn = [(_mirrored(fig.resolved, pid, group, axis), None) for pid, sid, group, axis in jobs]
+    results = _candidates(drawn, out, fig, draw, draw_args, lambda checked: False, stats, 'retry_hbond_flips')
+    scored = [(rank(checked), k) for k, (_, checked, _, error) in enumerate(results) if error is None and better(checked)]
+    if not scored:
+        return fig, result, []
+    _, k = min(scored)
+    candidate, checked, ok, _ = _candidate(drawn[k][0], out, fig, draw, draw_args, None, better, stats, 'retry_hbond_flips')
+    if not ok:
+        return fig, result, []
+    pid, sid, group, axis = jobs[k]
+    return candidate, checked, ['hydrogen-bonded group %s mirrored %s in panel %s' % (
+        ', '.join(sorted(group)), 'left-right' if axis == 'x' else 'up-down', pid)]
+
+
 def retry_layout(spec, out, fig, result, draw, draw_args, stats):
     """Try bounded structural alternatives on failure, accepting only independently checked drawings."""
     import layout_repair
@@ -690,7 +786,7 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     times['resolve'] = time.time() - t0
     notes = list(resolved.get('notes', []))     # kept in the state's summary with the result
     retry_counts = {stage: {'draws': 0} for stage in
-                    ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs')}
+                    ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs', 'retry_hbond_flips')}
     retry_counts['retry_iupac_pairs']['accepted'] = []
     preflight = check_rules.run_checks(check_rules.Figure(resolved, {}, {}, None), input_only=True)
     if not preflight['ok']:
@@ -726,6 +822,12 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 plain = draw         # the later retries keep these arrows short
                 def draw(resolved, dest, options=None, **kw):
                     return plain(resolved, dest, options=dict(options or {}, **short), **kw)
+        if native_backend and any(n in result['failed'] for n in HBOND_FLIP_CHECKS):
+            # before the other retries: a finding at a hydrogen bond is not theirs to fix
+            fig, result, retried = retry_hbond_flips(out, fig, result, draw, {
+                'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
+                'browser_cmd': browser_cmd}, retry_counts['retry_hbond_flips'])
+            notes.extend(retried)
         if native_backend and _retryable(result):
             _progress('fixing automatically: %s' % ', '.join(result['failed']), always=True)
             retry_started = time.time()
