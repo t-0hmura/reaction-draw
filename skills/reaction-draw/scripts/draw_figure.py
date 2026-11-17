@@ -40,6 +40,7 @@ else:
     import fcntl
 
 SMALL_DPI = 150
+MAX_PAIR_DRAWS = 60        # drawings of the axial-pair moves per run; every accepted move recorded so far needed fewer
 ACS_COLUMNS_PT = ((234, 'single column (3.25 in)'), (504, 'double column (7 in)'))
 START = time.time()
 LAST_PROGRESS = None
@@ -327,6 +328,9 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args, stats):
                       for repair in ((False, True) if abs(d) in (5, 10) else (True,))]
             drawn = 0
             for degree, sx, sy, repair in trials:
+                if stats['draws'] >= MAX_PAIR_DRAWS:
+                    notes.append('axial-pair moves stopped after %d drawings' % MAX_PAIR_DRAWS)
+                    return fig, result, notes
                 resolved = copy.deepcopy(fig.resolved)
                 atoms = {a['ref']: a for p in resolved['panels'] for a in p['atoms']}
                 _keep_saved_marks(atoms, saved, panel_id + '.')
