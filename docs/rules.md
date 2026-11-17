@@ -10,7 +10,7 @@ IUPAC rules ([decided by the agent](../skills/reaction-draw/references/iupac-rul
 - Use the bundled scripts; do not write your own parser, checker, or renderer.
 - Let the scripts generate the initial layout; fix issues in the input file, never in the rendered drawing.
 - After two failed runs, abbreviate non-reacting groups or split the step into two panels.
-- After a pass, fix what still reads badly; if a later run fails, revert to the last passing figure.
+- After a pass, make at most three revisions of what still reads badly, and hand over the passing version that reads best.
 
 ## Size and layout
 
