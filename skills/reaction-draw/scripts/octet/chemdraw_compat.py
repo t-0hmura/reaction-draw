@@ -10,7 +10,9 @@ adapt() rewrites what ChemDraw 26 draws differently from the figure (measured on
   - coordination bonds as dative bonds from the ligand to the metal;
   - one-line captions with room enough not to wrap.
 Every element changed, removed or added is recorded in an annotation; restore() puts the file back as Octet wrote it,
-so the read-back check (Octet's CDXML reader) sees the same document.  No change touches what the figure means.
+so the read-back check (Octet's CDXML reader) sees the same document, except the marks: they stay where the figure draws
+them (marks_only=True gives that document), since Octet's reader gives a lone pair to the nearest atom and the place
+Octet writes can be as near to a bonded atom.  No change touches what the figure means.
 """
 import json
 import math
@@ -47,7 +49,7 @@ def _fit(pairs):
     return a, my - a * mx
 
 
-def adapt(cdxml, svg, report, refs, extra=None):
+def adapt(cdxml, svg, report, refs, extra=None, marks_only=False):
     """The CDXML text ChemDraw shows as the figure.  report: the adapter's report (pt, the SVG's frame); refs: the atom
     refs by AtomNumber; extra: {'coord': [[k, k]], 'ts': [k]} (AtomNumbers of coordination bonds and of TS atoms)."""
     extra = extra or {}
@@ -94,7 +96,7 @@ def adapt(cdxml, svg, report, refs, extra=None):
     to_page = lambda q: (ax * q[0] + bx, ay * q[1] + by)
     scale = (abs(ax) + abs(ay)) / 2
 
-    # lone pairs, unpaired electrons and circled charges where the figure draws them
+    # lone pairs, unpaired electrons and circled charges where the figure draws them (not undone by restore())
     pairs = defaultdict(list)
     for lp in report.get('lone_pairs') or []:
         pairs[lp['ref']].append(lp)
@@ -125,7 +127,6 @@ def adapt(cdxml, svg, report, refs, extra=None):
                 continue
             k, lp = min(((pairs[ref].index(lp), lp) for lp in cands), key=lambda t: math.dist(to_page(t[1]['center_pt']), box[:2]))
             used.add((ref, 'p', k))
-            keep(g)
             a, b = (to_page(d) for d in lp['dots_pt'])
             g.set('BoundingBox', _fmt(a + b))
         elif kind == 'Electron':
@@ -134,13 +135,14 @@ def adapt(cdxml, svg, report, refs, extra=None):
                 continue
             k, r = min(((radicals[ref].index(r), r) for r in cands), key=lambda t: math.dist(to_page(t[1]['center_pt']), box[:2]))
             used.add((ref, 'r', k))
-            keep(g)
             u, v = to_page(r['center_pt'])
             g.set('BoundingBox', _fmt((u, v, box[2] + u - box[0], box[3] + v - box[1])))
         elif kind in ('CirclePlus', 'CircleMinus') and ref in charges:
-            keep(g)
             u, v = to_page(charges[ref]['center_pt'])
             g.set('BoundingBox', _fmt((u, v, box[2] + u - box[0], box[3] + v - box[1])))
+
+    if marks_only:
+        return head + ET.tostring(root, encoding='unicode')
 
     # hydrogen bonds: rows of filled dots where the figure draws them; the bonds leave the covalent graph
     hb = [b for b in root.iter('b') if b.get('Display') == 'DottedHydrogen']

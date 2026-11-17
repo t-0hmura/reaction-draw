@@ -133,12 +133,13 @@ def run_job(job_path):
                 res = page.evaluate('async j => await drawFigure(j)', job['page'])
                 T['draw'] = time.perf_counter() - t
                 # the ChemDraw file: Octet's own CDXML writer (toCdxml), without Octet's JSON layer, adapted to how ChemDraw
-                # reads it (chemdraw_compat.py); the read-back below sees Octet's own document again
+                # reads it (chemdraw_compat.py); the read-back below sees Octet's own document again, with the marks
+                # where the figure draws them
                 shown, compat_error = res['cdxml'], None
                 try:
-                    shown = chemdraw_compat.adapt(res['cdxml'], res['svg'], res['report'], (res.get('meta') or {}).get('refs', []),
-                                                  job['page'].get('chemdraw'))
-                    if canonical(chemdraw_compat.restore(shown)) != canonical(res['cdxml']):
+                    args = (res['cdxml'], res['svg'], res['report'], (res.get('meta') or {}).get('refs', []), job['page'].get('chemdraw'))
+                    shown = chemdraw_compat.adapt(*args)
+                    if canonical(chemdraw_compat.restore(shown)) != canonical(chemdraw_compat.adapt(*args, marks_only=True)):
                         raise ValueError('the adapted file does not restore to the written one')
                 except Exception as e:                        # keep Octet's own file
                     shown, compat_error = res['cdxml'], '%s: %s' % (type(e).__name__, e)
