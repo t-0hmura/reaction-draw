@@ -89,7 +89,7 @@ Exit codes: `0` when rendering succeeds (any layout/drawing failures are printed
 
 ## Automatic retries
 
-`draw_figure.py` retries only after a failed check, logging each attempt in `.state.json` → `summary`:
+`draw_figure.py` retries after a failed check (step 0 also after an `arrows_clear` warning between two arrows), logging each attempt in `.state.json` → `summary`:
 
 0. Right after the first drawing (and again after the retries below), a local curved arrow (a bond's electrons moving onto one of its own atoms, or an atom's pair moving into one of its own bonds) that comes close to another arrow (an `arrows_clear` warning between two arrows, two arrows touching, or a loop) is redrawn as a short hook, together with the local arrows that share an atom with it. The short hooks are kept, also in the later retries, only if no check gains a finding and the findings or the `arrows_clear` warnings fall.
 
