@@ -4,9 +4,10 @@
 
   python draw_figure.py INPUT.json --out DIR [--dpi 600 | --png-width N] [--browser-cmd "ssh HOST PYTHON"]
                         [--positive-control] [--quiet] [--octet PATH --node-modules PATH]
+  python draw_figure.py A.json B.json C.json --out DIR     (versions drawn at once, each in DIR/<name>; BEST names one)
   python draw_figure.py --check-env [--browser-cmd "ssh HOST PYTHON"]
 
-Exit status: 0 when every check passes (and, with --positive-control, the positive control finds every planted error), 1 when a check fails,
+Exit status (of the BEST version when several are drawn): 0 when every check passes (and, with --positive-control, the positive control finds every planted error), 1 when a check fails,
 2 when the input file is wrong or a stage cannot run. Stages, outputs and options: the repository's docs/backend.md.
 """
 import argparse
@@ -42,7 +43,7 @@ else:
 
 SMALL_DPI = 150
 MAX_PAIR_DRAWS = 30        # drawings of the axial-pair moves per run; the regression inputs that need them use at most 28
-PAIR_WORKERS = min(4, os.cpu_count() or 1)   # axial-pair candidates drawn side by side
+PAIR_WORKERS = min(4, int(os.environ.get('REACTION_DRAW_WORKERS') or os.cpu_count() or 1))   # candidates drawn side by side
 ACS_COLUMNS_PT = ((234, 'single column (3.25 in)'), (504, 'double column (7 in)'))
 START = time.time()
 LAST_PROGRESS = None
@@ -705,9 +706,56 @@ def check_environment(browser_cmd=None, octet_dir=None, node_modules=None, log=p
     return 2 if problems else 0
 
 
+def run_versions(specs, out, options, log=print):
+    """Draw several versions of one input at once, each in out/<name>/, print each result and name the best one:
+    a passing version with the fewest WARNING lines, else the one with the fewest FIX lines."""
+    import subprocess
+    names = [p.stem for p in specs]
+    if len(set(names)) < len(names):
+        log('input error: give the versions different file names')
+        return 2
+    out.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, REACTION_DRAW_WORKERS=str(max(1, (os.cpu_count() or 1) // len(specs))))
+    jobs = [subprocess.Popen([sys.executable, str(Path(__file__).resolve()), str(spec), '--out', str(out / name)] + options,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+            for spec, name in zip(specs, names)]
+    pool = concurrent.futures.ThreadPoolExecutor(len(jobs))
+    try:                                           # read the pipes while waiting, and stop the drawings if this run is stopped
+        outputs = [pool.submit(job.communicate) for job in jobs]
+        _progress('drawing %d versions' % len(jobs))
+        while not all(f.done() for f in outputs):
+            time.sleep(2)
+            _progress('drawing %d versions' % len(jobs))
+    finally:
+        for job in jobs:
+            if job.poll() is None:
+                job.terminate()
+        pool.shutdown()
+    results = []
+    for spec, name, job, output in zip(specs, names, jobs, outputs):
+        lines, err = (part.splitlines() for part in output.result())
+        if not any(x.startswith(('RESULT', 'input error', 'layout error', 'drawing failed', 'checks could not')) for x in lines):
+            lines += [x for x in err if not x.startswith('progress')][-5:]   # a crash shows its last lines
+        audit = [x for x in lines if x.startswith(('AUDIT', '- [ ]'))]
+        lines = [x for x in lines if x not in audit]
+        rank = ((0, sum(x.startswith('WARNING:') for x in lines)) if job.returncode == 0 else
+                (1, sum(x.startswith('FIX ') for x in lines)) if job.returncode == 1 else (2, 0))
+        results.append((rank, spec, name, job.returncode, lines, audit))
+    for _, spec, _, _, lines, _ in results:
+        log('== %s' % spec.name)
+        for line in lines:
+            log(line)
+    rank, spec, name, code, _, audit = min(results, key=lambda r: r[0])
+    log('BEST: %s (%s; figure in %s)' % (spec.name, 'all checks pass' if code == 0 else 'CHECKS FAILED' if code == 1 else 'no figure',
+                                         out / name))
+    for line in audit:
+        log(line)
+    return code
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=(__doc__ or '').split('\n\n')[0])
-    ap.add_argument('spec', type=Path, nargs='?', metavar='INPUT.json')
+    ap.add_argument('spec', type=Path, nargs='*', metavar='INPUT.json', help='one input, or several versions of it to draw at once')
     ap.add_argument('--out', type=Path, help='output directory (full run only)')
     ap.add_argument('--check-env', action='store_true', help='probe Python, RDKit, browser and font widths; no input file needed')
     ap.add_argument('--dpi', type=float, help='figure.png resolution at the true size (default: the input\'s drawing.dpi, else 600)')
@@ -726,7 +774,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, interrupted)
     if args.check_env:
         return check_environment(args.browser_cmd, args.octet, args.node_modules)
-    if args.spec is None:
+    if not args.spec:
         ap.error('INPUT.json is required unless --check-env is used')
     if args.out is None:
         ap.error('--out DIR is required for a full run')
@@ -737,7 +785,13 @@ def main(argv=None):
                                      'drawing failed', 'checks could not', 'MISSED planted'))
                 and (not args.quiet or not line.lstrip().startswith(('FIX ', 'POSITIVE CONTROL')))):
             print(line, flush=True)
-    status, _ = run(args.spec, args.out, args.png_width, args.octet, args.node_modules, args.browser_cmd,
+    if len(args.spec) > 1:
+        options = [x for flag, value in (('--dpi', args.dpi), ('--png-width', args.png_width), ('--octet', args.octet),
+                                         ('--node-modules', args.node_modules), ('--browser-cmd', args.browser_cmd))
+                   if value is not None for x in (flag, str(value))]
+        options += ['--positive-control'] * args.positive_control + ['--quiet'] * args.quiet
+        return run_versions(args.spec, args.out, options, log=print)
+    status, _ = run(args.spec[0], args.out, args.png_width, args.octet, args.node_modules, args.browser_cmd,
                     positive_control=args.positive_control, log=log, dpi=args.dpi)
     return status
 

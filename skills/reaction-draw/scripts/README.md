@@ -125,7 +125,10 @@ If a hydrogen-bond line crosses a label or bond, run `python fix_hbonds.py INPUT
 
 ```bash
 python draw_figure.py INPUT.json --out DIR
+python draw_figure.py A.json B.json C.json --out DIR
 ```
+
+With several input files, each is drawn at the same time in `DIR/<file name>` (`DIR/A`, `DIR/B`, `DIR/C`). The last line, `BEST: …`, names a passing version with the fewest `WARNING` lines, or else the one with the fewest `FIX` lines; the exit status is that version's.
 
 - Exit `0`: All checks pass (and, with `--positive-control`, the positive control).
 - Exit `1`: One or more checks fail.

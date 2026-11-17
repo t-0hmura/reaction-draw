@@ -29,6 +29,7 @@ Common options and exit codes: [scripts/README.md](../skills/reaction-draw/scrip
 ```bash
 python draw_figure.py INPUT.json --out DIR [--dpi 600 | --png-width N] [--browser-cmd "ssh HOST /path/to/python"]
                       [--positive-control] [--quiet] [--octet CHECKOUT --node-modules DIR]
+python draw_figure.py A.json B.json C.json --out DIR    # versions drawn at once, each in DIR/<file name>
 ```
 
 | Stage | Writes into `DIR` |

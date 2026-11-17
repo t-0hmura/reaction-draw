@@ -9,8 +9,8 @@ IUPAC rules ([decided by the agent](../skills/reaction-draw/references/iupac-rul
 - Start from a template, keep its atom maps, and record the source figure and page.
 - Use the bundled scripts; do not write your own parser, checker, or renderer.
 - Let the scripts generate the initial layout; fix issues in the input file, never in the rendered drawing.
-- After two failed runs, abbreviate non-reacting groups or split the step into two panels.
-- After a pass, make at most three revisions of what still reads badly (unless the user asks otherwise), and hand over the passing version that reads best.
+- On a failure, draw three revised versions of the input at once (for example, abbreviate non-reacting groups or split the step into two panels) and continue from the best one. After two such rounds without a pass, hand over the best figure and say that it fails the checks (unless the user asks otherwise).
+- After a pass, revise what still reads badly in the same way (three versions at once, at most two rounds unless the user asks otherwise), and hand over the passing version that reads best.
 
 ## Size and layout
 
