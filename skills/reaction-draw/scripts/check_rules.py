@@ -2627,7 +2627,7 @@ def det_bond_crossing(f):
 DETECTOR_FUNCS = {name: globals()['det_' + name] for name in DETECTORS}
 
 
-def _spec_edit(f, refs):
+def _spec_edit(f, refs, edits=None):
     """One spec edit that gives the named atoms room: shift the species placed later in the panel one bond length away
     from the other one or, when one species is named, turn it where it first appears."""
     sids = list(dict.fromkeys(f.atoms[r]['species'] for r in refs))
@@ -2641,11 +2641,15 @@ def _spec_edit(f, refs):
         if sum(a['species'] == sids[0] for a in panel['atoms']) == 1:
             return 'move species %s in panel %s with offset' % (key, panel['id'])
         first = next(p['id'] for p in f.resolved['panels'] if any(a['species'] == '%s.%s' % (p['id'], key) for a in p['atoms']))
+        if edits is not None:
+            edits.append({'panel': first, 'species': key, 'key': 'rotate', 'value': 30})
         return ('set "rotate": 30 on species %s in panel %s (then -30; if both fail, abbreviate a non-reacting group beside '
                 'these atoms or split the step into two panels)' % (key, first))
     (x0, y0), (x1, y1) = ([sum(a[k] for a in panel['atoms'] if a['species'] == x) / sum(a['species'] == x for a in panel['atoms'])
                            for k in ('x', 'y')] for x in (sids[0], sids[-1]))
     step = [1 if x1 >= x0 else -1, 0] if abs(x1 - x0) >= abs(y1 - y0) else [0, 1 if y1 >= y0 else -1]
+    if edits is not None:
+        edits.append({'panel': panel['id'], 'species': key, 'key': 'offset', 'delta': step})
     return 'add %s to "offset" of species %s in panel %s' % (json.dumps(step), key, panel['id'])
 
 
@@ -2664,7 +2668,7 @@ def _arrow_in_own_species(f, finding):
     return all(r in f.atoms for r in refs) and len({f.atoms[r]['species'] for r in refs}) == 1
 
 
-def repair_hints(f, name, findings):
+def repair_hints(f, name, findings, edits=None):
     """Translate detector findings back to spec locations, with one concrete edit per finding ({move}: _spec_edit)."""
     no_fix = ('the input cannot fix this (a drawing or saving defect): '
               'abbreviate a non-reacting group or split the step into two panels')
@@ -2759,7 +2763,18 @@ def repair_hints(f, name, findings):
                   '"bend" (the opposite sign, or a larger value up to 1.6); if it still touches, move the bond\'s branch with xy, '
                   'abbreviate a non-reacting group beside these atoms, or split the step into two panels'
                   if name == 'overlap_arrow_bond' and _arrow_in_own_species(f, finding) else actions.get(name, no_fix))
-        action = action.replace('{move}', _spec_edit(f, refs or named))
+        action = action.replace('{move}', _spec_edit(f, refs or named, edits if '{move}' in action else None))
+        if edits is not None:
+            if '"bend" (the opposite sign' in action or "remove this arrow's manual bend" in action:
+                for panel in f.resolved['panels']:
+                    for arrow in panel['curved']:
+                        if re.search(r'(?<![\w-])' + re.escape(arrow['id']) + r'(?![\w-])', finding):
+                            edits.append({'panel': panel['id'], 'arrow': arrow['id'], 'key': 'bend'})
+            if action.startswith(('remove xy overrides', 'remove the xy override', 'restore one standard bond length')):
+                for ref in refs:
+                    sid, mp = ref.rsplit(':', 1)
+                    pid = next(p['id'] for p in f.resolved['panels'] if any(a['ref'] == ref for a in p['atoms']))
+                    edits.append({'panel': pid, 'species': sid[len(pid) + 1:], 'key': 'xy', 'atom': mp})
         hints.append('%s: %s; %s. Action: %s.' % (name, '; '.join(dict.fromkeys(places)), finding, action))
     return hints
 
