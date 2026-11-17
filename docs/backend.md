@@ -93,7 +93,7 @@ Exit codes: `0` when rendering succeeds (any layout/drawing failures are printed
 1. The backend searches additional charge, arrow, and number candidates for the failed checks, keeping a change only if no detector's violation count increases.
 2. After a layout, overlap, or arrow-endpoint failure, `layout_repair.py` evaluates up to 3 bounded alternatives (keeping rings rigid, moving branches as intact units, and shifting manual coordinates by at most 0.3 bond lengths). It keeps an alternative only if it fails fewer checks overall, has no stereochemistry finding, and adds no findings to basic checks (`graph`, `charges`, `cdxml`, etc.).
 3. A blocked intramolecular forming-bond arrow receives a rigid rotation around a bridge along its path, preserving bond lengths and stereochemistry without adding new findings.
-4. An arrow from a lone pair with no clear route triggers small rotations or shifts of its parent molecule, kept only if no detector gains a finding (at most 60 drawings per run).
+4. An arrow from a lone pair with no clear route triggers small rotations or shifts of its parent molecule, kept only if no detector gains a finding (up to four candidates are drawn at once, at most 60 drawings per run).
 
 Placement is checked again after these moves. `checks.retry_counts` records the drawings of each stage and, for the last stage, the position of each accepted candidate.
 

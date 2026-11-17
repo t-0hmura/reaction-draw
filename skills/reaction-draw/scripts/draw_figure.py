@@ -10,6 +10,7 @@ Exit status: 0 when every check passes (and, with --positive-control, the positi
 2 when the input file is wrong or a stage cannot run. Stages, outputs and options: the repository's docs/backend.md.
 """
 import argparse
+import concurrent.futures
 import json
 import os
 import signal
@@ -41,6 +42,7 @@ else:
 
 SMALL_DPI = 150
 MAX_PAIR_DRAWS = 60        # drawings of the axial-pair moves per run; every accepted move recorded so far needed fewer
+PAIR_WORKERS = min(4, os.cpu_count() or 1)   # axial-pair candidates drawn side by side
 ACS_COLUMNS_PT = ((234, 'single column (3.25 in)'), (504, 'double column (7 in)'))
 START = time.time()
 LAST_PROGRESS = None
@@ -211,25 +213,40 @@ def _names(aid, text):
 def _candidate(resolved, out, fig, draw, draw_args, options, accept, stats, stage, keep_resolved=False):
     """Draw one retry candidate in a scratch folder and check it; copy its files into out when accept(checks).
     Returns (figure, checks, accepted, error); error names why nothing could be drawn or checked."""
-    _progress(stage)
-    with tempfile.TemporaryDirectory(prefix='.retry-', dir=str(out)) as scratch:
-        dest = Path(scratch)
+    return _candidates([(resolved, options)], out, fig, draw, draw_args, accept, stats, stage, keep_resolved)[0]
+
+
+def _candidates(jobs, out, fig, draw, draw_args, accept, stats, stage, keep_resolved=False):
+    """Draw the (resolved, options) jobs side by side and check each; copy the files of the first accepted job into out.
+    Returns one (figure, checks, accepted, error) per job, accepted True for that first job only."""
+    def draw_and_check(job, dest):
+        _progress(stage)
         try:
-            stats['draws'] += 1
-            draw(resolved, dest, options=options, **draw_args)
+            draw(job[0], dest, options=job[1], **draw_args)
             candidate = check_rules.load_figure(dest)
             candidate.name = fig.name
-            checked = check_rules.run_checks(candidate)
+            return candidate, check_rules.run_checks(candidate), None
         except Exception as exc:
-            return None, None, False, '%s: %s' % (type(exc).__name__, exc)
-        accepted = accept(checked)
-        if accepted:
-            if keep_resolved:
-                _write_state(dest, resolved=check_rules.load_state(out)['resolved'])
-            for name in OUTPUTS:
-                if (dest / name).is_file():
-                    shutil.copyfile(dest / name, out / name)
-        return candidate, checked, accepted, None
+            return None, None, '%s: %s' % (type(exc).__name__, exc)
+    stats['draws'] += len(jobs)
+    with tempfile.TemporaryDirectory(prefix='.retry-', dir=str(out)) as scratch:
+        dests = [Path(scratch) / str(i) for i in range(len(jobs))]
+        for dest in dests:
+            dest.mkdir()
+        with concurrent.futures.ThreadPoolExecutor(len(jobs)) as pool:
+            checked_jobs = list(pool.map(draw_and_check, jobs, dests))
+        results, adopted = [], False
+        for dest, (candidate, checked, error) in zip(dests, checked_jobs):
+            ok = error is None and not adopted and accept(checked)
+            if ok:
+                if keep_resolved:
+                    _write_state(dest, resolved=check_rules.load_state(out)['resolved'])
+                for name in OUTPUTS:
+                    if (dest / name).is_file():
+                        shutil.copyfile(dest / name, out / name)
+                adopted = True
+            results.append((candidate, checked, ok, error))
+        return results
 
 
 def retry_placements(resolved, out, fig, result, draw, draw_args, stats):
@@ -326,11 +343,8 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args, stats):
                         ((0, .7), (.7, 0), (0, -.7), (-.7, 0), (1, 0), (-1, 0), (0, 1), (0, -1))]
             trials = [(d, sx, sy, repair) for d, sx, sy in motions
                       for repair in ((False, True) if abs(d) in (5, 10) else (True,))]
-            drawn = 0
+            jobs = []
             for degree, sx, sy, repair in trials:
-                if stats['draws'] >= MAX_PAIR_DRAWS:
-                    notes.append('axial-pair moves stopped after %d drawings' % MAX_PAIR_DRAWS)
-                    return fig, result, notes
                 resolved = copy.deepcopy(fig.resolved)
                 atoms = {a['ref']: a for p in resolved['panels'] for a in p['atoms']}
                 _keep_saved_marks(atoms, saved, panel_id + '.')
@@ -346,19 +360,26 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args, stats):
                     continue
                 options = {'repairArrows': True, 'repairCharges': repair, 'repairNumbers': repair, 'ownMarginPx': 8.5,
                            'reverseCurved': 'overlap_arrow_arrow' in result['failed'], 'fixedCurved': fixed, 'fixedNumbers': fixed_numbers}
-                drawn += 1
-                candidate, checked, ok, error = _candidate(resolved, out, fig, draw, draw_args, options, _no_gain(result),
-                                                         stats, 'retry_iupac_pairs')
-                if error:
-                    notes.append('axial-pair candidate %s %+g deg: %s' % (sid, degree, error))
-                    continue
-                if ok:
-                    stats['accepted'].append({'arrow': aid, 'round': round_number, 'candidate': drawn})
-                    notes.append('axial lone pair for %s: rigid move of %s (%+g deg, offset %.3f/%.3f bonds); findings %d -> %d' %
-                                 (aid, sid, degree, sx, sy, sum(_counts(result).values()), sum(_counts(checked).values())))
-                    fig, result, accepted = candidate, checked, True
-                if accepted:
-                    break
+                jobs.append(((resolved, options), (degree, sx, sy, sid)))
+            drawn = 0
+            while jobs and not accepted:
+                room = MAX_PAIR_DRAWS - stats['draws']
+                if room <= 0:
+                    notes.append('axial-pair moves stopped after %d drawings' % MAX_PAIR_DRAWS)
+                    return fig, result, notes
+                batch, jobs = jobs[:min(PAIR_WORKERS, room)], jobs[min(PAIR_WORKERS, room):]
+                checked_jobs = _candidates([job for job, _ in batch], out, fig, draw, draw_args, _no_gain(result),
+                                           stats, 'retry_iupac_pairs')
+                for (_, (degree, sx, sy, sid)), (candidate, checked, ok, error) in zip(batch, checked_jobs):
+                    drawn += 1
+                    if error:
+                        notes.append('axial-pair candidate %s %+g deg: %s' % (sid, degree, error))
+                    elif ok:
+                        stats['accepted'].append({'arrow': aid, 'round': round_number, 'candidate': drawn})
+                        notes.append('axial lone pair for %s: rigid move of %s (%+g deg, offset %.3f/%.3f bonds); findings %d -> %d' %
+                                     (aid, sid, degree, sx, sy, sum(_counts(result).values()), sum(_counts(checked).values())))
+                        fig, result, accepted = candidate, checked, True
+                        break
             if accepted:
                 break
         if not accepted or result['ok']:
@@ -522,6 +543,8 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     for name in OUTPUTS:                        # the files of an earlier run in DIR
         if (out / name).is_file():
             (out / name).unlink()
+    for scratch in list(out.glob('.retry-*')) + list(out.glob('.octet-*')):   # left by a run that was stopped
+        shutil.rmtree(scratch, ignore_errors=True)
     times = {}
     stereo_lines = []
     t0 = time.time()
