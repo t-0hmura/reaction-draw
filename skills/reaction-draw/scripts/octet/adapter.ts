@@ -935,10 +935,14 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     const snkPts = ends(req.snk, 0.19 * L, [0.16 * L, 0.22 * L, 0.3 * L]).filter((s) => !repair || matches(s.p, req.snk))
       .map((s) => s.atom === undefined ? s : {...s, pen: s.pen + headAtPair(s.atom, s.p)});
     const compactHook = req.electrons === 1 && req.src.kind === 'atom' && req.snk.kind === 'gap';
-    const minLen = (compactHook ? 0.3 : 0.62) * L, kind = req.electrons === 1 ? 'fishhook' : 'curved';
+    // a bond's electrons moving onto one of its own atoms, asked to be short (opts.compactArrows): a small hook from the
+    // bond to the atom, like the short arrow from a lone pair, instead of a wide arc
+    const ownEndHook = req.src.kind === 'bond' && req.snk.kind === 'atom' && req.src.atoms.includes(req.snk.atoms[0]) &&
+      (opts.compactArrows ?? []).includes(req.id);
+    const minLen = (compactHook ? 0.3 : ownEndHook ? 0.4 : 0.62) * L, kind = req.electrons === 1 ? 'fishhook' : 'curved';
     // a bond's electrons moving to a neighboring bond of the same atom: a short arrow in the angle between them is natural
     const tight = req.src.kind === 'bond' && req.snk.kind === 'bond' && req.src.atoms.some((x) => req.snk.atoms.includes(x));
-    const wishLen = (tight ? 0.6 : 0.85) * L, wishChord = (tight ? 0.5 : 0.8) * L;
+    const wishLen = (tight ? 0.6 : ownEndHook ? 0.5 : 0.85) * L, wishChord = (tight ? 0.5 : ownEndHook ? 0.35 : 0.8) * L;
     // The ends come from the cost without the numbers' seats (an arrow end never moves for a number); among the routes
     // with those two ends, the bend that keeps off the seats is taken.
     let bestFree: any = null;
@@ -947,7 +951,7 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     const bendMin = Math.min(...bends.map((b) => Math.abs(b)));
     for (const s of srcPts) for (const e of snkPts) {
       const chord = dist(s.p, e.p);
-      if (chord < (compactHook ? 0.12 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
+      if (chord < (compactHook || ownEndHook ? 0.12 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
       const amb = (s.atom !== undefined ? chargeAmbiguity(s.p, s.atom) : 0) + (e.atom !== undefined ? chargeAmbiguity(e.p, e.atom) : 0);
       const key = s.tag + '|' + e.tag;
       // The part of the cost known before a route is traced: the gap at its two end points (its first and last points,

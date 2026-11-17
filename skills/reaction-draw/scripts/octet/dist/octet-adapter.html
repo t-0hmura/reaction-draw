@@ -9923,16 +9923,17 @@ function routeArrows(mol, ctx, job, seats = []) {
       const headAtPair = (i, p) => d0.electrons.some((e) => e.atom === i && (e.key?.startsWith("pair") || e.key?.startsWith("radical")) && angDiff(pageDeg(px[i], p), pageDeg(px[i], e.at)) < 50) ? 500 : 0;
       const snkPts = ends(req.snk, 0.19 * L, [0.16 * L, 0.22 * L, 0.3 * L]).filter((s) => !repair || matches(s.p, req.snk)).map((s) => s.atom === void 0 ? s : { ...s, pen: s.pen + headAtPair(s.atom, s.p) });
       const compactHook = req.electrons === 1 && req.src.kind === "atom" && req.snk.kind === "gap";
-      const minLen = (compactHook ? 0.3 : 0.62) * L, kind = req.electrons === 1 ? "fishhook" : "curved";
+      const ownEndHook = req.src.kind === "bond" && req.snk.kind === "atom" && req.src.atoms.includes(req.snk.atoms[0]) && (opts.compactArrows ?? []).includes(req.id);
+      const minLen = (compactHook ? 0.3 : ownEndHook ? 0.4 : 0.62) * L, kind = req.electrons === 1 ? "fishhook" : "curved";
       const tight = req.src.kind === "bond" && req.snk.kind === "bond" && req.src.atoms.some((x) => req.snk.atoms.includes(x));
-      const wishLen = (tight ? 0.6 : 0.85) * L, wishChord = (tight ? 0.5 : 0.8) * L;
+      const wishLen = (tight ? 0.6 : ownEndHook ? 0.5 : 0.85) * L, wishChord = (tight ? 0.5 : ownEndHook ? 0.35 : 0.8) * L;
       let bestFree = null;
       const withEnds = /* @__PURE__ */ new Map();
       for (const bends of typeof req.bend === "number" ? [[req.bend], autoBends] : [autoBends]) {
         const bendMin = Math.min(...bends.map((b) => Math.abs(b)));
         for (const s of srcPts) for (const e of snkPts) {
           const chord = dist(s.p, e.p);
-          if (chord < (compactHook ? 0.12 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
+          if (chord < (compactHook || ownEndHook ? 0.12 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
           const amb = (s.atom !== void 0 ? chargeAmbiguity(s.p, s.atom) : 0) + (e.atom !== void 0 ? chargeAmbiguity(e.p, e.atom) : 0);
           const key = s.tag + "|" + e.tag;
           const nFrom = native(s.p), nTo = native(e.p), endGap = Math.min(field.at([nFrom[0] * L, -nFrom[1] * L]), field.at([nTo[0] * L, -nTo[1] * L]));
