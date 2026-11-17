@@ -9825,165 +9825,171 @@ function routeArrows(mol, ctx, job, seats = []) {
       });
       continue;
     }
-    const repair = opts.repairArrows && (!opts.repairArrowIds || opts.repairArrowIds.includes(req.id));
-    const bends = typeof req.bend === "number" ? [req.bend] : repair ? [
-      ...BENDS,
-      0.1,
-      -0.1,
-      0.24,
-      -0.24,
-      0.38,
-      -0.38,
-      0.52,
-      -0.52,
-      ...req.src.kind === "atom" ? [0.12, 0.14, 0.16, 0.2, 0.22, 0.26, 0.28, 0.32, 0.34, 0.36, 0.4, 0.42, 0.46, 0.5, 0.55, 0.6, 0.7, 0.8, 0.95, 1].flatMap((b) => [b, -b]) : []
-    ] : BENDS;
-    const field = new Field(bounds, { polys: [...basePolys, ...done.flatMap((p) => p.polys)], boxes: textBoxes.map((b) => pad(b, 2)) });
-    const ends = (side, gapAtom, extras) => {
-      const out = [];
-      if (side.kind === "atom") {
-        const pairs = side === req.src ? d0.electrons.filter((e) => e.atom === side.atoms[0] && e.key?.startsWith(req.electrons === 1 ? "radical" : "pair") && done.filter((p) => p.req.src.kind === "atom" && p.req.src.atoms[0] === e.atom && p.req.electrons === req.electrons && p.info.start.split(":")[0] === e.key).length < (e.multiplier ?? 1)) : [];
-        if (pairs.length) {
-          const target = targetPoint(req.snk, px[side.atoms[0]]);
-          for (const pair2 of pairs) {
-            const outward = norm(sub22(pair2.at, px[side.atoms[0]]));
-            const directions = req.electrons === 1 ? [outward, ...radial(12).map((a) => [Math.cos(a), Math.sin(a)])] : [outward];
-            directions.forEach((u, k) => {
-              const p = [pair2.at[0] + PAIR_GAP * u[0], pair2.at[1] + PAIR_GAP * u[1]];
-              out.push({ p, tag: pair2.key + (req.electrons === 1 ? ":" + k : ""), t: 0.5, tm: 0.5, ex: 0, atom: side.atoms[0], pen: aim(p, side) + misread(p, side) + angDiff(pageDeg(px[side.atoms[0]], pair2.at), pageDeg(px[side.atoms[0]], target)) });
-            });
-          }
-          return out;
-        }
-        const bareHead = side === req.snk && !atomBox(side.atoms[0]);
-        for (const gap of bareHead ? repair ? [BARE_HEAD_GAP * L, 0.1 * L] : [BARE_HEAD_GAP * L] : repair ? [gapAtom, 0.1 * L, 0.25 * L] : [gapAtom]) for (const ang of radial(repair ? 48 : 24)) {
-          const p = boundary(side.atoms[0], ang, gap);
-          out.push({ p, tag: `a${Math.round(ang * 180 / Math.PI)}${repair ? ":" + gap : ""}`, t: 0.5, tm: 0.5, ex: 0, atom: side.atoms[0], pen: aim(p, side) + misread(p, side) + besideMates(side.atoms[0], p) });
-        }
-        return out;
-      }
-      if (side.kind === "gap") {
-        const a = px[side.atoms[0]], b = px[side.atoms[1]], dx = b[0] - a[0], dy = b[1] - a[1], len3 = Math.hypot(dx, dy) || 1;
-        const receivers = side.atoms.filter((i) => !req.src.atoms.includes(i));
-        if (req.electrons !== 1 && receivers.length === 1) {
-          const asAtom = { kind: "atom", atoms: receivers };
-          const gapR = atomBox(receivers[0]) ? gapAtom : BARE_HEAD_GAP * L;
-          for (const ang of radial(repair ? 48 : 24)) {
-            const p = boundary(receivers[0], ang, gapR);
-            out.push({ p, tag: `to-atom a${Math.round(ang * 180 / Math.PI)}`, t: 0.5, tm: 0.5, ex: 0, atom: receivers[0], pen: aim(p, asAtom) + misread(p, asAtom) + besideMates(receivers[0], p) });
-          }
-          return out;
-        }
-        const fractions = req.electrons === 1 ? [0.5, 0.45, 0.55, 0.3, 0.7] : [0.5, 0.4, 0.6, 0.3, 0.7, ...repair ? [0.26, 0.35, 0.65, 0.74] : []];
-        const offsets = req.electrons === 1 ? [0, 0.08 * L, -0.08 * L] : [0, 0.08 * L, -0.08 * L, 0.18 * L, -0.18 * L, ...repair ? [0.195 * L, -0.195 * L, 0.199 * L, -0.199 * L] : []];
-        for (const t of fractions) for (const off of offsets) {
-          const p = [a[0] + dx * t - dy / len3 * off, a[1] + dy * t + dx / len3 * off];
-          out.push({ p, tag: `gap:${t}:${off}`, t, tm: 0.5, ex: 0, pen: Math.abs(t - 0.5) * 60 });
-        }
-        return out;
-      }
-      const bi = bondIndex(side.atoms[0], side.atoms[1]);
-      if (bi < 0) {
-        problems.push(`arrow ${req.id}: no bond between the atoms of its ${side === req.src ? "start" : "end"}`);
-        return out;
-      }
-      const v = bondVisible(mol, d0, ctx, cls, bi), tm = v ? (v.s0 + v.s1) / 2 / v.len : 0.5;
-      if (atomBox(side.atoms[0]) && atomBox(side.atoms[1])) extras = [...extras, 0.02 * L, 0.04 * L];
-      for (const dt of repair ? [0, -0.04, 0.04, -0.08, 0.08, -0.12, 0.12, -0.16, 0.16, -0.24, 0.24] : [0, -0.08, 0.08, -0.16, 0.16, 0.24]) for (const sd of [1, -1]) for (const ex of repair ? [...extras, 0.08 * L, 0.1 * L] : extras) {
-        const t = +(tm + dt).toFixed(3), p = bondEnd(bi, t, sd, ex);
-        out.push({ p, tag: `b t=${t} side=${sd > 0 ? "+" : "-"} off=${(ex / L).toFixed(2)}L`, t, tm, ex, pen: aim(p, side) + misread(p, side) });
-      }
-      return out;
-    };
-    const matches = (p, end) => {
-      if (end.kind === "gap" || sideHasPair(p, end)) return true;
-      const r = readEnd(mol, px, atomBox, p);
-      return end.kind === "atom" ? r.kind === "atom" && r.atom === end.atoms[0] && r.center === end.atoms[0] : r.kind === "bond" && r.bond === bondIndex(end.atoms[0], end.atoms[1]);
-    };
-    const srcPts = ends(req.src, 0.17 * L, [0.14 * L, 0.2 * L, 0.28 * L]).filter((s) => !repair || matches(s.p, req.src));
-    const headAtPair = (i, p) => d0.electrons.some((e) => e.atom === i && (e.key?.startsWith("pair") || e.key?.startsWith("radical")) && angDiff(pageDeg(px[i], p), pageDeg(px[i], e.at)) < 50) ? 500 : 0;
-    const snkPts = ends(req.snk, 0.19 * L, [0.16 * L, 0.22 * L, 0.3 * L]).filter((s) => !repair || matches(s.p, req.snk)).map((s) => s.atom === void 0 ? s : { ...s, pen: s.pen + headAtPair(s.atom, s.p) });
-    const compactHook = req.electrons === 1 && req.src.kind === "atom" && req.snk.kind === "gap";
-    const minLen = (compactHook ? 0.3 : 0.62) * L, kind = req.electrons === 1 ? "fishhook" : "curved";
-    const tight = req.src.kind === "bond" && req.snk.kind === "bond" && req.src.atoms.some((x) => req.snk.atoms.includes(x));
-    const wishLen = (tight ? 0.6 : 0.85) * L, wishChord = (tight ? 0.5 : 0.8) * L;
-    let bestFree = null;
-    const withEnds = /* @__PURE__ */ new Map();
-    for (const s of srcPts) for (const e of snkPts) {
-      const chord = dist(s.p, e.p);
-      if (chord < (compactHook ? 0.12 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
-      for (const bend of bends) {
-        const a = { id: 900 + done.length, kind, from: native(s.p), to: native(e.p), bend, colour: "#000000" };
-        if (kind === "curved") {
-          a.start = "none";
-          a.end = "full";
-        }
-        const path = arrowPath(a, L);
-        let len3 = 0;
-        for (let k = 1; k < path.length; k++) len3 += dist(path[k - 1], path[k]);
-        if (len3 < minLen) continue;
-        if ((repair || req.snk.kind === "gap") && len3 > 2 * chord) continue;
-        const polys = arrowShapes(a, f, L);
-        let worst = 1e9, soft = 0;
-        const exempt = (p) => dist(p, s.p) < 0.17 * L || dist(p, e.p) < 0.17 * L;
-        for (const poly of polys) for (let j = 0; j < poly.length; j++) {
-          const p = poly[j], q = poly[(j + 1) % poly.length];
-          const count = repair ? Math.max(1, Math.ceil(dist(p, q) / 2)) : 1;
-          for (let k = 0; k < count; k++) {
-            const sample = [p[0] + (q[0] - p[0]) * k / count, p[1] + (q[1] - p[1]) * k / count];
-            const dd = field.at(sample);
-            if (dd < worst) worst = dd;
-            if (dd < 8 && !exempt(sample)) soft += (8 - dd) / count;
-          }
-        }
-        for (const p of path) {
-          const dd = field.at(p);
-          if (dd < worst) worst = dd;
-          if (dd < 8 && !exempt(p)) soft += (8 - dd) * 0.5;
-        }
-        const hard = worst < 5.5 ? (5.5 - worst) * 1e4 : 0;
-        const amb = (s.atom !== void 0 ? chargeAmbiguity(s.p, s.atom) : 0) + (e.atom !== void 0 ? chargeAmbiguity(e.p, e.atom) : 0);
-        let seat = 0;
-        if (seatField) {
-          let m = 1e9;
-          for (const poly of polys) for (const p of poly) if (dist(p, s.p) > 0.45 * L && dist(p, e.p) > 0.45 * L) m = Math.min(m, seatField.at(p));
-          if (m < 4) seat = 60 + (4 - m) * 10;
-        }
-        const n = path.length, tEnd = norm([path[n - 1][0] - path[Math.max(0, n - 3)][0], path[n - 1][1] - path[Math.max(0, n - 3)][1]]), tStart = norm([path[Math.min(n - 1, 2)][0] - path[0][0], path[Math.min(n - 1, 2)][1] - path[0][1]]);
-        const headDev = angleBetween(tEnd, norm(sub22(targetPoint(req.snk, e.p), e.p))), tailDev = angleBetween(tStart, norm(sub22(s.p, targetPoint(req.src, s.p))));
-        const aimDir = (headDev > 25 ? (headDev - 25) * 6 : 0) + (tailDev > 75 ? (tailDev - 75) * 2 : 0);
-        let atBond = 0;
-        const own = e.atom !== void 0 ? pcs[e.atom].filter((q) => !q.sign && q.text === mol.atoms[e.atom].label) : [];
-        const box = own.length ? own.reduce((a2, b) => boxDist(px[e.atom], a2.ink) <= boxDist(px[e.atom], b.ink) ? a2 : b).ink : e.atom !== void 0 ? atomBox(e.atom) : null;
-        const head = polys.find((q) => q.length >= 3 && q.some((v) => dist(v, e.p) < 0.1));
-        const rest = head ? head.filter((v) => dist(v, e.p) >= 0.1) : [];
-        const uHead = rest.length ? norm([e.p[0] - rest.reduce((t, v) => t + v[0], 0) / rest.length, e.p[1] - rest.reduce((t, v) => t + v[1], 0) / rest.length]) : tEnd;
-        if (box && rayBox(e.p, uHead, box) === null)
-          for (const b of mol.bonds) {
-            if (b.type === HBOND2 || !b.atoms.includes(e.atom) || b.atoms.some((x) => mol.atoms[x].hidden)) continue;
-            const sl = raySeg(e.p, uHead, px[b.atoms[0]], px[b.atoms[1]]);
-            if (sl !== null && sl <= L) {
-              atBond = 700;
-              break;
+    const repairRequested = opts.repairArrows && (!opts.repairArrowIds || opts.repairArrowIds.includes(req.id));
+    for (const repair of repairRequested ? [true] : [false, true]) {
+      const autoBends = repair ? [
+        ...BENDS,
+        0.1,
+        -0.1,
+        0.24,
+        -0.24,
+        0.38,
+        -0.38,
+        0.52,
+        -0.52,
+        ...req.src.kind === "atom" ? [0.12, 0.14, 0.16, 0.2, 0.22, 0.26, 0.28, 0.32, 0.34, 0.36, 0.4, 0.42, 0.46, 0.5, 0.55, 0.6, 0.7, 0.8, 0.95, 1].flatMap((b) => [b, -b]) : []
+      ] : BENDS;
+      const field = new Field(bounds, { polys: [...basePolys, ...done.flatMap((p) => p.polys)], boxes: textBoxes.map((b) => pad(b, 2)) });
+      const ends = (side, gapAtom, extras) => {
+        const out = [];
+        if (side.kind === "atom") {
+          const pairs = side === req.src ? d0.electrons.filter((e) => e.atom === side.atoms[0] && e.key?.startsWith(req.electrons === 1 ? "radical" : "pair") && done.filter((p) => p.req.src.kind === "atom" && p.req.src.atoms[0] === e.atom && p.req.electrons === req.electrons && p.info.start.split(":")[0] === e.key).length < (e.multiplier ?? 1)) : [];
+          if (pairs.length) {
+            const target = targetPoint(req.snk, px[side.atoms[0]]);
+            for (const pair2 of pairs) {
+              const outward = norm(sub22(pair2.at, px[side.atoms[0]]));
+              const directions = req.electrons === 1 ? [outward, ...radial(12).map((a) => [Math.cos(a), Math.sin(a)])] : [outward];
+              directions.forEach((u, k) => {
+                const p = [pair2.at[0] + PAIR_GAP * u[0], pair2.at[1] + PAIR_GAP * u[1]];
+                out.push({ p, tag: pair2.key + (req.electrons === 1 ? ":" + k : ""), t: 0.5, tm: 0.5, ex: 0, atom: side.atoms[0], pen: aim(p, side) + misread(p, side) + angDiff(pageDeg(px[side.atoms[0]], pair2.at), pageDeg(px[side.atoms[0]], target)) });
+              });
             }
+            return out;
           }
-        const loop = len3 > ARC_MAX * chord ? 300 + (len3 / chord - ARC_MAX) * 200 : 0;
-        const pivot = tight ? px[req.src.atoms.find((x) => req.snk.atoms.includes(x))] : null, mid = path[Math.floor(n / 2)], half = [(s.p[0] + e.p[0]) / 2, (s.p[1] + e.p[1]) / 2];
-        const inward = pivot && (mid[0] - half[0]) * (pivot[0] - half[0]) + (mid[1] - half[1]) * (pivot[1] - half[1]) > 0 ? 600 : 0;
-        const cost = inward + hard + amb + aimDir + atBond + loop + s.pen + e.pen + soft * 20 + len3 * 0.04 + Math.max(0, wishLen - len3) * 1.5 + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
-        const key = s.tag + "|" + e.tag, cand = { a, polys, cost, seat, worst, len: len3, chord, s: s.tag, e: e.tag, hard, key };
-        if (!bestFree || cost < bestFree.cost) bestFree = cand;
-        const prev = withEnds.get(key);
-        if (!prev || cost + seat < prev.cost + prev.seat) withEnds.set(key, cand);
+          const bareHead = side === req.snk && !atomBox(side.atoms[0]);
+          for (const gap of bareHead ? repair ? [BARE_HEAD_GAP * L, 0.1 * L] : [BARE_HEAD_GAP * L] : repair ? [gapAtom, 0.1 * L, 0.25 * L] : [gapAtom]) for (const ang of radial(repair ? 48 : 24)) {
+            const p = boundary(side.atoms[0], ang, gap);
+            out.push({ p, tag: `a${Math.round(ang * 180 / Math.PI)}${repair ? ":" + gap : ""}`, t: 0.5, tm: 0.5, ex: 0, atom: side.atoms[0], pen: aim(p, side) + misread(p, side) + besideMates(side.atoms[0], p) });
+          }
+          return out;
+        }
+        if (side.kind === "gap") {
+          const a = px[side.atoms[0]], b = px[side.atoms[1]], dx = b[0] - a[0], dy = b[1] - a[1], len3 = Math.hypot(dx, dy) || 1;
+          const receivers = side.atoms.filter((i) => !req.src.atoms.includes(i));
+          if (req.electrons !== 1 && receivers.length === 1) {
+            const asAtom = { kind: "atom", atoms: receivers };
+            const gapR = atomBox(receivers[0]) ? gapAtom : BARE_HEAD_GAP * L;
+            for (const ang of radial(repair ? 48 : 24)) {
+              const p = boundary(receivers[0], ang, gapR);
+              out.push({ p, tag: `to-atom a${Math.round(ang * 180 / Math.PI)}`, t: 0.5, tm: 0.5, ex: 0, atom: receivers[0], pen: aim(p, asAtom) + misread(p, asAtom) + besideMates(receivers[0], p) });
+            }
+            return out;
+          }
+          const fractions = req.electrons === 1 ? [0.5, 0.45, 0.55, 0.3, 0.7] : [0.5, 0.4, 0.6, 0.3, 0.7, ...repair ? [0.26, 0.35, 0.65, 0.74] : []];
+          const offsets = req.electrons === 1 ? [0, 0.08 * L, -0.08 * L] : [0, 0.08 * L, -0.08 * L, 0.18 * L, -0.18 * L, ...repair ? [0.195 * L, -0.195 * L, 0.199 * L, -0.199 * L] : []];
+          for (const t of fractions) for (const off of offsets) {
+            const p = [a[0] + dx * t - dy / len3 * off, a[1] + dy * t + dx / len3 * off];
+            out.push({ p, tag: `gap:${t}:${off}`, t, tm: 0.5, ex: 0, pen: Math.abs(t - 0.5) * 60 });
+          }
+          return out;
+        }
+        const bi = bondIndex(side.atoms[0], side.atoms[1]);
+        if (bi < 0) {
+          problems.push(`arrow ${req.id}: no bond between the atoms of its ${side === req.src ? "start" : "end"}`);
+          return out;
+        }
+        const v = bondVisible(mol, d0, ctx, cls, bi), tm = v ? (v.s0 + v.s1) / 2 / v.len : 0.5;
+        if (atomBox(side.atoms[0]) && atomBox(side.atoms[1])) extras = [...extras, 0.02 * L, 0.04 * L];
+        for (const dt of repair ? [0, -0.04, 0.04, -0.08, 0.08, -0.12, 0.12, -0.16, 0.16, -0.24, 0.24] : [0, -0.08, 0.08, -0.16, 0.16, 0.24]) for (const sd of [1, -1]) for (const ex of repair ? [...extras, 0.08 * L, 0.1 * L] : extras) {
+          const t = +(tm + dt).toFixed(3), p = bondEnd(bi, t, sd, ex);
+          out.push({ p, tag: `b t=${t} side=${sd > 0 ? "+" : "-"} off=${(ex / L).toFixed(2)}L`, t, tm, ex, pen: aim(p, side) + misread(p, side) });
+        }
+        return out;
+      };
+      const matches = (p, end) => {
+        if (end.kind === "gap" || sideHasPair(p, end)) return true;
+        const r = readEnd(mol, px, atomBox, p);
+        return end.kind === "atom" ? r.kind === "atom" && r.atom === end.atoms[0] && r.center === end.atoms[0] : r.kind === "bond" && r.bond === bondIndex(end.atoms[0], end.atoms[1]);
+      };
+      const srcPts = ends(req.src, 0.17 * L, [0.14 * L, 0.2 * L, 0.28 * L]).filter((s) => !repair || matches(s.p, req.src));
+      const headAtPair = (i, p) => d0.electrons.some((e) => e.atom === i && (e.key?.startsWith("pair") || e.key?.startsWith("radical")) && angDiff(pageDeg(px[i], p), pageDeg(px[i], e.at)) < 50) ? 500 : 0;
+      const snkPts = ends(req.snk, 0.19 * L, [0.16 * L, 0.22 * L, 0.3 * L]).filter((s) => !repair || matches(s.p, req.snk)).map((s) => s.atom === void 0 ? s : { ...s, pen: s.pen + headAtPair(s.atom, s.p) });
+      const compactHook = req.electrons === 1 && req.src.kind === "atom" && req.snk.kind === "gap";
+      const minLen = (compactHook ? 0.3 : 0.62) * L, kind = req.electrons === 1 ? "fishhook" : "curved";
+      const tight = req.src.kind === "bond" && req.snk.kind === "bond" && req.src.atoms.some((x) => req.snk.atoms.includes(x));
+      const wishLen = (tight ? 0.6 : 0.85) * L, wishChord = (tight ? 0.5 : 0.8) * L;
+      let bestFree = null;
+      const withEnds = /* @__PURE__ */ new Map();
+      for (const bends of typeof req.bend === "number" ? [[req.bend], autoBends] : [autoBends]) {
+        for (const s of srcPts) for (const e of snkPts) {
+          const chord = dist(s.p, e.p);
+          if (chord < (compactHook ? 0.12 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
+          for (const bend of bends) {
+            const a = { id: 900 + done.length, kind, from: native(s.p), to: native(e.p), bend, colour: "#000000" };
+            if (kind === "curved") {
+              a.start = "none";
+              a.end = "full";
+            }
+            const path = arrowPath(a, L);
+            let len3 = 0;
+            for (let k = 1; k < path.length; k++) len3 += dist(path[k - 1], path[k]);
+            if (len3 < minLen) continue;
+            if ((repair || req.snk.kind === "gap") && len3 > 2 * chord) continue;
+            const polys = arrowShapes(a, f, L);
+            let worst = 1e9, soft = 0;
+            const exempt = (p) => dist(p, s.p) < 0.17 * L || dist(p, e.p) < 0.17 * L;
+            for (const poly of polys) for (let j = 0; j < poly.length; j++) {
+              const p = poly[j], q = poly[(j + 1) % poly.length];
+              const count = repair ? Math.max(1, Math.ceil(dist(p, q) / 2)) : 1;
+              for (let k = 0; k < count; k++) {
+                const sample = [p[0] + (q[0] - p[0]) * k / count, p[1] + (q[1] - p[1]) * k / count];
+                const dd = field.at(sample);
+                if (dd < worst) worst = dd;
+                if (dd < 8 && !exempt(sample)) soft += (8 - dd) / count;
+              }
+            }
+            for (const p of path) {
+              const dd = field.at(p);
+              if (dd < worst) worst = dd;
+              if (dd < 8 && !exempt(p)) soft += (8 - dd) * 0.5;
+            }
+            const hard = worst < 5.5 ? (5.5 - worst) * 1e4 : 0;
+            const amb = (s.atom !== void 0 ? chargeAmbiguity(s.p, s.atom) : 0) + (e.atom !== void 0 ? chargeAmbiguity(e.p, e.atom) : 0);
+            let seat = 0;
+            if (seatField) {
+              let m = 1e9;
+              for (const poly of polys) for (const p of poly) if (dist(p, s.p) > 0.45 * L && dist(p, e.p) > 0.45 * L) m = Math.min(m, seatField.at(p));
+              if (m < 4) seat = 60 + (4 - m) * 10;
+            }
+            const n = path.length, tEnd = norm([path[n - 1][0] - path[Math.max(0, n - 3)][0], path[n - 1][1] - path[Math.max(0, n - 3)][1]]), tStart = norm([path[Math.min(n - 1, 2)][0] - path[0][0], path[Math.min(n - 1, 2)][1] - path[0][1]]);
+            const headDev = angleBetween(tEnd, norm(sub22(targetPoint(req.snk, e.p), e.p))), tailDev = angleBetween(tStart, norm(sub22(s.p, targetPoint(req.src, s.p))));
+            const aimDir = (headDev > 25 ? (headDev - 25) * 6 : 0) + (tailDev > 75 ? (tailDev - 75) * 2 : 0);
+            let atBond = 0;
+            const own = e.atom !== void 0 ? pcs[e.atom].filter((q) => !q.sign && q.text === mol.atoms[e.atom].label) : [];
+            const box = own.length ? own.reduce((a2, b) => boxDist(px[e.atom], a2.ink) <= boxDist(px[e.atom], b.ink) ? a2 : b).ink : e.atom !== void 0 ? atomBox(e.atom) : null;
+            const head = polys.find((q) => q.length >= 3 && q.some((v) => dist(v, e.p) < 0.1));
+            const rest = head ? head.filter((v) => dist(v, e.p) >= 0.1) : [];
+            const uHead = rest.length ? norm([e.p[0] - rest.reduce((t, v) => t + v[0], 0) / rest.length, e.p[1] - rest.reduce((t, v) => t + v[1], 0) / rest.length]) : tEnd;
+            if (box && rayBox(e.p, uHead, box) === null)
+              for (const b of mol.bonds) {
+                if (b.type === HBOND2 || !b.atoms.includes(e.atom) || b.atoms.some((x) => mol.atoms[x].hidden)) continue;
+                const sl = raySeg(e.p, uHead, px[b.atoms[0]], px[b.atoms[1]]);
+                if (sl !== null && sl <= L) {
+                  atBond = 700;
+                  break;
+                }
+              }
+            const loop = len3 > ARC_MAX * chord ? 300 + (len3 / chord - ARC_MAX) * 200 : 0;
+            const pivot = tight ? px[req.src.atoms.find((x) => req.snk.atoms.includes(x))] : null, mid = path[Math.floor(n / 2)], half = [(s.p[0] + e.p[0]) / 2, (s.p[1] + e.p[1]) / 2];
+            const inward = pivot && (mid[0] - half[0]) * (pivot[0] - half[0]) + (mid[1] - half[1]) * (pivot[1] - half[1]) > 0 ? 600 : 0;
+            const cost = inward + hard + amb + aimDir + atBond + loop + s.pen + e.pen + soft * 20 + len3 * 0.04 + Math.max(0, wishLen - len3) * 1.5 + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
+            const key = s.tag + "|" + e.tag, cand = { a, polys, cost, seat, worst, len: len3, chord, s: s.tag, e: e.tag, hard, key };
+            if (!bestFree || cost < bestFree.cost) bestFree = cand;
+            const prev = withEnds.get(key);
+            if (!prev || cost + seat < prev.cost + prev.seat) withEnds.set(key, cand);
+          }
+        }
+        if (bestFree) break;
       }
+      const best = bestFree ? withEnds.get(bestFree.key) : null;
+      if (!best) {
+        if (repair) problems.push(`arrow ${req.id}: no route found`);
+        continue;
+      }
+      if (best.hard > 0) problems.push(`arrow ${req.id}: best route comes within ${r2(best.worst)} px of other ink`);
+      done.push({ req, arrow: best.a, polys: best.polys, info: { start: best.s, end: best.e, bend: best.a.bend, length_bonds: r2(best.len / L, 1e3), chord_bonds: r2(best.chord / L, 1e3), min_gap_px: r2(best.worst), cost: r2(best.cost, 10), seat_cost: r2(best.seat, 10), bend_without_seats: bestFree.a.bend } });
+      break;
     }
-    const best = bestFree ? withEnds.get(bestFree.key) : null;
-    if (!best) {
-      problems.push(`arrow ${req.id}: no route found`);
-      continue;
-    }
-    if (best.hard > 0) problems.push(`arrow ${req.id}: best route comes within ${r2(best.worst)} px of other ink`);
-    done.push({ req, arrow: best.a, polys: best.polys, info: { start: best.s, end: best.e, bend: best.a.bend, length_bonds: r2(best.len / L, 1e3), chord_bonds: r2(best.chord / L, 1e3), min_gap_px: r2(best.worst), cost: r2(best.cost, 10), seat_cost: r2(best.seat, 10), bend_without_seats: bestFree.a.bend } });
   }
   return { done, problems, ms: now() - t0 };
 }

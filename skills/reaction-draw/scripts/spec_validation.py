@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Browser-free, accumulating spec diagnostics; the normal loader still checks the result."""
 import difflib
+import copy
 import math
 import re
 
@@ -48,7 +49,10 @@ def inspect_spec(data):
     def attempt(fn, where):
         try:
             return fn()
-        except (su.SpecError, ValueError, TypeError, KeyError, RuntimeError, IndexError) as exc:
+        except su.SpecError as exc:
+            for problem in exc.problems:
+                bad(where, problem)
+        except (ValueError, TypeError, KeyError, RuntimeError, IndexError) as exc:
             bad(where, str(exc))
 
     if not isinstance(data, dict):
@@ -99,7 +103,9 @@ def inspect_spec(data):
             unknown(s, su.V2_SPECIES_KEYS, sw)
             species[sid] = s
             raw_species.append((sid, pid, key, s, sw))
+    feature_species = {}
     for sid, pid, key, s, sw in raw_species:
+        species_start = len(errors)
         smiles = s.get('smiles')
         if not isinstance(smiles, str) or not smiles.strip():
             bad(sw + '.smiles', 'is missing; write a mapped SMILES for this panel')
@@ -202,6 +208,38 @@ def inspect_spec(data):
             bad(sw + '.flip', 'must be x, y or xy')
         if s.get('offset') is not None:
             xy(s['offset'], sw + '.offset')
+        # Use the normal feature validators on independent fields, so one bad
+        # keep_h/radicals/etc. entry cannot hide another field or species.
+        if sid in labels:
+            primary_ok = len(errors) == species_start and not set(s) - su.V2_SPECIES_KEYS
+            feature_keys = ('radicals', 'keep_h', 'radical_angles', 'oxidation', 'geometry')
+            basic = {k: v for k, v in s.items() if k not in feature_keys and k != 'near'}
+            feature_smiles = su.kekulize_smiles(smiles) if any(a['aromatic'] for a in atoms) else smiles
+            feature_graph = su.parse_smiles(feature_smiles)
+            feature_styles = {tuple(map(int, m.groups())): v for k, v in styles.items()
+                              if (m := re.fullmatch(r'(\d+)[-=#~](\d+)', str(k)))
+                              and frozenset(map(int, m.groups())) in edges and v in ('plain', 'wedge', 'hash', 'bold', 'partial', '1.5', 'wavy', 'coord')}
+            def probe(raw):
+                sp = {'id': sid, 'smiles': feature_smiles, 'graph': copy.deepcopy(feature_graph),
+                      'map_to_index': {a['map']: a['i'] for a in feature_graph['atoms']},
+                      'bond_style': dict(feature_styles), 'ts': is_ts is True, 'show': []}
+                ip.prepare_species(sp, raw)
+                return sp
+            if attempt(lambda: probe({}), sw) is not None:
+                valid = {}
+                for field in feature_keys:
+                    if field not in s:
+                        continue
+                    value = s[field]
+                    entries = ([{k: v} for k, v in value.items()] if isinstance(value, dict) else
+                               [[v] for v in value] if field == 'keep_h' and isinstance(value, list) else [value])
+                    start = len(errors)
+                    for entry in entries:
+                        attempt(lambda: probe(dict(valid, **{field: entry})), sw)
+                    if len(errors) == start:
+                        valid[field] = value
+                if primary_ok:
+                    feature_species[sid] = dict(basic, **valid)
 
     def ref(value, pid, where, atom_only=False):
         if isinstance(value, list):
@@ -259,12 +297,33 @@ def inspect_spec(data):
                         if problem:
                             bad(aw + '.from', 'atom %s: %s' % (atom, problem.format(ref=atom)))
     for pid, p, pw in panel_rows:
+        panel_start = len(errors)
         pair_atoms = []
         for r in seq(p.get('lone_pairs') or [], pw + '.lone_pairs'):
             rr = ref(r, pid, pw + '.lone_pairs', atom_only=True)
             if rr and len(rr[1]) == 1:
                 pair_atoms.append('%s:%s' % (rr[0], rr[1][0]))
         arrows(p.get('arrows', []), pid, pw + '.arrows', pair_atoms)
+        connected = {}
+        def end_species(value):
+            if isinstance(value, list):
+                return set().union(*(end_species(v) for v in value))
+            try:
+                p0, key, _, _ = su.parse_ref(value, pid, pw)
+                return {key} if p0 == pid else set()
+            except su.SpecError:
+                return set()
+        for a in p.get('arrows') or [] if isinstance(p.get('arrows', []), list) else []:
+            if isinstance(a, dict):
+                for left in end_species(a.get('from')):
+                    for right in end_species(a.get('to')) - {left}:
+                        connected[frozenset((left, right))] = a.get('id', 'in this panel')
+        for i, pair in enumerate(seq(p.get('plus') or [], pw + '.plus')):
+            if not (isinstance(pair, list) and len(pair) == 2 and all(isinstance(k, str) and '%s.%s' % (pid, k) in species for k in pair) and pair[0] != pair[1]):
+                bad('panel %s plus[%d]' % (pid, i), 'use [species, species]: two different species of this panel')
+            elif frozenset(pair) in connected:
+                bad('panel %s plus[%d] %s' % (pid, i, pair), 'remove this plus between %s and %s, connected by curved arrow %s' % (
+                    pair[0], pair[1], connected[frozenset(pair)]))
         for sid, spid, key, s, sw in raw_species:
             if spid != pid or s.get('near') is None:
                 continue
@@ -314,6 +373,22 @@ def inspect_spec(data):
                     number(t[key], tw + '.' + key, positive=key == 'dist')
         for r in obj(p.get('angle_exceptions') or {}, pw + '.angle_exceptions'):
             ref(r, pid, pw + '.angle_exceptions', atom_only=True)
+        species_rows = p.get('species') or []
+        if (len(errors) == panel_start and isinstance(species_rows, list)
+                and all(isinstance(s, dict) and '%s.%s' % (pid, s.get('id')) in feature_species for s in species_rows)):
+            # Validate panel features independently with the same normalizer;
+            # schema errors elsewhere (e.g. rows or stereo) do not hide these.
+            base = {k: p[k] for k in ('id', 'arrows', 'hbonds', 'lone_pairs') if k in p}
+            base['id'] = pid
+            base['species'] = [feature_species['%s.%s' % (pid, s['id'])] for s in p.get('species') or []]
+            def probe_panel(raw):
+                return su.load_spec_v2({'panels': [raw]})
+            attempt(lambda: probe_panel(base), pw)
+            for field in ('arrows', 'hbonds', 'eta', 'pseudobonds'):
+                for entry in seq(p.get(field) or [], pw + '.' + field):
+                    attempt(lambda: probe_panel(dict(base, **{field: [entry]})), pw)
+            if 'polyhedron' in p:
+                attempt(lambda: probe_panel(dict(base, polyhedron=p['polyhedron'], pseudobonds=p.get('pseudobonds', []))), pw)
     if data.get('arrows'):
         bad('arrows', 'move curved arrows into their panel')
     rows = data.get('rows') or [panel_ids]

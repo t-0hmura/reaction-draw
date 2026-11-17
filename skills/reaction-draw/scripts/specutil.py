@@ -944,11 +944,11 @@ def resolve(spec):
     import layout                                     # automatic layout (RDKit); local module next to this file
     import iupac_features
     iupac_features.resolve_new_bond_heads(spec)
-    for panel in spec['panels']:
-        problems = iupac_features.electron_flow_errors(panel['arrows'], spec['species_by_id'],
-                    pair_counts=collections.Counter('%s:%s' % (a['sid'], a['atom']) for a in panel['lone_pairs']))
-        if problems:
-            raise SpecError(problems)
+    problems = [problem for panel in spec['panels']
+                for problem in iupac_features.electron_flow_errors(panel['arrows'], spec['species_by_id'],
+                    pair_counts=collections.Counter('%s:%s' % (a['sid'], a['atom']) for a in panel['lone_pairs']))]
+    if problems:
+        raise SpecError(problems)
     iupac_features.prepare_hydrogens(spec)
     lay = layout.compute(spec)
     return _assemble(spec, lay)

@@ -322,6 +322,9 @@ class Figure(object):
             self.nbrs[b['a']].append(b['b'])
             self.nbrs[b['b']].append(b['a'])
         self.features = figure_features(resolved)
+        reported = {c['id'] for c in (report or {}).get('curved', [])}
+        self.unrouted = {m[1] for problem in (report or {}).get('problems', [])
+                         if (m := re.fullmatch(r'arrow (\S+): no route found', problem)) and m[1] not in reported}
         self.report = self._norm_report(report or {})
         self.reload = self._norm_reload(reload or {})
         self.svg_text = svg_text
@@ -456,7 +459,7 @@ class Figure(object):
         return self._scene
 
     def _assign_ink(self):
-        """Give every ink polygon an owner: a bond (a, b), a charge circle, a hydrogen bond, a box, or None."""
+        """Give every ink polygon an owner, including measured radical dots."""
         sc = self._scene
         circles = [(c['ref'], c['center'], (c['outer_d'] or 7.4) / 2.0) for c in self.report['charges'] if c['kind'] == 'circle' and c['center']]
         segs = [((b['a'], b['b']), self.xy(b['a']), self.xy(b['b'])) for b in self.bonds if b['a'] in self.atoms and b['b'] in self.atoms]
@@ -465,6 +468,13 @@ class Figure(object):
             cx = sum(p[0] for p in s.pts) / len(s.pts)
             cy = sum(p[1] for p in s.pts) / len(s.pts)
             s.owner = None
+            if s.cls == 'mark':
+                for mark in self.report['radicals']:
+                    if mark.get('center_pt') and math.dist((cx, cy), mark['center_pt']) <= mark['radius_pt'] + 0.6:
+                        s.owner = ('radical', mark['ref'])
+                        break
+            if s.owner:
+                continue
             for ref, c, r in circles:
                 if math.hypot(cx - c[0], cy - c[1]) <= r + 0.6:
                     s.owner = ('charge', ref)
@@ -573,13 +583,13 @@ def det_overlap_text_text(f):
 
 
 def _own_ink(owner, s):
-    """Ink that may approach a text of this owner: its own bonds, its own circle, its hydrogen bonds."""
+    """Ink that may approach its own atom label, including its radical dots."""
     if owner is None or s.owner is None:
         return False
     kind, key = s.owner
     if kind == 'bond':
         return owner in key
-    if kind in ('charge', 'lone_pair'):
+    if kind in ('charge', 'lone_pair', 'radical'):
         return key == owner
     if kind == 'hbond':
         return owner in key
@@ -818,8 +828,9 @@ def _arrow_counts(f, rl, when):
     out = []
     curved = [a for a in rl['arrows'] if a['kind'] == 'curved']
     straight = [a for a in rl['arrows'] if a['kind'] != 'curved']
-    if len(curved) != len(f.curved):
-        out.append('%d curved arrows %s, %d asked' % (len(curved), when, len(f.curved)))
+    expected = sum(c['id'] not in f.unrouted for c in f.curved)
+    if len(curved) != expected:
+        out.append('%d curved arrows %s, %d asked' % (len(curved), when, expected))
     want = [r.get('kind') or 'single' for r in f.resolved['reaction_arrows']]
     if len(straight) != len(want):
         out.append('%d reaction arrows %s, %d asked' % (len(straight), when, len(want)))
@@ -833,8 +844,9 @@ def _arrow_counts(f, rl, when):
 
 def det_arrows_count(f):
     out = _arrow_counts(f, f.reload, 'after reload')
-    if len(f.report['curved']) != len(f.curved):
-        out.append('the report lists %d curved arrows, %d asked' % (len(f.report['curved']), len(f.curved)))
+    expected = sum(c['id'] not in f.unrouted for c in f.curved)
+    if len(f.report['curved']) != expected:
+        out.append('the report lists %d curved arrows, %d asked' % (len(f.report['curved']), expected))
     return out
 
 
@@ -1017,7 +1029,11 @@ def det_arrows_ends(f):
     for c in f.curved:
         r = by_id.get(c['id'])
         if r is None:
-            out.append('curved arrow %s is not in the report' % c['id'])
+            if c['id'] in f.unrouted:
+                out.append('arrow %s: no route found from %s to %s' % (
+                    c['id'], ', '.join(c['from']['refs']), ', '.join(c['to']['refs'])))
+            else:
+                out.append('curved arrow %s is not in the report' % c['id'])
             continue
         for side, want_end, got_ref, pt in (('start', c['from'], r['start_ref'], r['start']), ('end', c['to'], r['end_ref'], r['end'])):
             if want_end['kind'] == 'gap':
@@ -1064,9 +1080,9 @@ def det_arrows_lone_pair(f):
         ref = arrow['from']['refs'][0]
         pairs = [p for p in f.report['lone_pairs'] if p['ref'] == ref and p['center'] and len(p['dots']) == 2 and all(p['dots'])]
         tail = (by_id.get(arrow['id']) or {}).get('start')
-        if not pairs or tail is None:
+        if not pairs or (tail is None and arrow['id'] not in f.unrouted):
             out.append('%s: atom %s has no measured drawn lone pair or arrow tail' % (arrow['id'], ref))
-        elif min(math.dist(tail, p['center']) for p in pairs) > f.pair_tail_max:
+        elif tail is not None and min(math.dist(tail, p['center']) for p in pairs) > f.pair_tail_max:
             out.append('%s: tail is not at a drawn lone pair of %s (at most %.1f pt from its midpoint)' % (arrow['id'], ref, f.pair_tail_max))
         for when, saved in (('after reload', f.reload), ('CDXML alone', f.reload.get('cdxml'))):
             if saved is not None and saved['atoms'].get(ref, {}).get('pairs', 0) != f.lone_pairs.count(ref):
@@ -2071,15 +2087,18 @@ def det_hbond_dots(f):
 
 
 # IUPAC chemical-feature detectors share one block to keep geometry changes independent.
+def inferred_radicals(f):
+    return ['%s: %d unpaired electron(s) come from the bracket H count, charge and bonds, not from radicals' % (ref, a['radical'])
+            for ref, a in f.atoms.items() if a.get('radical') and a.get('radical_inferred')]
+
+
 def det_radical_marks(f):
-    out = []
+    out = inferred_radicals(f)
     for ref, a in f.atoms.items():
         n = int(a.get('radical') or 0)
         marks = [m for m in f.report['radicals'] if m.get('ref') == ref]
         if sum(m.get('multiplier', 1) for m in marks) != n:
             out.append('%s: %d unpaired electrons requested, %d measured marks' % (ref, n, len(marks)))
-        if n and a.get('radical_inferred'):
-            out.append('%s: %d unpaired electron(s) come from the bracket H count, charge and bonds, not from radicals' % (ref, n))
         for when, saved in (('native', f.reload), ('CDXML', f.reload.get('cdxml'))):
             if saved and int(saved['atoms'].get(ref, {}).get('radical') or 0) != n:
                 out.append('%s: %s lost the unpaired-electron count' % (ref, when))
@@ -2116,7 +2135,7 @@ def det_electron_flow(f):
             marks = [m['center_pt'] for m in f.report['radicals'] if m['ref'] == c['from']['refs'][0]]
             if not row.get('start') or not marks or min(math.dist(row['start'], m) for m in marks) > LONE_PAIR_TAIL_MAX_PT:
                 pass  # radical_direction reports a visible warning for this preference
-        if c['to']['kind'] == 'gap' and not _receiver(c):   # arrows_ends checks that a pair's head reaches its receiving atom
+        if c['id'] not in f.unrouted and c['to']['kind'] == 'gap' and not _receiver(c):   # arrows_ends checks that a pair's head reaches its receiving atom
             a, b = (f.xy(r) for r in c['to']['refs'])
             end = row.get('end')
             if end is None:
@@ -2594,6 +2613,8 @@ def _spec_edit(f, refs):
     sids = sorted((x for x in sids if x in order), key=order.index)
     key = sids[-1][len(panel['id']) + 1:]
     if len(sids) == 1:
+        if sum(a['species'] == sids[0] for a in panel['atoms']) == 1:
+            return 'move species %s in panel %s with offset' % (key, panel['id'])
         first = next(p['id'] for p in f.resolved['panels'] if any(a['species'] == '%s.%s' % (p['id'], key) for a in p['atoms']))
         return ('set "rotate": 30 on species %s in panel %s (then -30; if both fail, abbreviate a non-reacting group beside '
                 'these atoms or split the step into two panels)' % (key, first))
@@ -2701,7 +2722,11 @@ def repair_hints(f, name, findings):
                 places.append('panel %s, title' % panel['id'])
         if not places:
             places = ['panels %s (figure-wide %s)' % (', '.join(p['id'] for p in f.resolved['panels']), name)]
-        action = ('run `python scripts/fix_hbonds.py INPUT --out NEW_DIR` once; if the line still overlaps, follow the hydrogen-bond '
+        if name == 'arrows_ends' and 'no route found' in finding:
+            places = [place for place in places if ', arrow ' in place]
+        action = ('remove this arrow\'s manual bend and any plus along its path; bring its ends closer with near between species, '
+                  'or move the receiving branch with xy within one species' if name == 'arrows_ends' and 'no route found' in finding else
+                  'run `python scripts/fix_hbonds.py INPUT --out NEW_DIR` once; if the line still overlaps, follow the hydrogen-bond '
                   'note under "Hand placement" in scripts/README.md' if 'hbond ' in finding else
                   'first add the missing H to the bracket atom in the SMILES; only when the source draws an unpaired electron on '
                   'this atom, list it in the species\' radicals' if 'not from radicals' in finding else
@@ -2714,16 +2739,28 @@ def repair_hints(f, name, findings):
     return hints
 
 
-def run_checks(f):
+INPUT_CHECKS = ('arrows_steps', 'residue_codes', 'radical_marks', 'electron_flow')
+
+
+def run_checks(f, input_only=False):
     """{'checks': {name: {'ok', 'findings'}}, 'ok', 'failed': [names], 'tables': {...}}."""
     res = {}
     applicable = applicable_detectors(f)
+    if input_only:
+        applicable = [n for n in applicable if n in INPUT_CHECKS]
     for name in DETECTORS:
         if name not in applicable:
             res[name] = {'ok': True, 'findings': [], 'warnings': [], 'applicable': False}
             continue
         try:
-            found = DETECTOR_FUNCS[name](f)
+            if input_only and name == 'radical_marks':
+                found = inferred_radicals(f)
+            elif input_only and name == 'electron_flow':
+                from iupac_features import electron_flow_errors
+                found = electron_flow_errors(f.curved, atoms=f.atoms, bonds=f.bonds,
+                                             pair_counts=collections.Counter(f.lone_pairs), advisory=True)
+            else:
+                found = DETECTOR_FUNCS[name](f)
         except (KeyError, TypeError, ValueError, ZeroDivisionError) as e:
             found = ['the check could not run: %s: %s' % (type(e).__name__, e)]
         warnings = [x for x in found if warning_finding(name, x)]
@@ -3708,12 +3745,13 @@ def summary_lines(result, pc=None):
     for n in DETECTORS:
         repairs = [hint.partition('. Action: ') for hint in c[n].get('repairs', [])]
         shown = set()                                 # each distinct action once, at the first finding it applies to
-        for hint, _, action in repairs[:8]:
+        visible = [r for i, r in enumerate(repairs) if i < 8 or 'no route found' in r[0]]
+        for hint, _, action in visible:
             action = action.rstrip('.')
-            lines.append('  FIX ' + hint + '.' + (' Action: %s.' % action if action and action not in shown else ''))
+            lines.append('  FIX ' + hint + '.' + (' Action: %s.' % action if action and (action not in shown or 'no route found' in hint) else ''))
             shown.add(action)
-        if len(repairs) > 8:
-            lines.append('  FIX %s: (%d more)' % (n, len(repairs) - 8))
+        if len(repairs) > len(visible):
+            lines.append('  FIX %s: (%d more)' % (n, len(repairs) - len(visible)))
     if pc is not None:
         for r in pc['rows']:
             if r['planted'] and not r['detected']:

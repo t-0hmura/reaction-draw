@@ -849,8 +849,10 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         info: {start: 'retained', end: 'retained', bend: arrow.bend, length_bonds: length / L, chord_bonds: dist(path[0], path[path.length - 1]) / L}});
       continue;
     }
-    const repair = opts.repairArrows && (!opts.repairArrowIds || opts.repairArrowIds.includes(req.id));
-    const bends = typeof req.bend === 'number' ? [req.bend] : repair ? [...BENDS, 0.1, -0.1, 0.24, -0.24, 0.38, -0.38, 0.52, -0.52,
+    const repairRequested = opts.repairArrows && (!opts.repairArrowIds || opts.repairArrowIds.includes(req.id));
+    // Exhaust the existing route candidates before declaring an arrow undrawable.
+    for (const repair of repairRequested ? [true] : [false, true]) {
+    const autoBends = repair ? [...BENDS, 0.1, -0.1, 0.24, -0.24, 0.38, -0.38, 0.52, -0.52,
       ...(req.src.kind === 'atom' ? [.12, .14, .16, .2, .22, .26, .28, .32, .34, .36, .4, .42, .46, .5, .55, .6, .7, .8, .95, 1].flatMap((b) => [b, -b]) : [])] : BENDS;
     const field = new Field(bounds, {polys: [...basePolys, ...done.flatMap((p) => p.polys)], boxes: textBoxes.map((b) => pad(b, 2))});
     type Cand = {p: Pt; tag: string; t: number; tm: number; ex: number; atom?: number; pen: number};
@@ -923,6 +925,7 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     // with those two ends, the bend that keeps off the seats is taken.
     let bestFree: any = null;
     const withEnds = new Map<string, any>();
+    for (const bends of typeof req.bend === 'number' ? [[req.bend], autoBends] : [autoBends]) {
     for (const s of srcPts) for (const e of snkPts) {
       const chord = dist(s.p, e.p);
       if (chord < (compactHook ? 0.12 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
@@ -983,10 +986,14 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         if (!prev || cost + seat < prev.cost + prev.seat) withEnds.set(key, cand);
       }
     }
+    if (bestFree) break; // Keep a working manual bend; try automatic bends only when it has no route.
+    }
     const best = bestFree ? withEnds.get(bestFree.key) : null;
-    if (!best) { problems.push(`arrow ${req.id}: no route found`); continue; }
+    if (!best) { if (repair) problems.push(`arrow ${req.id}: no route found`); continue; }
     if (best.hard > 0) problems.push(`arrow ${req.id}: best route comes within ${r2(best.worst)} px of other ink`);
     done.push({req, arrow: best.a, polys: best.polys, info: {start: best.s, end: best.e, bend: best.a.bend, length_bonds: r2(best.len / L, 1000), chord_bonds: r2(best.chord / L, 1000), min_gap_px: r2(best.worst), cost: r2(best.cost, 10), seat_cost: r2(best.seat, 10), bend_without_seats: bestFree.a.bend}});
+    break;
+    }
   }
   return {done, problems, ms: now() - t0};
 }

@@ -210,6 +210,15 @@ def _names(aid, text):
     return re.search(r'(?<![\w-])' + re.escape(aid) + r'(?![\w-])', text) is not None
 
 
+def _retryable(result):
+    """Retry only if at least one finding can change with automatic placement."""
+    return any(not (name in ('arrows_steps', 'residue_codes', 'hbond_dots')
+                    or name == 'radical_marks' and 'not from radicals' in finding
+                    or name == 'arrows_ends' and finding.startswith('arrow ') and ': no route found from ' in finding
+                    or 'hbond ' in finding or 'hydrogen bond' in finding)
+               for name in result['failed'] for finding in result['checks'][name]['findings'])
+
+
 def _candidate(resolved, out, fig, draw, draw_args, options, accept, stats, stage, keep_resolved=False):
     """Draw one retry candidate in a scratch folder and check it; copy its files into out when accept(checks).
     Returns (figure, checks, accepted, error); error names why nothing could be drawn or checked."""
@@ -256,6 +265,8 @@ def retry_placements(resolved, out, fig, result, draw, draw_args, stats):
     for targets, flag in ((('charge_own_atom', 'overlap_charge', 'charge_open'), 'repairCharges'),
                           (('arrows_ends', 'arrows_shape', 'overlap_arrow_text', 'overlap_arrow_bond', 'overlap_arrow_arrow'), 'repairArrows'),
                           (('number_place', 'number_clear'), 'repairNumbers')):
+        if not _retryable(result):
+            break
         failed = [name for name in targets if name in result['failed']]
         if not failed:
             continue
@@ -314,7 +325,7 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args, stats):
     notes = []
     targets = {'arrows_ends', 'arrows_shape', 'overlap_arrow_bond', 'overlap_arrow_text', 'overlap_arrow_arrow', 'overlap_text_text', 'overlap_text_bond'}
     for round_number in range(1, 4):
-        if not targets.intersection(result['failed']):
+        if not _retryable(result) or not targets.intersection(result['failed']):
             break
         findings = ' '.join(x for n in targets for x in result['checks'][n]['findings'])
         sources = [(c['from']['refs'][0], c['id']) for p in fig.resolved['panels'] for c in p['curved']
@@ -505,6 +516,8 @@ def retry_layout(spec, out, fig, result, draw, draw_args, stats):
     alternatives = iter(layout_repair.candidates(spec, result, fig))
     rejected = 0
     for attempt in range(1, layout_repair.MAX_DRAWS + 1):
+        if not _retryable(result):
+            break
         try:
             resolved = next(alternatives)
         except StopIteration:
@@ -573,6 +586,15 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     retry_counts = {stage: {'draws': 0} for stage in
                     ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs')}
     retry_counts['retry_iupac_pairs']['accepted'] = []
+    preflight = check_rules.run_checks(check_rules.Figure(resolved, {}, {}, None), input_only=True)
+    if not preflight['ok']:
+        times['total'] = time.time() - t0
+        lines = check_rules.summary_lines(preflight) + stereo_lines + ['RESULT: CHECKS FAILED']
+        _write_state(out, checks={'result': preflight, 'positive_control': None, 'times_s': times,
+                                 'retry_counts': retry_counts}, summary=lines)
+        for line in lines:
+            log(line)
+        return 1, {'ok': False, 'times_s': times, 'failed': preflight['failed'], 'positive_control': None}
     t1 = time.time()
     native_backend = draw is None
     _progress('first drawing')
@@ -587,8 +609,8 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     try:
         fig = check_rules.load_figure(out)
         result = check_rules.run_checks(fig)
-        if native_backend and result['failed']:
-            _progress('first drawing failed: %s; trying automatic fixes' % ', '.join(result['failed']), always=True)
+        if native_backend and _retryable(result):
+            _progress('fixing automatically: %s' % ', '.join(result['failed']), always=True)
             retry_started = time.time()
             retry_args = {'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir,
                           'node_modules': node_modules, 'browser_cmd': browser_cmd}
@@ -600,8 +622,9 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 placed = fig
                 fig, result, retried = retry_layout(spec, out, fig, result, draw, retry_args, retry_counts['retry_layout'])
                 notes.extend(retried)
-                fig, result, retried = retry_forming_branch(out, fig, result, draw, retry_args, retry_counts['retry_forming_branch'])
-                notes.extend(retried)
+                if _retryable(result):
+                    fig, result, retried = retry_forming_branch(out, fig, result, draw, retry_args, retry_counts['retry_forming_branch'])
+                    notes.extend(retried)
                 fig, result, retried = retry_iupac_pairs(out, fig, result, draw, retry_args, retry_counts['retry_iupac_pairs'])
                 notes.extend(retried)
                 if not numbers_only or fig is not placed:
@@ -646,7 +669,8 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                              'backend_times_s': backend_times, 'files': files, 'retry_counts': retry_counts},
                  summary=lines + audit)
     for line in lines + (audit if ok else []):       # on a pass the audit items are the agent's next step
-        log(line)
+        if not (ok and line.startswith('WARNING:') and not line.startswith('WARNING: arrows_clear:')):
+            log(line)
     return (0 if ok else 1), {'ok': ok, 'times_s': times, 'failed': result['failed'],
                               'positive_control': None if pc is None else '%d/%d' % (pc['detected'], pc['planted'])}
 

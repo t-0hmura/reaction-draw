@@ -26,6 +26,8 @@ color of ink, polygons written as M/L/Z paths) follows how Octet Draw's editor (
 What was changed
 ----------------
   * No Octet Draw source file was modified.
+  * The adapter tries automatic bends after an unroutable manual bend, and exhausts its existing route candidates
+    before reporting that no route was found.
   * The adapter uses Octet's dashed single/double bonds and square brackets for optional transition states.
     It retains their input hydrogen counts in a native annotation and adds standard NumHydrogens attributes to
     the TS nodes of Octet's CDXML output before writeOct saves it; Octet's source remains unchanged.
