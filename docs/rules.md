@@ -32,6 +32,7 @@ IUPAC rules ([decided by the agent](../skills/reaction-draw/references/iupac-rul
 - Number only the atoms that require it (those referenced in the text or a product name, or moving between molecules), and never number H atoms; use primes (′ and ″) for atoms in the second and third molecules.
 - Label residues with the three-letter code and number (Glu170), or the one-letter code (E170) when requested or used by the source; use a single style per figure.
 - Draw the atoms, bonds, and charges of a residue's reacting group in full, with the residue label at the root of the side chain.
+- Draw a residue whose atoms do not change, such as a His ligand of a metal, as its name bonded directly to the atom it binds, without its side chain.
 - Show each residue once per panel. Draw a residue whose backbone takes part (with its side chain when that takes part too), and consecutive residues shown with their backbone, as one chain cut at both ends with wavy truncation marks, and name each residue with a text near its α carbon.
 
 ## Arrows and lone pairs
