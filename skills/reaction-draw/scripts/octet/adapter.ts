@@ -686,8 +686,9 @@ function hydrogenSide(mol: any, ctx: Ctx, i: number): string | null {
   return Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'below' : 'above');
 }
 // The axial seat atom i's reacting lone pair takes in placeLonePairs (35 degrees or more from each bond, within 90
-// degrees of what it attacks, nearest that), or null: the written H keep off it.
-function pairSeat(mol: any, job: any, i: number): number | null {
+// degrees of what it attacks, nearest that), or null: the written H keep off it.  A label with H and one bond keeps
+// its heavy atom at the bond (H2N, HO): the side across from the bond is the H's, not a seat.
+function pairSeat(mol: any, job: any, i: number, ctx?: Ctx): number | null {
   if (!mol.atoms[i].pairs) return null;
   let end: End | null = null;
   for (const r of (job.curved ?? []) as CurvedReq[]) if (r.electrons !== 1 && r.src.kind === 'atom' && r.src.atoms[0] === i) end = r.snk;
@@ -696,7 +697,9 @@ function pairSeat(mol: any, job: any, i: number): number | null {
     : [(px[end.atoms[0]][0] + px[end.atoms[1]][0]) / 2, (px[end.atoms[0]][1] + px[end.atoms[1]][1]) / 2];
   const want = pageDeg(px[i], target);
   const bondDirs = mol.bonds.filter((b: any) => b.type !== HBOND && b.atoms.includes(i)).map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
-  const free = [0, 90, 180, 270].filter((deg) => angDiff(deg, want) <= 90 && bondDirs.every((b: number) => angDiff(deg, b) >= 35));
+  const hSide = ctx && bondDirs.length === 1 && hydrogenSide(mol, ctx, i) !== null && Math.abs(angDiff(0, bondDirs[0]) - angDiff(180, bondDirs[0])) > 40
+    ? (angDiff(0, bondDirs[0]) > angDiff(180, bondDirs[0]) ? 0 : 180) : null;
+  const free = [0, 90, 180, 270].filter((deg) => deg !== hSide && angDiff(deg, want) <= 90 && bondDirs.every((b: number) => angDiff(deg, b) >= 35));
   return free.length ? free.reduce((a, b) => (angDiff(b, want) < angDiff(a, want) ? b : a)) : null;
 }
 // Octet's render.ts reads an atom's alignment only to lay out the rest of its label (H, counts, a sign, more letters)
@@ -713,9 +716,16 @@ function placeFoldedHydrogens(mol: any, ctx: Ctx, job: any) {
     if (mol.atoms[i].hidden || (job.fixedLabelAligns ?? []).includes(i) || !mol.bonds.some((b: any) => b.atoms.includes(i))) continue;
     const stacked = ['above', 'below'].includes(mol.atoms[i].align) && !stackable(mol, i);
     if (!stacked && alignFree(mol, ctx, i)) continue;
-    // written H on the reacting pair's seat count as H on bond ink
-    const seat = pairSeat(mol, job, i);
-    const cost = () => labelClash(mol, ctx, i) + (seat !== null && SIDE_DEG[hydrogenSide(mol, ctx, i) ?? ''] === seat ? 200000 : 0);
+    // written H on the reacting pair's seat count as H on bond ink; so do H written within 45 degrees of one of the
+    // atom's drawn bonds (NH-C, H2N on the right of its bond): the heavy atom stands at its bonds
+    const seat = pairSeat(mol, job, i, ctx), px = atomPxOf(mol);
+    const bondDirs = mol.bonds.filter((b: any) => b.atoms.includes(i) && b.type !== HBOND && !b.atoms.some((j: number) => mol.atoms[j].hidden))
+      .map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
+    const cost = () => {
+      const side = SIDE_DEG[hydrogenSide(mol, ctx, i) ?? ''];
+      return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 200000 : 0)
+        + (side !== undefined && bondDirs.some((b: number) => angDiff(side, b) < 45) ? 150000 : 0);
+    };
     let best = stacked ? Infinity : cost(), chosen = mol.atoms[i].align;
     if (best < 1) continue;
     for (const align of stackable(mol, i) ? ['left', 'right', 'above', 'below', 'centre'] : ['left', 'right', 'centre']) {
@@ -745,7 +755,7 @@ function keepHydrogenSides(mol: any, ctx: Ctx, job: any) {
       // and never onto the seat of its reacting lone pair
       const px = atomPxOf(mol), toward = SIDE_DEG[want] ?? 0;
       if (mol.bonds.some((b: any) => b.atoms.includes(i) && b.type !== HBOND && !b.atoms.some((j: number) => mol.atoms[j].hidden)
-        && angDiff(pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]), toward) < 60) || pairSeat(mol, job, i) === toward) continue;
+        && angDiff(pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]), toward) < 60) || pairSeat(mol, job, i, ctx) === toward) continue;
       const saved = mol.atoms[i].align;
       const fit = (stackable(mol, i) ? ['left', 'right', 'above', 'below'] : ['left', 'right']).find((align) => { mol.atoms[i].align = align; return sideOf(i) === want && labelClash(mol, ctx, i) < 1; });
       mol.atoms[i].align = fit ?? saved;
@@ -1385,9 +1395,36 @@ function placeTitles(mol: any, ctx: Ctx, job: any, curvedPolys: number[][][]) {
 // color: bonds, hydrogen bonds, marks), atom label pieces, arrows (fitted to their conditions, as the editor shows
 // them) and captions placed by Octet's placeCaptions. Roles are written as element ids (standaloneSvg removes data-*
 // attributes) and turned into data-role afterwards.
+// An arrow that crosses a hydrogen bond's dotted line passes through a gap in it: the dots (at most two per crossing)
+// that would touch the arrow, or come within a line width of it, are left out.
+function crossingDots(mol: any, d: any, cls: string[], arrows: any[], f: any): Set<number> {
+  const skip = new Set<number>(), px = atomPxOf(mol), hw = f.line / 2;
+  const hbonds = mol.bonds.filter((b: any) => b.type === HBOND);
+  if (!hbonds.length || !arrows.length) return skip;
+  const side = (a: Pt, b: Pt, c: Pt) => Math.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+  const cross = (a: Pt, b: Pt, p: Pt, q: Pt) => side(a, b, p) * side(a, b, q) < 0 && side(p, q, a) * side(p, q, b) < 0;
+  const centerOf = (poly: number[][]): Pt => [poly.reduce((s, v) => s + v[0], 0) / poly.length, poly.reduce((s, v) => s + v[1], 0) / poly.length];
+  const near = (poly: number[][], shapes: number[][][]) => shapes.some((sh) => sh.some((e, k) => {
+    const n = sh[(k + 1) % sh.length];
+    return poly.some((v) => segDist(v as Pt, e as Pt, n as Pt) <= f.line);
+  }));
+  for (const a of arrows) {
+    const path = arrowPath(a, L) as Pt[], shapes = arrowShapes(a, f, L) as number[][][];
+    for (const b of hbonds) {
+      const p = px[b.atoms[0]], q = px[b.atoms[1]];
+      if (!path.slice(1).some((v, k) => cross(path[k], v, p, q))) continue;
+      const dots = d.polygons.map((_: any, k: number) => k).filter((k: number) => cls[k] === 'hbond'
+        && segDist(centerOf(d.polygons[k]), p, q) <= hw + 0.5 && near(d.polygons[k], shapes));
+      if (dots.length <= 2) dots.forEach((k: number) => skip.add(k));
+    }
+  }
+  return skip;
+}
+
 function paint(mol: any, ctx: Ctx) {
   const {style, f, pt, measure, capWidth} = ctx;
   const d = render(mol, f, measure, L), cls = classify(mol, d, ctx), arrows = fittedArrows(mol, ctx);
+  const gapDots = crossingDots(mol, d, cls, arrows, f);
   const canvas = document.querySelector('svg')! as SVGSVGElement;
   canvas.replaceChildren();
   for (const a of ['width', 'height', 'viewBox']) canvas.removeAttribute(a);
@@ -1396,6 +1433,7 @@ function paint(mol: any, ctx: Ctx) {
   (mol.shapes ?? []).forEach((s: any) => node('path', {d: toPath(shapeInk(s, f, L)), fill: s.colour ?? '#000000', id: id('box')}, g));
   const groups = new Map<string, number[][][]>();
   d.polygons.forEach((poly: number[][], i: number) => {
+    if (gapDots.has(i)) return;
     const key = `${cls[i]}|${(d.colours[i] ?? '#000000').toLowerCase()}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(poly);

@@ -247,7 +247,7 @@ def _candidates(jobs, out, fig, draw, draw_args, accept, stats, stage, keep_reso
         dests = [Path(scratch) / str(i) for i in range(len(jobs))]
         for dest in dests:
             dest.mkdir()
-        with concurrent.futures.ThreadPoolExecutor(len(jobs)) as pool:
+        with concurrent.futures.ThreadPoolExecutor(min(len(jobs), PAIR_WORKERS)) as pool:
             checked_jobs = list(pool.map(draw_and_check, jobs, dests))
         results, adopted = [], False
         for dest, (candidate, checked, error) in zip(dests, checked_jobs):
@@ -604,6 +604,73 @@ def retry_hbond_flips(out, fig, result, draw, draw_args, stats):
         ', '.join(sorted(group)), 'left-right' if axis == 'x' else 'up-down', pid)]
 
 
+def _repair_options(fig, result):
+    """The wider searches for a retry candidate: arrows and numbers, and charges only when a charge check failed (a wider
+    charge search moves charges that were fine and takes the seats of numbers)."""
+    charges = bool(set(result['failed']) & {'charge_own_atom', 'overlap_charge', 'charge_open'})
+    return {'repairCharges': charges, 'repairNumbers': True, 'repairArrows': True}
+
+
+NEAR_DIRS = (None, 0, 90, 180, 270)     # places tried for a molecule brought next to its arrow's other end
+
+
+def retry_route_near(spec, out, fig, result, draw, draw_args, stats):
+    """When a curved arrow between two molecules finds no route or touches a bond: put the smaller molecule (not one
+    placed by hand) next to the arrow's atom in the other one ("near", in the free place nearest to each of NEAR_DIRS, its offset dropped),
+    draw these side by side, and keep the one that most lowers the failed checks and findings, gains none in
+    HBOND_FLIP_KEEP and brings no two species closer.  The arrow then has a short way."""
+    lost = [m.group(1) for x in result['checks']['arrows_ends']['findings'] for m in re.finditer(r'arrow (\S+): no route found', x)]
+    lost += [m.group(1) for x in result['checks']['overlap_arrow_bond']['findings'] for m in re.finditer(r'arrow (\S+) touches bond', x)]
+    if not lost:
+        return fig, result, [], spec
+    size = collections.Counter(a['species'] for p in fig.resolved['panels'] for a in p['atoms'])
+    options = _repair_options(fig, result)
+    jobs, moves, specs = [], [], []
+    for p in fig.resolved['panels']:
+        for a in p.get('curved', []):
+            if a.get('id') not in lost:
+                continue
+            ends = [r for r in a['from']['refs'] + a['to']['refs']]
+            sids = list(dict.fromkeys(r.rsplit(':', 1)[0] for r in ends))
+            if len(sids) != 2:
+                continue
+            mover, other = sorted(sids, key=lambda x: size[x])
+            sp = spec['species_by_id'].get(mover)
+            target = next((r for r in a['to']['refs'] + a['from']['refs'] if r.startswith(other + ':')), None)
+            if sp is None or sp['xy'] or target is None:
+                continue
+            for direction in NEAR_DIRS:
+                changed = copy.deepcopy(spec)
+                c = changed['species_by_id'][mover]
+                c['near'] = {'species': other.split('.', 1)[1], 'atom': int(target.rsplit(':', 1)[1]), 'dir': direction, 'dist': None}
+                c['offset'] = None
+                try:
+                    jobs.append((specutil.resolve(changed), options))
+                    specs.append(changed)
+                except Exception:
+                    continue
+                moves.append((a['id'], mover, other, direction))
+    if not jobs:
+        return fig, result, [], spec
+    def rank(checked):
+        return len(checked['failed']), sum(len(c['findings']) for c in checked['checks'].values())
+    def better(checked):
+        return (not checked['checks']['stereochemistry']['findings']
+                and all(set(checked['checks'][n]['findings']) <= set(result['checks'][n]['findings']) for n in HBOND_FLIP_KEEP)
+                and rank(checked) < rank(result) and not _closer(result, checked))
+    results = _candidates(jobs, out, fig, draw, draw_args, lambda checked: False, stats, 'retry_route_near')
+    scored = [(rank(checked), k) for k, (_, checked, _, error) in enumerate(results) if error is None and better(checked)]
+    if not scored:
+        return fig, result, [], spec
+    _, k = min(scored)
+    candidate, checked, ok, _ = _candidate(jobs[k][0], out, fig, draw, draw_args, jobs[k][1], better, stats, 'retry_route_near')
+    if not ok:
+        return fig, result, [], spec
+    aid, mover, other, direction = moves[k]
+    return candidate, checked, ['arrow %s: %s put next to %s%s' % (
+        aid, mover, other, '' if direction is None else ' (%d degrees)' % direction)], specs[k]
+
+
 def retry_layout(spec, out, fig, result, draw, draw_args, stats):
     """Try bounded structural alternatives on failure, accepting only independently checked drawings."""
     import layout_repair
@@ -613,8 +680,8 @@ def retry_layout(spec, out, fig, result, draw, draw_args, stats):
     def rank(checked):
         return len(checked['failed']), sum(len(c['findings']) for c in checked['checks'].values())
     alternatives = iter(layout_repair.candidates(spec, result, fig))
-    rejected = 0
-    for attempt in range(1, layout_repair.MAX_DRAWS + 1):
+    rejected, limit = 0, layout_repair.draw_limit(result, fig)
+    for attempt in range(1, limit + 1):
         if not _retryable(result):
             break
         try:
@@ -624,7 +691,7 @@ def retry_layout(spec, out, fig, result, draw, draw_args, stats):
         except Exception as exc:
             notes.append('automatic layout search: %s; kept the checked drawing' % exc)
             break
-        options = {'repairCharges': True, 'repairNumbers': True, 'repairArrows': True}
+        options = _repair_options(fig, result)
         if not set(result['failed']).intersection({'arrows_ends', 'arrows_shape'}):
             options['ownMarginPx'] = 8.5
         def better(checked, result=result):
@@ -642,7 +709,7 @@ def retry_layout(spec, out, fig, result, draw, draw_args, stats):
             notes.extend(n for n in resolved.get('notes', []) if n not in fig.resolved.get('notes', []))
             fig, result = candidate, checked
         rejected = 0 if ok else rejected + 1
-        if result['ok'] or not layout_repair.relevant(result) or rejected >= layout_repair.MAX_DRAWS:
+        if result['ok'] or not layout_repair.relevant(result) or rejected >= limit:
             break
     return fig, result, notes
 
@@ -786,7 +853,8 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     times['resolve'] = time.time() - t0
     notes = list(resolved.get('notes', []))     # kept in the state's summary with the result
     retry_counts = {stage: {'draws': 0} for stage in
-                    ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs', 'retry_hbond_flips')}
+                    ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs', 'retry_hbond_flips',
+                     'retry_route_near')}
     retry_counts['retry_iupac_pairs']['accepted'] = []
     preflight = check_rules.run_checks(check_rules.Figure(resolved, {}, {}, None), input_only=True)
     if not preflight['ok']:
@@ -839,6 +907,13 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 fig, result, retried = retry_placements(resolved, out, fig, result, draw, retry_args, retry_counts['retry_placements'])
                 notes.extend(retried)
                 placed = fig
+                # an edit of the input (a molecule put next to its arrow's other end) comes before the layout search,
+                # which then starts from the edited input
+                if (any('no route found' in x for x in result['checks']['arrows_ends']['findings'])
+                        or 'overlap_arrow_bond' in result['failed']):
+                    fig, result, retried, spec = retry_route_near(spec, out, fig, result, draw, retry_args,
+                                                                  retry_counts['retry_route_near'])
+                    notes.extend(retried)
                 fig, result, retried = retry_layout(spec, out, fig, result, draw, retry_args, retry_counts['retry_layout'])
                 notes.extend(retried)
                 if _retryable(result):

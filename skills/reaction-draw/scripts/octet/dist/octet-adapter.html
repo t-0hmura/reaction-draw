@@ -9630,7 +9630,7 @@ function hydrogenSide(mol, ctx, i) {
   const dx = mate.box[0] + mate.box[2] - own.box[0] - own.box[2], dy = mate.box[1] + mate.box[3] - own.box[1] - own.box[3];
   return Math.abs(dx) >= Math.abs(dy) ? dx > 0 ? "right" : "left" : dy > 0 ? "below" : "above";
 }
-function pairSeat(mol, job, i) {
+function pairSeat(mol, job, i, ctx) {
   if (!mol.atoms[i].pairs) return null;
   let end = null;
   for (const r of job.curved ?? []) if (r.electrons !== 1 && r.src.kind === "atom" && r.src.atoms[0] === i) end = r.snk;
@@ -9638,7 +9638,8 @@ function pairSeat(mol, job, i) {
   const px = atomPxOf(mol), target = end.kind === "atom" ? px[end.atoms[0]] : [(px[end.atoms[0]][0] + px[end.atoms[1]][0]) / 2, (px[end.atoms[0]][1] + px[end.atoms[1]][1]) / 2];
   const want = pageDeg(px[i], target);
   const bondDirs = mol.bonds.filter((b) => b.type !== HBOND2 && b.atoms.includes(i)).map((b) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
-  const free = [0, 90, 180, 270].filter((deg2) => angDiff(deg2, want) <= 90 && bondDirs.every((b) => angDiff(deg2, b) >= 35));
+  const hSide = ctx && bondDirs.length === 1 && hydrogenSide(mol, ctx, i) !== null && Math.abs(angDiff(0, bondDirs[0]) - angDiff(180, bondDirs[0])) > 40 ? angDiff(0, bondDirs[0]) > angDiff(180, bondDirs[0]) ? 0 : 180 : null;
+  const free = [0, 90, 180, 270].filter((deg2) => deg2 !== hSide && angDiff(deg2, want) <= 90 && bondDirs.every((b) => angDiff(deg2, b) >= 35));
   return free.length ? free.reduce((a, b) => angDiff(b, want) < angDiff(a, want) ? b : a) : null;
 }
 function alignFree(mol, ctx, i) {
@@ -9652,8 +9653,12 @@ function placeFoldedHydrogens(mol, ctx, job) {
     if (mol.atoms[i].hidden || (job.fixedLabelAligns ?? []).includes(i) || !mol.bonds.some((b) => b.atoms.includes(i))) continue;
     const stacked = ["above", "below"].includes(mol.atoms[i].align) && !stackable(mol, i);
     if (!stacked && alignFree(mol, ctx, i)) continue;
-    const seat = pairSeat(mol, job, i);
-    const cost = () => labelClash(mol, ctx, i) + (seat !== null && SIDE_DEG[hydrogenSide(mol, ctx, i) ?? ""] === seat ? 2e5 : 0);
+    const seat = pairSeat(mol, job, i, ctx), px = atomPxOf(mol);
+    const bondDirs = mol.bonds.filter((b) => b.atoms.includes(i) && b.type !== HBOND2 && !b.atoms.some((j) => mol.atoms[j].hidden)).map((b) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
+    const cost = () => {
+      const side = SIDE_DEG[hydrogenSide(mol, ctx, i) ?? ""];
+      return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 2e5 : 0) + (side !== void 0 && bondDirs.some((b) => angDiff(side, b) < 45) ? 15e4 : 0);
+    };
     let best = stacked ? Infinity : cost(), chosen = mol.atoms[i].align;
     if (best < 1) continue;
     for (const align of stackable(mol, i) ? ["left", "right", "above", "below", "centre"] : ["left", "right", "centre"]) {
@@ -9684,7 +9689,7 @@ function keepHydrogenSides(mol, ctx, job) {
       const was = partners(first), now2 = partners(i);
       if (was.length && now2.length && !now2.some((m) => was.includes(m))) continue;
       const px = atomPxOf(mol), toward = SIDE_DEG[want] ?? 0;
-      if (mol.bonds.some((b) => b.atoms.includes(i) && b.type !== HBOND2 && !b.atoms.some((j) => mol.atoms[j].hidden) && angDiff(pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]), toward) < 60) || pairSeat(mol, job, i) === toward) continue;
+      if (mol.bonds.some((b) => b.atoms.includes(i) && b.type !== HBOND2 && !b.atoms.some((j) => mol.atoms[j].hidden) && angDiff(pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]), toward) < 60) || pairSeat(mol, job, i, ctx) === toward) continue;
       const saved = mol.atoms[i].align;
       const fit = (stackable(mol, i) ? ["left", "right", "above", "below"] : ["left", "right"]).find((align) => {
         mol.atoms[i].align = align;
@@ -10355,9 +10360,32 @@ function placeTitles(mol, ctx, job, curvedPolys) {
   }
   return rows.map((r) => ({ caption: r.t.caption, x: mol.captions[r.t.caption]?.x, y: mol.captions[r.t.caption]?.y }));
 }
+function crossingDots(mol, d, cls, arrows, f) {
+  const skip = /* @__PURE__ */ new Set(), px = atomPxOf(mol), hw = f.line / 2;
+  const hbonds = mol.bonds.filter((b) => b.type === HBOND2);
+  if (!hbonds.length || !arrows.length) return skip;
+  const side = (a, b, c) => Math.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+  const cross3 = (a, b, p, q) => side(a, b, p) * side(a, b, q) < 0 && side(p, q, a) * side(p, q, b) < 0;
+  const centerOf = (poly) => [poly.reduce((s, v) => s + v[0], 0) / poly.length, poly.reduce((s, v) => s + v[1], 0) / poly.length];
+  const near = (poly, shapes) => shapes.some((sh) => sh.some((e, k) => {
+    const n = sh[(k + 1) % sh.length];
+    return poly.some((v) => segDist(v, e, n) <= f.line);
+  }));
+  for (const a of arrows) {
+    const path = arrowPath(a, L), shapes = arrowShapes(a, f, L);
+    for (const b of hbonds) {
+      const p = px[b.atoms[0]], q = px[b.atoms[1]];
+      if (!path.slice(1).some((v, k) => cross3(path[k], v, p, q))) continue;
+      const dots = d.polygons.map((_, k) => k).filter((k) => cls[k] === "hbond" && segDist(centerOf(d.polygons[k]), p, q) <= hw + 0.5 && near(d.polygons[k], shapes));
+      if (dots.length <= 2) dots.forEach((k) => skip.add(k));
+    }
+  }
+  return skip;
+}
 function paint(mol, ctx) {
   const { style, f, pt: pt2, measure, capWidth } = ctx;
   const d = render2(mol, f, measure, L), cls = classify(mol, d, ctx), arrows = fittedArrows(mol, ctx);
+  const gapDots = crossingDots(mol, d, cls, arrows, f);
   const canvas = document.querySelector("svg");
   canvas.replaceChildren();
   for (const a of ["width", "height", "viewBox"]) canvas.removeAttribute(a);
@@ -10370,6 +10398,7 @@ function paint(mol, ctx) {
   (mol.shapes ?? []).forEach((s) => node("path", { d: toPath(shapeInk(s, f, L)), fill: s.colour ?? "#000000", id: id("box") }, g));
   const groups = /* @__PURE__ */ new Map();
   d.polygons.forEach((poly, i) => {
+    if (gapDots.has(i)) return;
     const key = `${cls[i]}|${(d.colours[i] ?? "#000000").toLowerCase()}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(poly);

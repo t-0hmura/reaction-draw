@@ -131,6 +131,32 @@ def _blockers(lay, pid):
     return count
 
 
+def _seg_gap(a, b, p, q):
+    """The distance between segments a-b and p-q (0 when they cross)."""
+    def side(u, v, w):
+        return (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
+    if side(a, b, p) * side(a, b, q) < 0 and side(p, q, a) * side(p, q, b) < 0:
+        return 0.0
+    def to_seg(w, u, v):
+        dx, dy = v[0] - u[0], v[1] - u[1]
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 == 0 else max(0.0, min(1.0, ((w[0] - u[0]) * dx + (w[1] - u[1]) * dy) / l2))
+        return layout.dist(w, (u[0] + t * dx, u[1] + t * dy))
+    return min(to_seg(a, p, q), to_seg(b, p, q), to_seg(p, a, b), to_seg(q, a, b))
+
+
+def _arrow_chords(result, figure):
+    """{panel: [(from refs, to refs)]} of the curved arrows that the failed overlap_arrow_bond findings name."""
+    ids = {m.group(1) for x in result['checks'].get('overlap_arrow_bond', {}).get('findings', [])
+           for m in re.finditer(r'arrow (\S+) touches bond', x)}
+    out = {}
+    for p in figure.resolved['panels']:
+        for a in p.get('curved', []):
+            if a.get('id') in ids:
+                out.setdefault(p['id'], []).append((list(a['from']['refs']), list(a['to']['refs'])))
+    return out
+
+
 def _panel_cost(lay, pid, gap=0.14):
     """Conservative letters versus letters and non-own bonds, including separate species."""
     labels, points, bonds = [], [], []
@@ -163,6 +189,17 @@ def _panel_cost(lay, pid, gap=0.14):
     for k, (ref, p) in enumerate(points):
         for _, q in points[k+1:]:
             collision += max(0.0, .35 - layout.dist(p, q)) ** 2
+    at = dict(points)
+    # a curved arrow that touched a bond: the bonds near the line between its ends, which its route has to pass
+    for ends_from, ends_to in getattr(lay, 'arrow_chords', {}).get(pid, ()):
+        if not all(r in at for r in ends_from + ends_to):
+            continue
+        a = tuple(sum(at[r][k] for r in ends_from) / len(ends_from) for k in (0, 1))
+        b = tuple(sum(at[r][k] for r in ends_to) / len(ends_to) for k in (0, 1))
+        for r1, r2, p, q in bonds:
+            if r1 in ends_from + ends_to or r2 in ends_from + ends_to:
+                continue
+            collision += 4 * max(0.0, .3 - _seg_gap(a, b, p, q)) ** 2
     return 1000 * geometry + 100 * collision + 500 * _blockers(lay, pid) + _number_room(lay, pid, points, labels, bonds)
 
 
@@ -376,13 +413,19 @@ def _followers(lay, pid, sid, old, new):
     return out
 
 
+def draw_limit(result, figure):
+    """How many candidates retry_layout draws: MAX_DRAWS, twice that when a curved arrow touched a bond."""
+    return MAX_DRAWS * (2 if _arrow_chords(result, figure) else 1)
+
+
 def candidates(spec, result, figure):
-    """Yield at most MAX_DRAWS real-drawing candidates; no changes to the caller's spec."""
+    """Yield at most draw_limit real-drawing candidates; no changes to the caller's spec."""
     if not relevant(result):
         return
     lay = layout.Layout(spec)
     lay.run()
     lay.number_sizes = {}
+    lay.arrow_chords = _arrow_chords(result, figure)
     if (set(result['failed']).intersection({'number_place', 'number_clear'})
             and not set(result['failed']).intersection({'graph', 'stereochemistry', 'cdxml'})):
         import numpy as np
@@ -409,68 +452,73 @@ def candidates(spec, result, figure):
             ids |= {j for i in list(ids) for j in mol.adj[i]}
         roots[sid] = sorted(ids)
     emitted = set()
-    for attempt in range(MAX_DRAWS):
-        changed = False
-        gap = .14 + .06 * attempt
-        for _ in range(MAX_MOVES):
-            best = None
-            for pid in lay.pidx:
-                before = _panel_cost(lay, pid, gap)
-                if before < 1e-7:
-                    continue
-                for sid in (s for s in roots if lay.sp[s]['panel'] == pid and roots[s]):
-                    xy = lay.xy[sid]
-                    for candidate, reason in _alternatives(lay, sid, roots[sid]):
-                        if not _allowed(lay, sid, candidate, original):
-                            continue
-                        follow = _followers(lay, pid, sid, xy, candidate)
-                        kept = {f: lay.xy[f] for f in follow}
-                        lay.xy[sid] = candidate
-                        lay.xy.update(follow)
-                        after = _panel_cost(lay, pid, gap)
-                        lay.xy.update(kept)
-                        if after < before-1e-6 and (best is None or after-before < best[0]):
-                            best = (after-before, sid, candidate, reason, follow)
-                    lay.xy[sid] = xy
-                # A copied partner can occupy a changed substrate's space. Translate it
-                # rigidly; arrange() then widens the panel and reanchors arrows and texts.
-                keys = lay.panels[lay.pidx[pid]]['species']
-                for key in keys[1:]:
-                    sid = pid + '.' + key
-                    xy = lay.xy[sid]
-                    for dg in range(0,360,45):
-                        u = layout.vec(dg)
-                        for distance in (.1, .2, .3, .4, .8, 1.6):
-                            candidate = {m:(x+u[0]*distance,y+u[1]*distance) for m,(x,y) in xy.items()}
-                            if not _allowed(lay,sid,candidate,original):
+    # with a curved arrow that touched a bond, the moves are first searched with the bonds along its way counted,
+    # then again without them (the ordinary search)
+    chords, start_xy, start_notes, lay_notes = lay.arrow_chords, copy.deepcopy(lay.xy), list(notes), list(lay.notes)
+    for lay.arrow_chords in ([chords, {}] if chords else [{}]):
+        lay.xy, notes, lay.notes = copy.deepcopy(start_xy), list(start_notes), list(lay_notes)
+        for attempt in range(MAX_DRAWS):
+            changed = False
+            gap = .14 + .06 * attempt
+            for _ in range(MAX_MOVES):
+                best = None
+                for pid in lay.pidx:
+                    before = _panel_cost(lay, pid, gap)
+                    if before < 1e-7:
+                        continue
+                    for sid in (s for s in roots if lay.sp[s]['panel'] == pid and roots[s]):
+                        xy = lay.xy[sid]
+                        for candidate, reason in _alternatives(lay, sid, roots[sid]):
+                            if not _allowed(lay, sid, candidate, original):
                                 continue
+                            follow = _followers(lay, pid, sid, xy, candidate)
+                            kept = {f: lay.xy[f] for f in follow}
                             lay.xy[sid] = candidate
-                            after = _panel_cost(lay,pid,gap)
+                            lay.xy.update(follow)
+                            after = _panel_cost(lay, pid, gap)
+                            lay.xy.update(kept)
                             if after < before-1e-6 and (best is None or after-before < best[0]):
-                                best = (after-before,sid,candidate,sid+': moved partner to clear the panel',{})
-                    lay.xy[sid] = xy
-            if best is None:
+                                best = (after-before, sid, candidate, reason, follow)
+                        lay.xy[sid] = xy
+                    # A copied partner can occupy a changed substrate's space. Translate it
+                    # rigidly; arrange() then widens the panel and reanchors arrows and texts.
+                    keys = lay.panels[lay.pidx[pid]]['species']
+                    for key in keys[1:]:
+                        sid = pid + '.' + key
+                        xy = lay.xy[sid]
+                        for dg in range(0,360,45):
+                            u = layout.vec(dg)
+                            for distance in (.1, .2, .3, .4, .8, 1.6):
+                                candidate = {m:(x+u[0]*distance,y+u[1]*distance) for m,(x,y) in xy.items()}
+                                if not _allowed(lay,sid,candidate,original):
+                                    continue
+                                lay.xy[sid] = candidate
+                                after = _panel_cost(lay,pid,gap)
+                                if after < before-1e-6 and (best is None or after-before < best[0]):
+                                    best = (after-before,sid,candidate,sid+': moved partner to clear the panel',{})
+                        lay.xy[sid] = xy
+                if best is None:
+                    break
+                _, sid, candidate, reason, follow = best
+                lay.xy[sid] = candidate
+                lay.xy.update(follow)
+                if follow:
+                    reason += ' (%s moved with it)' % ', '.join(sorted(follow))
+                notes.append(reason)
+                changed = True
+            if not changed and not notes:
                 break
-            _, sid, candidate, reason, follow = best
-            lay.xy[sid] = candidate
-            lay.xy.update(follow)
-            if follow:
-                reason += ' (%s moved with it)' % ', '.join(sorted(follow))
-            notes.append(reason)
-            changed = True
-        if not changed and not notes:
-            break
-        signature = tuple((s,m,round(x,4),round(y,4)) for s,xy in lay.xy.items() for m,(x,y) in xy.items())
-        if signature in emitted:
-            continue
-        emitted.add(signature)
-        hand = [(s,m,layout.dist(lay.xy[s][m],original[s][m])) for s in lay.sp for m in lay.sp[s]['xy']
-                if layout.dist(lay.xy[s][m],original[s][m]) > 1e-6]
-        lay.notes = list(dict.fromkeys(lay.notes + ['automatic layout: '+n for n in notes]))
-        if hand:
-            lay.notes.append('automatic layout: hand coordinates nudged by at most %.3f bond lengths (limit %.1f)' %
-                             (max(d for _,_,d in hand), HAND_LIMIT))
-        yield specutil._assemble(spec, lay.arrange())
+            signature = tuple((s,m,round(x,4),round(y,4)) for s,xy in lay.xy.items() for m,(x,y) in xy.items())
+            if signature in emitted:
+                continue
+            emitted.add(signature)
+            hand = [(s,m,layout.dist(lay.xy[s][m],original[s][m])) for s in lay.sp for m in lay.sp[s]['xy']
+                    if layout.dist(lay.xy[s][m],original[s][m]) > 1e-6]
+            lay.notes = list(dict.fromkeys(lay.notes + ['automatic layout: '+n for n in notes]))
+            if hand:
+                lay.notes.append('automatic layout: hand coordinates nudged by at most %.3f bond lengths (limit %.1f)' %
+                                 (max(d for _,_,d in hand), HAND_LIMIT))
+            yield specutil._assemble(spec, lay.arrange())
     # A failed number's own neighborhood: the label-only search above does not see it, so its candidates come after
     # the ordinary ones too (one drawing fixed the arrow, the next opens the number's seat).
     if not set(result['failed']).intersection({'graph', 'stereochemistry', 'cdxml'}):

@@ -23,6 +23,8 @@ SPECIES_GAP = 0.5           # white space kept between two species of a panel (b
 PAIR_PAD = 0.27             # how far the dots of a reacting pair reach outside the label box (bond lengths; 3 pt and a margin for the label estimate)
 NEAR_DIST = 1.3             # default distance of a "near" placement of a species (atom to its middle)
 TEXT_NEAR_GAP = 0.8         # default distance of a "near" text: from the atom to the near edge of the text
+TEXT_APART = 0.8            # white space kept between two names of different molecules (texts, residue names), so
+                            # that each reads as its own molecule's (check_rules.TEXT_APART_BONDS is the failing limit)
 CAP = 0.716                 # cap height of Arial per em
 
 # Arial (= Helvetica, Liberation Sans) advance widths per 1000 em, ASCII
@@ -1863,10 +1865,11 @@ class Layout(object):
             pa, pb = self.xy[a['sid']][a['atom']], self.xy[b['sid']][b['atom']]
             count = max(2, int(dist(pa, pb) / .15))
             pts += [(add(pa, (pb[0] - pa[0], pb[1] - pa[1]), k / count), False) for k in range(count + 1)]
-        boxes = []
+        boxes, names = [], []
         for sid in sids:
             ex = self.expanded(sid, self.xy[sid])
             boxes += [self.label_box(sid, m, ex) for m in ex]
+            names += self.residue_boxes(sid, ex)
         out = []
         size = self.style['font_size_pt']
         w, h = text_width('+', size, bpt), CAP * size / bpt
@@ -1895,7 +1898,7 @@ class Layout(object):
                         c = add(apt, u, dd + abs(u[0]) * w / 2.0 + abs(u[1]) * h / 2.0)
                         x, y = c[0] - shift, c[1]
                         b = box_at(x, y)
-                        coll = 0.0
+                        coll, near = 0.0, 0.0
                         for q, lab in pts:
                             g = max(b[0] - q[0], q[0] - b[2], b[1] - q[1], q[1] - b[3])
                             need = 0.45 if lab else 0.25
@@ -1906,17 +1909,62 @@ class Layout(object):
                             oy = min(b[3], b2[3]) - max(b[1], b2[1])
                             if ox > -0.15 and oy > -0.15:
                                 coll += (ox + 0.15) * (oy + 0.15) * 4
-                        # a free place nearest the asked one; when every place touches something, the least touched
-                        key = (coll > 1e-9, k + j if coll <= 1e-9 else 0, round(coll, 6), k + j, k)
+                        # other names (texts, residue names) TEXT_APART away, and atom labels at its height (read on
+                        # as one string with it), wished but not required
+                        for b2 in names + [o['box'] for o in out if o['text'] != '+']:
+                            near += max(0.0, TEXT_APART - _box_gap(b, b2)) ** 2
+                        for b2 in boxes:
+                            if b2[2] - b2[0] > 0.3 and min(b[3], b2[3]) - max(b[1], b2[1]) > 0:
+                                near += max(0.0, TEXT_APART - _box_gap(b, b2)) ** 2
+                        # a free place nearest the asked one, apart from other names if any place is; when every place
+                        # touches something, the least touched
+                        key = (coll > 1e-9, round(coll, 6) if coll > 1e-9 else 0.0, near > 1e-9,
+                               round(near, 6) if near > 1e-9 else 0.0, k + j, k)
                         if best is None or key < best[0]:
-                            best = (key, (x, y), dg, dd)
+                            best = (key, (x, y), dg, dd, k + j)
                 (x, y) = best[1]
-                if best[0][1] > 0 and t.get('dir') is not None:
+                if best[4] > 0 and t.get('dir') is not None:
                     self.notes.append('panel %s text %r: the place asked by "near" (%.0f degrees, %.2f) is taken; put at '
                                       '%.0f degrees, %.2f' % (pid, t['text'], float(t['dir']), d, best[2] % 360.0, best[3]))
             out.append({'text': t['text'], 'x': x, 'y': y, 'size': t['size'], 'align': t['align'], 'box': box_at(x, y),
                         **({'near': '%s:%s' % (t['near']['sid'], t['near']['atom'])} if 'xy' not in t else {})})
         return out
+
+    def residue_boxes(self, sid, ex):
+        """Boxes of the residue names a placed species shows (label_box of its residue atoms)."""
+        import specutil
+        mol = self.mol[sid]
+        return [self.label_box(sid, m, ex) for m in ex
+                if m in mol.idx and specutil.atom_kind(self.sp[sid], mol.atoms[mol.idx[m]]) == 'residue']
+
+    def name_room(self, p):
+        """Residue names of two molecules at one height keep TEXT_APART between them: the right molecule, and every
+        molecule whose box starts at or right of it, move right."""
+        pid = p['id']
+        for _ in range(2 * len(p['species'])):
+            names = []
+            for key in p['species']:
+                sid = '%s.%s' % (pid, key)
+                if sid in self.xy:
+                    names += [(sid, b) for b in self.residue_boxes(sid, self.expanded(sid, self.xy[sid]))]
+            move = None
+            for (sa, ba), (sb, bb) in itertools.combinations(names, 2):
+                if sa == sb or ba[1] > bb[3] or bb[1] > ba[3]:
+                    continue
+                if ba[0] > bb[0]:
+                    (sa, ba), (sb, bb) = (sb, bb), (sa, ba)
+                short = TEXT_APART - (bb[0] - ba[2])
+                start = self.bbox([sb])[0]
+                if short > 1e-6 and self.bbox([sa])[0] < start - 1e-9:
+                    move = (short, start, sa)
+                    break
+            if move is None:
+                return
+            short, start, keep = move
+            for key in p['species']:
+                o = '%s.%s' % (pid, key)
+                if o != keep and o in self.xy and self.bbox([o])[0] >= start - 1e-9:
+                    self.xy[o] = {m: (x + short, y) for m, (x, y) in self.xy[o].items()}
 
     def plus_pairs(self, p):
         """The species pairs of a panel's plus, each as (left, right): as written ("a + b"), or the other way round
@@ -1956,6 +2004,7 @@ class Layout(object):
         pboxes, ptexts = {}, {}
         for p in self.panels:
             self.plus_room(p)
+            self.name_room(p)
             sids = ['%s.%s' % (p['id'], k) for k in p['species']]
             box = self.bbox(sids) if sids else (0.0, -0.5, 2.0, 0.5)
             ptexts[p['id']] = self.place_texts(p['id'])

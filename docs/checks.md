@@ -1,6 +1,6 @@
 # Checking and fixing how a chemical figure is displayed
 
-These checks cover overlaps, hidden atom symbols, and the [rules](rules.md). They do not evaluate whether the molecular graph or reaction mechanism is scientifically correct.
+These checks cover overlaps, hidden atom symbols, and the [rules](rules.md). They do not evaluate whether the molecular graph or reaction mechanism is scientifically correct, except that a residue name must stand at its residue's own side chain.
 
 ## Detectors
 
@@ -30,6 +30,12 @@ Once all positioning, hand coordinates, reflections, and bond lengthening are ap
 ## Hydrogen-bond lines
 
 For an `hbonds` overlap, the `FIX` line points to `python scripts/fix_hbonds.py INPUT --out NEW_DIR`. The script tests both the H and heavy-atom endpoints on the same donor, along with small turns, flips, or offsets of the smaller residue or water fragment, while preserving the substrate and existing hand-coordinate limits. At most three repair candidates are drawn; to pass, a candidate must reduce hydrogen-bond findings, worsen no other checks, and pass all positive controls. The original input remains unchanged: an improved `input.hbonds.json` is saved alongside it (numbered if the file already exists), and the changes are recorded under `hbond_repair` in `NEW_DIR/.state.json`.
+
+## Names and labels
+
+- `overlap_text_text` also fails when a free text and another name, or the residue names of two species, stand closer than 0.6 bond lengths, since a reader cannot tell which name labels which group. The layout keeps 0.8 bond lengths and does not place a text level with an atom label.
+- `one_label_bonds` also fails when a bond meets the H of a label (NH₂ with its bond on the H side). The heavy atom stands at the bond (H₂N), and a reacting lone pair goes above or below it.
+- `residue_codes` also fails when what is drawn beyond a residue name is not that residue's side chain, such as His drawn without its imidazole ring. A main-chain piece and a name that stands for the whole residue are not checked.
 
 ## Showing the C of CO₂
 

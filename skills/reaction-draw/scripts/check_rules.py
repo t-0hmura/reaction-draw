@@ -584,9 +584,31 @@ def read_svg_ink(svg_text):
 
 
 # ------------------------------------------------------------------------------------------ detectors
+TEXT_APART_BONDS = 0.6      # least white space between two names (texts, residue names), in bond lengths; the layout
+                            # keeps 0.8 (layout.TEXT_APART)
+
+
 def det_overlap_text_text(f):
     items = f.texts()
     out = []
+    # two names close together read as naming one molecule
+    # (a free text and any other name, or residue names of two molecules; residue names of one molecule each sit at
+    # the end of their own bond)
+    names = [t for t in f.report['texts'] if t['box'] and t.get('role') in ('residue', 'text') and t['text'] != '+']
+    def owner(t):                                # a residue name's atom (the nearest residue atom of that name)
+        cands = [r for r, x in f.atoms.items() if x.get('kind') == 'residue' and x['label'] == t['text']]
+        return min(cands, key=lambda r: pt_box_gap(f.xy(r), t['box'])) if cands and t.get('role') == 'residue' else None
+    seen = set()
+    for a, b in itertools.combinations(names, 2):
+        g = box_gap(a['box'], b['box'])
+        oa, ob = owner(a), owner(b)
+        if oa and ob and oa.rsplit(':', 1)[0] == ob.rsplit(':', 1)[0]:
+            continue
+        if a['text'] != b['text'] and 0 <= g < TEXT_APART_BONDS * f.bond_pt and (a['text'], b['text']) not in seen:
+            seen.add((a['text'], b['text']))          # once per pair of names, as in its first panel
+            out.append('names %r%s and %r%s stand %.1f pt apart, closer than %.1f pt: which name labels which group '
+                       'is unclear' % (a['text'], ' (%s)' % oa if oa else '', b['text'], ' (%s)' % ob if ob else '', g,
+                                       TEXT_APART_BONDS * f.bond_pt))
     for i in range(len(items)):
         for j in range(i + 1, len(items)):
             (oa, ka, ta, ba), (ob, kb, tb, bb) = items[i], items[j]
@@ -1522,6 +1544,21 @@ def det_one_label_bonds(f):
         if (r['lengthened'] or (r['length'] is not None and abs(r['length'] - f.bond_pt) > LENGTH_TOL_PT)) and not _stretch_ok(f, b, r):
             out.append('%s (label at one end): %.2f pt long%s; it keeps the standard %.1f pt' % (
                 name, r['length'] or float('nan'), ', marked lengthened' if r['lengthened'] else '', f.bond_pt))
+        # a label with H (NH2, OH) meets its bond with the heavy atom: the H written toward the bond read as bonded
+        for ref, other in ((b['a'], b['b']), (b['b'], b['a'])):
+            a = f.atoms[ref]
+            if a.get('kind', 'atom') != 'atom' or a['el'] in ('C', 'H') or not a.get('label'):
+                continue
+            sym = f.symbol_box(ref)
+            hs = [p['box'] for p in f.report['pieces'].get(ref) or [] if p['text'] == 'H']
+            if sym is None or not hs:
+                continue
+            h = min(hs, key=lambda q: box_gap(q, sym))
+            ux, uy = (h[0] + h[2] - sym[0] - sym[2]) / 2.0, (h[1] + h[3] - sym[1] - sym[3]) / 2.0
+            (x0, y0), (x1, y1) = f.xy(ref), f.xy(other)
+            vx, vy = x1 - x0, y1 - y0
+            if math.hypot(ux, uy) > 1e-6 and math.hypot(vx, vy) > 1e-6 and (ux * vx + uy * vy) / math.hypot(ux, uy) / math.hypot(vx, vy) > 0.7:
+                out.append('%s: the bond meets the H of label %s at %s; the heavy atom stands at the bond' % (name, a['label'], ref))
     return out
 
 
@@ -2457,15 +2494,110 @@ def det_metal_geometry(f):
     return list(dict.fromkeys(out))
 
 
+def _side_chain_piece(f, ref):
+    """{atom: bonds from the residue atom ref} of what is drawn beyond a residue name, up to 7 bonds: not through a
+    metal, a coordination bond, a hydrogen or another residue or cut end."""
+    from iupac_features import METALS
+    coord = {frozenset((b['a'], b['b'])) for b in f.bonds if b.get('coord') or b.get('style') in ('coord', 'dative')}
+    depth, todo = {ref: 0}, [ref]
+    while todo:
+        r = todo.pop(0)
+        if depth[r] >= 7:
+            continue
+        for n in f.nbrs.get(r, ()):
+            a = f.atoms[n]
+            if n in depth or frozenset((r, n)) in coord or a['el'] in METALS or a['el'] == 'H' or a.get('kind') in ('residue', 'cut'):
+                continue
+            depth[n] = depth[r] + 1
+            todo.append(n)
+    del depth[ref]
+    return depth
+
+
+def _small_rings(f, atoms):
+    """The 5- and 6-membered rings among atoms (frozensets of refs)."""
+    rings = set()
+    for a in atoms:
+        for b in f.nbrs.get(a, ()):
+            if b not in atoms or b < a:
+                continue
+            paths = [[b]]                               # shortest ways back from b to a without the bond a-b
+            for _ in range(5):
+                nxt = []
+                for path in paths:
+                    for n in f.nbrs.get(path[-1], ()):
+                        if n == a and len(path) >= 4:
+                            rings.add(frozenset(path + [a]))
+                        elif n in atoms and n not in path and n != a:
+                            nxt.append(path + [n])
+                paths = nxt
+    return {r for r in rings if len(r) in (5, 6)}
+
+
+def _side_chain_ok(f, code, piece):
+    """True when the drawn piece beyond a residue name carries that residue's own side-chain group (None: not checked)."""
+    el = lambda r: f.atoms[r]['el']
+    within = lambda k: {r for r, d in piece.items() if d <= k}
+    def acid(k, partner):                        # a C bonded to an O and to `partner` (O: carboxyl, N: amide)
+        return any(el(r) == 'C' and any(el(n) == 'O' for n in f.nbrs[r])
+                   and sum(1 for n in f.nbrs[r] if el(n) in ('O', partner)) >= 2 for r in within(k))
+    rings = _small_rings(f, within(7)) if code in ('His', 'Trp', 'Phe', 'Tyr') else set()
+    if code == 'His':
+        return any(len(r) == 5 and sum(el(x) == 'N' for x in r) == 2 and min(piece[x] for x in r) <= 3 for r in rings)
+    if code == 'Trp':
+        return any(len(r) == 5 and sum(el(x) == 'N' for x in r) == 1 and any(len(r & q) == 2 and len(q) == 6 for q in rings)
+                   for r in rings)
+    if code in ('Phe', 'Tyr'):
+        six = [r for r in rings if len(r) == 6 and all(el(x) == 'C' for x in r) and min(piece[x] for x in r) <= 3]
+        return any(any(el(n) == 'O' and n not in r for x in r for n in f.nbrs[x]) for r in six) if code == 'Tyr' else bool(six)
+    if code in ('Ser', 'Thr', 'Cys', 'Sec'):
+        return any(el(r) == {'Cys': 'S', 'Sec': 'Se'}.get(code, 'O') for r in within(2))
+    if code == 'Met':
+        return any(el(r) == 'S' for r in within(3))
+    if code == 'Lys':
+        return any(el(r) == 'N' for r in within(5))
+    if code == 'Arg':
+        return any(el(r) == 'C' and sum(1 for n in f.nbrs[r] if el(n) == 'N') >= 3 for r in within(5))
+    if code in ('Asp', 'Glu'):
+        return acid(2 if code == 'Asp' else 3, 'O')
+    if code in ('Asn', 'Gln'):
+        return acid(2 if code == 'Asn' else 3, 'N')
+    return None
+
+
+SIDE_CHAIN_NAMES = {'His': 'CH2 and an imidazole ring', 'Trp': 'CH2 and an indole', 'Phe': 'CH2 and a phenyl ring',
+                    'Tyr': 'CH2 and a 4-hydroxyphenyl ring', 'Ser': 'CH2OH', 'Thr': 'CH(OH)CH3', 'Cys': 'CH2SH',
+                    'Sec': 'CH2SeH', 'Met': 'CH2CH2SCH3', 'Lys': '(CH2)4NH2', 'Arg': '(CH2)3 and a guanidine',
+                    'Asp': 'CH2COO', 'Glu': 'CH2CH2COO', 'Asn': 'CH2CONH2', 'Gln': 'CH2CH2CONH2'}
+
+
 def det_residue_codes(f):
     styles = set()
-    for a in f.atoms.values():
+    out, seen = [], set()
+    for ref, a in f.atoms.items():
         if a.get('kind') != 'residue':
             continue
         label = a.get('label') or ''
         for match in re.finditer(r'(?<![A-Za-z])([A-Z][a-z]{2}|[A-Z])[- ]?\d+', label):
             styles.add('three-letter' if len(match.group(1)) == 3 else 'one-letter')
-    return ['mixed one-letter and three-letter residue codes in one figure'] if len(styles) > 1 else []
+        # what is drawn beyond a residue name is that residue's own side chain (a main-chain piece is not checked)
+        m = RESIDUE_NAME.search(label)
+        if not m or m.group(1) not in SIDE_CHAIN_NAMES:
+            continue
+        if any(f.atoms[n]['el'] == 'N' or (f.atoms[n]['el'] == 'C' and any(
+                f.atoms[o]['el'] == 'O' and n in (b['a'], b['b']) and o in (b['a'], b['b']) and float(b['order']) == 2
+                for b in f.bonds for o in f.nbrs.get(n, ()))) for n in f.nbrs.get(ref, ())):
+            continue
+        if (label, ref.split('.', 1)[-1]) in seen:     # once for the same residue in every panel
+            continue
+        seen.add((label, ref.split('.', 1)[-1]))
+        piece = _side_chain_piece(f, ref)
+        if len(piece) >= 2 and _side_chain_ok(f, m.group(1), piece) is False:
+            out.append('residue %s at %s: the atoms drawn beyond it are not %s\'s side chain (%s)' % (
+                label, ref, m.group(1), SIDE_CHAIN_NAMES[m.group(1)]))
+    if len(styles) > 1:
+        out.insert(0, 'mixed one-letter and three-letter residue codes in one figure')
+    return out
 
 
 RESIDUE_NAME = re.compile(r'(?<![A-Za-z])([A-Z][a-z]{2})[- ]?(\d+)(?![\d])')
@@ -2818,7 +2950,11 @@ def repair_hints(f, name, findings):
                   'the arrow and the bond are in one species, so turning that species keeps the overlap: change this arrow\'s '
                   '"bend" (the opposite sign, or a larger value up to 1.6); if it still touches, move the bond\'s branch with xy, '
                   'abbreviate a non-reacting group beside these atoms, or split the step into two panels'
-                  if name == 'overlap_arrow_bond' and _arrow_in_own_species(f, finding) else actions.get(name, no_fix))
+                  if name == 'overlap_arrow_bond' and _arrow_in_own_species(f, finding) else
+                  'give the named text a "near" direction away from the other name, or move the molecule of a residue '
+                  'name with offset' if name == 'overlap_text_text' and finding.startswith('names ') else
+                  'draw the side chain the residue name stands for in the SMILES between the name and the reacting '
+                  'atom' if name == 'residue_codes' and 'side chain' in finding else actions.get(name, no_fix))
         action = action.replace('{move}', _spec_edit(f, refs or named))
         hints.append('%s: %s; %s. Action: %s.' % (name, '; '.join(dict.fromkeys(places)), finding, action))
     return hints
