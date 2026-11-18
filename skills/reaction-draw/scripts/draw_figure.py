@@ -647,6 +647,25 @@ def _repair_options(fig, result):
 NEAR_DIRS = (None, 0, 90, 180, 270)     # places tried for a molecule brought next to its arrow's other end
 
 
+def _moved_into(resolved, other, pid, mover, anchor):
+    """A copy of resolved in which the atoms of species mover in panel pid stand where other puts them, relative to
+    the atom anchor; the rest keeps what the earlier retries made of it.  None when an atom is missing."""
+    r = copy.deepcopy(resolved)
+    p = next(q for q in r['panels'] if q['id'] == pid)
+    new = {a['ref']: a for q in other['panels'] if q['id'] == pid for a in q['atoms']}
+    old = {a['ref']: a for a in p['atoms']}
+    if anchor not in new or anchor not in old:
+        return None
+    dx, dy = old[anchor]['x'] - new[anchor]['x'], old[anchor]['y'] - new[anchor]['y']
+    for a in p['atoms']:
+        if a['species'] == mover:
+            if a['ref'] not in new:
+                return None
+            a['x'], a['y'] = round(new[a['ref']]['x'] + dx, 4), round(new[a['ref']]['y'] + dy, 4)
+            a.pop('native_align', None)
+    return r
+
+
 def retry_route_near(spec, out, fig, result, draw, draw_args, stats):
     """When a curved arrow between two molecules finds no route or touches a bond or another arrow: put the smaller
     molecule (not one placed by hand) next to the arrow's atom in the other one ("near", in the free place nearest to each of NEAR_DIRS, its offset dropped),
@@ -660,7 +679,7 @@ def retry_route_near(spec, out, fig, result, draw, draw_args, stats):
         return fig, result, [], spec
     size = collections.Counter(a['species'] for p in fig.resolved['panels'] for a in p['atoms'])
     options = _repair_options(fig, result)
-    jobs, moves, specs = [], [], []
+    jobs, moves, specs, pairs = [], [], [], []
     for p in fig.resolved['panels']:
         for a in p.get('curved', []):
             if a.get('id') not in lost:
@@ -674,17 +693,42 @@ def retry_route_near(spec, out, fig, result, draw, draw_args, stats):
             target = next((r for r in a['to']['refs'] + a['from']['refs'] if r.startswith(other + ':')), None)
             if sp is None or sp['xy'] or target is None:
                 continue
-            for direction in NEAR_DIRS:
+            # a molecule that an arrow joins to a third one too (a water between a base and a carbonyl): first next to
+            # that third atom, toward this arrow's other end, so that both arrows stay short
+            xy = {at['ref']: (at['x'], at['y']) for at in p['atoms']}
+            third = [r for c in p.get('curved', []) if c is not a
+                     for refs in [c['from']['refs'] + c['to']['refs']] if any(x.startswith(mover + ':') for x in refs)
+                     for r in refs if not r.startswith((mover + ':', other + ':')) and r in xy]
+            places = [(third[0], round(math.degrees(math.atan2(xy[third[0]][1] - xy[target][1],
+                                                               xy[target][0] - xy[third[0]][0])) % 360))
+                      ] if third and target in xy else []
+            own = next((r for r in a['from']['refs'] + a['to']['refs'] if r.startswith(mover + ':')), None)
+            for anchor, direction in places + [(target, d) for d in NEAR_DIRS]:
                 changed = copy.deepcopy(spec)
                 c = changed['species_by_id'][mover]
-                c['near'] = {'species': other.split('.', 1)[1], 'atom': int(target.rsplit(':', 1)[1]), 'dir': direction, 'dist': None}
+                c['near'] = {'species': anchor.rsplit(':', 1)[0].split('.', 1)[1], 'atom': int(anchor.rsplit(':', 1)[1]),
+                             'dir': direction, 'dist': None}
                 c['offset'] = None
+                c['near_retry'] = True      # placed so even where it would keep its place from an earlier panel
+                if direction is not None and own is not None:
+                    # turned so that its atom of this arrow faces the arrow's other end
+                    import layout
+                    shape = layout.transform(layout.Layout(changed).shape(mover)[0], 0.0, False, c.get('flip'))
+                    m = int(own.rsplit(':', 1)[1])
+                    if m in shape and len(shape) > 1:
+                        cx, cy = (sum(q[k] for q in shape.values()) / len(shape) for k in (0, 1))
+                        face = direction if anchor != target else (direction + 180) % 360
+                        c['rotate'] = round((face - layout.ang(shape[m][0] - cx, shape[m][1] - cy)) % 360, 1)
                 try:
-                    jobs.append((specutil.resolve(changed), options))
-                    specs.append(changed)
+                    moved = _moved_into(fig.resolved, specutil.resolve(changed), p['id'], mover, anchor)
                 except Exception:
                     continue
-                moves.append((a['id'], mover, other, direction))
+                if moved is None:
+                    continue
+                jobs.append((moved, options))
+                specs.append(changed)
+                moves.append((a['id'], mover, anchor.rsplit(':', 1)[0], direction))
+                pairs.append((own, target))
     if not jobs:
         return fig, result, [], spec
     def rank(checked):
@@ -694,10 +738,28 @@ def retry_route_near(spec, out, fig, result, draw, draw_args, stats):
                 and all(set(checked['checks'][n]['findings']) <= set(result['checks'][n]['findings']) for n in HBOND_FLIP_KEEP)
                 and rank(checked) < rank(result) and not _closer(result, checked))
     results = _candidates(jobs, out, fig, draw, draw_args, lambda checked: False, stats, 'retry_route_near')
-    scored = [(rank(checked), k) for k, (_, checked, _, error) in enumerate(results) if error is None and better(checked)]
+    def reach(k, candidate):           # among equal ranks and warnings, the shortest way between the arrow's molecules
+        own, target = pairs[k]
+        try:
+            return math.dist(candidate.xy(own), candidate.xy(target))
+        except Exception:
+            return float('inf')
+    def on_h(k, candidate):                      # the molecule put on the side where the other atom writes its H
+        own, target = pairs[k]
+        try:
+            (tx, ty), (ox, oy) = candidate.xy(target), candidate.xy(own)
+            hs = [q['box'] for q in candidate.report['pieces'].get(target) or [] if q['text'] == 'H']
+        except Exception:
+            return 0
+        to = math.atan2(oy - ty, ox - tx)
+        return int(any(abs((math.atan2((b[1] + b[3]) / 2 - ty, (b[0] + b[2]) / 2 - tx) - to + math.pi) % (2 * math.pi) - math.pi)
+                       < math.radians(60) for b in hs))
+    scored = [(rank(checked), on_h(k, candidate), sum(len(c.get('warnings', [])) for c in checked['checks'].values()),
+               reach(k, candidate), k)
+              for k, (candidate, checked, _, error) in enumerate(results) if error is None and better(checked)]
     if not scored:
         return fig, result, [], spec
-    _, k = min(scored)
+    k = min(scored)[-1]
     candidate, checked, ok, _ = _candidate(jobs[k][0], out, fig, draw, draw_args, jobs[k][1], better, stats, 'retry_route_near')
     if not ok:
         return fig, result, [], spec

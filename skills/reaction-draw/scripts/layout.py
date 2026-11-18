@@ -1665,6 +1665,14 @@ class Layout(object):
                     if not mine:
                         continue
                     ref = self.reference(sid)
+                    # the retry that brings a molecule an arrow joins next to the arrow's other end places it there,
+                    # also where it would keep its place from an earlier panel; it waits for that other molecule
+                    if self.sp[sid]['near'] is not None and self.sp[sid].get('near_retry'):
+                        near = self.place_near(sid)
+                        if near is not None:
+                            self.place(sid, near)
+                            progress = True
+                        continue
                     if ref and self.pidx[self.sp[ref]['panel']] < self.pidx[pid]:
                         kept = self.derive(sid, ref)
                         followed = self.follow_contact(sid, kept, mine)
@@ -1683,7 +1691,7 @@ class Layout(object):
                     if sid in self.xy:
                         continue
                     ref = self.reference(sid)
-                    if ref:
+                    if ref and not self.sp[sid].get('near_retry'):
                         self.place(sid, self.clear_of_panel(sid, self.derive(sid, ref)))
                     elif self.sp[sid]['near'] is not None:
                         xy = self.place_near(sid)
