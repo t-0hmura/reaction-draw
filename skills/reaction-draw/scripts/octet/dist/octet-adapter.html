@@ -9343,10 +9343,10 @@ function localBondOf(r) {
 }
 function stretchArrowBonds(mol, job) {
   const ask = job.options?.stretchArrows, rows = [];
-  if (!ask?.ids?.length) return rows;
-  const ratio = Math.min(STRETCH_MAX, Math.max(1, Number(ask.ratio) || 1));
+  if (!ask?.ids?.length && !job.options?.stretchAt?.refs?.length) return rows;
+  const ratio = Math.min(STRETCH_MAX, Math.max(1, Number(ask?.ratio) || 1));
   for (const r of job.curved ?? []) {
-    const pair2 = ask.ids.includes(r.id) ? localBondOf(r) : null;
+    const pair2 = ask?.ids?.includes(r.id) ? localBondOf(r) : null;
     const bi = pair2 ? mol.bonds.findIndex((b2) => b2.type !== HBOND2 && b2.atoms.includes(pair2[0]) && b2.atoms.includes(pair2[1])) : -1;
     if (bi < 0 || rows.some((x) => x.bond === bi)) continue;
     const b = mol.bonds[bi];
@@ -9362,6 +9362,26 @@ function stretchArrowBonds(mol, job) {
       mol.atoms[j].location = [q[0] + ux * grow, q[1] + uy * grow, ...q.slice(2)];
     }
     rows.push({ bond: bi, arrow: r.id, ratio });
+  }
+  const at = job.options?.stretchAt;
+  const atRatio = Math.min(STRETCH_MAX, Math.max(1, Number(at?.ratio) || 1));
+  for (const ref2 of at?.refs ?? []) {
+    const i = (job.refs ?? []).indexOf(ref2);
+    if (i < 0) continue;
+    mol.bonds.forEach((b, bi) => {
+      if (b.type === HBOND2 || !b.atoms.includes(i) || rows.some((x) => x.bond === bi)) return;
+      const moving = b.atoms[0] === i ? b.atoms[1] : b.atoms[0], atoms = branchSide(mol, moving, i, bi), anchor = i;
+      if (!atoms) return;
+      const from = mol.atoms[anchor].location, to = mol.atoms[moving].location, length = Math.hypot(to[0] - from[0], to[1] - from[1]);
+      const grow = atRatio - length;
+      if (grow <= 1e-6) return;
+      const ux = (to[0] - from[0]) / length, uy = (to[1] - from[1]) / length;
+      for (const j of atoms) {
+        const q = mol.atoms[j].location;
+        mol.atoms[j].location = [q[0] + ux * grow, q[1] + uy * grow, ...q.slice(2)];
+      }
+      rows.push({ bond: bi, arrow: "number", ratio: atRatio });
+    });
   }
   return rows;
 }

@@ -935,6 +935,8 @@ def det_column_arrows(f):
     return out
 
 
+HEAD_AIM_DEG = 90     # an arrow head that stops HEAD_AIM_REACH_PT or more from the symbol it ends at points within
+HEAD_AIM_REACH_PT = 3.5   # this of the symbol's middle (a nearer head may arrive from the side)
 HEAD_REACH_PT = 5.0   # an arrow head ends within this of the symbol of the atom it points at
 BARE_HEAD_REACH = 0.25   # bond lengths: an arrow head ends within this of a bare vertex it points at
 
@@ -1063,6 +1065,12 @@ def _reads_as_bond(f, c, pt, ref):
     # bond length reads as pointing at that bond (4-OT: the N-H -> N arrow of Pro1 aimed at the ring N-C bond)
     u, box = _head_dir(f, c['id'], pt), _own_symbol_box(f, ref) if f.labeled(ref) else None
     if u and box and _ray_box(pt, u, box) is None:
+        # a head that stops short of the symbol and points away from it reaches no atom
+        cx, cy = (box[0] + box[2]) / 2 - pt[0], (box[1] + box[3]) / 2 - pt[1]
+        if reach > HEAD_AIM_REACH_PT and math.hypot(cx, cy) > 1e-9 \
+                and (u[0] * cx + u[1] * cy) / math.hypot(cx, cy) < math.cos(math.radians(HEAD_AIM_DEG)):
+            return '%s: head points %.0f degrees away from the symbol of %s' % (
+                c['id'], math.degrees(math.acos(max(-1.0, min(1.0, (u[0] * cx + u[1] * cy) / math.hypot(cx, cy))))), ref)
         for b in f.bonds:
             if ref in (b['a'], b['b']) and not (f.atoms[b['a']].get('hidden_h') or f.atoms[b['b']].get('hidden_h')):
                 sl = _ray_seg(pt, u, *_drawn_segment(f, b['a'], b['b']))
@@ -1498,8 +1506,11 @@ def _report_bonds(f):
 
 
 def _stretch_ok(f, b, r):
-    """A bond grown for the local curved arrow named in the report (one that starts or ends at this bond), to at most
-    STRETCH_MAX standard lengths."""
+    """A bond grown for the local curved arrow named in the report (one that starts or ends at this bond), or for the
+    seat of the number of one of its atoms, to at most STRETCH_MAX standard lengths."""
+    if r.get('stretched_for') == 'number':
+        return (any((f.atoms.get(x) or {}).get('number') for x in (b['a'], b['b'])) and r['length'] is not None
+                and r['length'] <= STRETCH_MAX * f.bond_pt + LENGTH_TOL_PT)
     arrow = next((c for c in f.curved if c['id'] == r.get('stretched_for')), None)
     ends = [e['refs'] for e in (arrow['from'], arrow['to']) if e['kind'] == 'bond'] if arrow else []
     return (any(set(x) == {b['a'], b['b']} for x in ends) and r['length'] is not None

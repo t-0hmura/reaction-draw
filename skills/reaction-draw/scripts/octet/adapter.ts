@@ -388,10 +388,10 @@ function localBondOf(r: CurvedReq): [number, number] | null {
 }
 function stretchArrowBonds(mol: any, job: any) {
   const ask = job.options?.stretchArrows, rows: any[] = [];
-  if (!ask?.ids?.length) return rows;
-  const ratio = Math.min(STRETCH_MAX, Math.max(1, Number(ask.ratio) || 1));
+  if (!ask?.ids?.length && !job.options?.stretchAt?.refs?.length) return rows;
+  const ratio = Math.min(STRETCH_MAX, Math.max(1, Number(ask?.ratio) || 1));
   for (const r of (job.curved ?? []) as CurvedReq[]) {
-    const pair = ask.ids.includes(r.id) ? localBondOf(r) : null;
+    const pair = ask?.ids?.includes(r.id) ? localBondOf(r) : null;
     const bi = pair ? mol.bonds.findIndex((b: any) => b.type !== HBOND && b.atoms.includes(pair[0]) && b.atoms.includes(pair[1])) : -1;
     if (bi < 0 || rows.some((x) => x.bond === bi)) continue;
     const b = mol.bonds[bi];
@@ -405,6 +405,26 @@ function stretchArrowBonds(mol: any, job: any) {
     const ux = (to[0] - from[0]) / length, uy = (to[1] - from[1]) / length;
     for (const j of atoms) { const q = mol.atoms[j].location; mol.atoms[j].location = [q[0] + ux * grow, q[1] + uy * grow, ...q.slice(2)]; }
     rows.push({bond: bi, arrow: r.id, ratio});
+  }
+  // the bonds of a numbered atom crowded by its neighbours (opts.stretchAt {refs, ratio}) grow too, to leave its number
+  // and marks a seat; reported as stretched for 'number'
+  const at = job.options?.stretchAt;
+  const atRatio = Math.min(STRETCH_MAX, Math.max(1, Number(at?.ratio) || 1));
+  for (const ref of (at?.refs ?? []) as string[]) {
+    const i = (job.refs ?? []).indexOf(ref);
+    if (i < 0) continue;
+    mol.bonds.forEach((b: any, bi: number) => {
+      if (b.type === HBOND || !b.atoms.includes(i) || rows.some((x) => x.bond === bi)) return;
+      // the numbered atom stays: the side of its neighbour moves out
+      const moving = b.atoms[0] === i ? b.atoms[1] : b.atoms[0], atoms = branchSide(mol, moving, i, bi), anchor = i;
+      if (!atoms) return;
+      const from = mol.atoms[anchor].location, to = mol.atoms[moving].location, length = Math.hypot(to[0] - from[0], to[1] - from[1]);
+      const grow = atRatio - length;
+      if (grow <= 1e-6) return;
+      const ux = (to[0] - from[0]) / length, uy = (to[1] - from[1]) / length;
+      for (const j of atoms) { const q = mol.atoms[j].location; mol.atoms[j].location = [q[0] + ux * grow, q[1] + uy * grow, ...q.slice(2)]; }
+      rows.push({bond: bi, arrow: 'number', ratio: atRatio});
+    });
   }
   return rows;
 }
