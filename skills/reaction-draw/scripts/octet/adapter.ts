@@ -539,6 +539,13 @@ function squeezedFixed(mol: any, ctx: Ctx, job: any) {
 
 // The reacting pair faces the arrow target where the atom's bonds and label leave room.
 // Octet's per-mark angles keep this position in both native and CDXML saves.
+// Directions from atom i along the bonds whose electrons a local curved arrow moves onto i: its hook sits there.  Only
+// in a retry after two arrows touched (options.hookSeats): which side a hook bulges to is known only once drawn.
+function hookDirs(mol: any, job: any, i: number, px: Pt[]): number[] {
+  if (!job.options?.hookSeats) return [];
+  return ((job.curved ?? []) as CurvedReq[]).filter((r) => r.snk.kind === 'atom' && r.snk.atoms[0] === i && r.src.kind === 'bond'
+    && r.src.atoms.includes(i)).map((r) => pageDeg(px[i], px[r.src.atoms[0] === i ? r.src.atoms[1] : r.src.atoms[0]]));
+}
 function placeLonePairs(mol: any, ctx: Ctx, job: any) {
   const px = atomPxOf(mol), {f, measure} = ctx;
   const sources = new Map<number, End>();
@@ -584,7 +591,9 @@ function placeLonePairs(mol: any, ctx: Ctx, job: any) {
         if (!(deg % 90) && clear >= 1 && sep >= 35 && !away) axialClear = true;
         // Prefer axial seats; diagonal seats are allowed only when every axial seat is blocked.
         // The explicit pair identifies its atom; a nearby bare vertex is not an electron source.
-        const score = Math.max(0, 1 - clear) * 1000 + Math.max(0, 35 - sep) * 30 + (deg % 90 ? 180 : 0) + (away ? 1000 : 0)
+        // a reacting pair keeps off the side where a local arrow's hook comes onto the same atom (the two would touch)
+        const hooked = pairIndex === 0 && target && hookDirs(mol, job, i, px).some((h: number) => angDiff(deg, h) < 70) ? 100 : 0;
+        const score = Math.max(0, 1 - clear) * 1000 + Math.max(0, 35 - sep) * 30 + (deg % 90 ? 180 : 0) + (away ? 1000 : 0) + hooked
           + (pairIndex === 0 && target ? angDiff(deg, want) : -sep * 0.2);
         if (score < best) { best = score; angle = deg; }
       }
@@ -700,7 +709,9 @@ function pairSeat(mol: any, job: any, i: number, ctx?: Ctx): number | null {
   const hSide = ctx && bondDirs.length === 1 && hydrogenSide(mol, ctx, i) !== null && Math.abs(angDiff(0, bondDirs[0]) - angDiff(180, bondDirs[0])) > 40
     ? (angDiff(0, bondDirs[0]) > angDiff(180, bondDirs[0]) ? 0 : 180) : null;
   const free = [0, 90, 180, 270].filter((deg) => deg !== hSide && angDiff(deg, want) <= 90 && bondDirs.every((b: number) => angDiff(deg, b) >= 35));
-  return free.length ? free.reduce((a, b) => (angDiff(b, want) < angDiff(a, want) ? b : a)) : null;
+  const hooks = hookDirs(mol, job, i, px), clear = free.filter((deg) => hooks.every((h: number) => angDiff(deg, h) >= 70));
+  const seats = clear.length ? clear : free;
+  return seats.length ? seats.reduce((a, b) => (angDiff(b, want) < angDiff(a, want) ? b : a)) : null;
 }
 // Octet's render.ts reads an atom's alignment only to lay out the rest of its label (H, counts, a sign, more letters)
 // and to turn a label: one glyph alone (an O without H) or no label at all is drawn alike in every alignment, so every

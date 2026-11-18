@@ -215,11 +215,13 @@ def _names(aid, text):
 
 
 def _retryable(result):
-    """Retry only if at least one finding can change with automatic placement."""
+    """Retry only if at least one finding can change with automatic placement (of the hydrogen-bond findings, a line
+    that crosses a bond)."""
     return any(not (name in ('arrows_steps', 'residue_codes', 'hbond_dots')
                     or name == 'radical_marks' and 'not from radicals' in finding
                     or name == 'arrows_ends' and finding.startswith('arrow ') and ': no route found from ' in finding
-                    or 'hbond ' in finding or 'hydrogen bond' in finding)
+                    or ('hbond ' in finding or 'hydrogen bond' in finding)
+                    and not (name == 'bond_crossing' and finding.startswith('hbond ') and ' crosses bond ' in finding))
                for name in result['failed'] for finding in result['checks'][name]['findings'])
 
 
@@ -284,6 +286,7 @@ def retry_placements(resolved, out, fig, result, draw, draw_args, stats):
         if flag == 'repairArrows':
             if 'overlap_arrow_arrow' in failed:
                 options['reverseCurved'] = True
+                options['hookSeats'] = True
             options['repairArrowIds'] = [c['id'] for p in resolved['panels'] for c in p['curved']
                                          if _names(c['id'], findings)]
             if not options['repairArrowIds']:
@@ -316,6 +319,7 @@ def retry_placements(resolved, out, fig, result, draw, draw_args, stats):
             sum(before[n] for n in failed), sum(_counts(checked if ok else result)[n] for n in failed)))
         if ok:
             fig, result, accepted = candidate, checked, options
+            HOOK_SEATS['on'] = HOOK_SEATS['on'] or bool(options.get('hookSeats'))
     return fig, result, notes
 
 
@@ -604,23 +608,31 @@ def retry_hbond_flips(out, fig, result, draw, draw_args, stats):
         ', '.join(sorted(group)), 'left-right' if axis == 'x' else 'up-down', pid)]
 
 
+HOOK_SEATS = {'on': False}     # a kept drawing of this run needed hookSeats (two arrows touched): later retries keep it
+
+
 def _repair_options(fig, result):
     """The wider searches for a retry candidate: arrows and numbers, and charges only when a charge check failed (a wider
-    charge search moves charges that were fine and takes the seats of numbers)."""
+    charge search moves charges that were fine and takes the seats of numbers); hookSeats once a kept drawing used it."""
     charges = bool(set(result['failed']) & {'charge_own_atom', 'overlap_charge', 'charge_open'})
-    return {'repairCharges': charges, 'repairNumbers': True, 'repairArrows': True}
+    options = {'repairCharges': charges, 'repairNumbers': True, 'repairArrows': True}
+    if HOOK_SEATS['on'] or 'overlap_arrow_arrow' in result['failed']:
+        options['hookSeats'] = True
+    return options
 
 
 NEAR_DIRS = (None, 0, 90, 180, 270)     # places tried for a molecule brought next to its arrow's other end
 
 
 def retry_route_near(spec, out, fig, result, draw, draw_args, stats):
-    """When a curved arrow between two molecules finds no route or touches a bond: put the smaller molecule (not one
-    placed by hand) next to the arrow's atom in the other one ("near", in the free place nearest to each of NEAR_DIRS, its offset dropped),
+    """When a curved arrow between two molecules finds no route or touches a bond or another arrow: put the smaller
+    molecule (not one placed by hand) next to the arrow's atom in the other one ("near", in the free place nearest to each of NEAR_DIRS, its offset dropped),
     draw these side by side, and keep the one that most lowers the failed checks and findings, gains none in
     HBOND_FLIP_KEEP and brings no two species closer.  The arrow then has a short way."""
     lost = [m.group(1) for x in result['checks']['arrows_ends']['findings'] for m in re.finditer(r'arrow (\S+): no route found', x)]
     lost += [m.group(1) for x in result['checks']['overlap_arrow_bond']['findings'] for m in re.finditer(r'arrow (\S+) touches bond', x)]
+    lost += [i for x in result['checks']['overlap_arrow_arrow']['findings'] for m in re.finditer(r'arrows (\S+) and (\S+) touch', x)
+             for i in m.groups()]
     if not lost:
         return fig, result, [], spec
     size = collections.Counter(a['species'] for p in fig.resolved['panels'] for a in p['atoms'])
@@ -852,6 +864,7 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     _write_state(out, resolved=resolved)
     times['resolve'] = time.time() - t0
     notes = list(resolved.get('notes', []))     # kept in the state's summary with the result
+    HOOK_SEATS['on'] = False
     retry_counts = {stage: {'draws': 0} for stage in
                     ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs', 'retry_hbond_flips',
                      'retry_route_near')}
@@ -910,7 +923,7 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 # an edit of the input (a molecule put next to its arrow's other end) comes before the layout search,
                 # which then starts from the edited input
                 if (any('no route found' in x for x in result['checks']['arrows_ends']['findings'])
-                        or 'overlap_arrow_bond' in result['failed']):
+                        or 'overlap_arrow_bond' in result['failed'] or 'overlap_arrow_arrow' in result['failed']):
                     fig, result, retried, spec = retry_route_near(spec, out, fig, result, draw, retry_args,
                                                                   retry_counts['retry_route_near'])
                     notes.extend(retried)

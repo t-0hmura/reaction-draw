@@ -9502,6 +9502,10 @@ function squeezedFixed(mol, ctx, job) {
   const d = render2(mol, ctx.f, ctx.measure, L), pcs = piecesOf2(mol, d, ctx);
   return d.electrons.filter((e) => e.key === "charge" && fixed.has(e.atom) && mol.atoms[e.atom].circled && Math.abs(mol.atoms[e.atom].charge ?? 0) === 1).map((e) => ({ atom: e.atom, squeezed: squeezedBy(mol, ctx, pcs, e.atom, e.at) }));
 }
+function hookDirs(mol, job, i, px) {
+  if (!job.options?.hookSeats) return [];
+  return (job.curved ?? []).filter((r) => r.snk.kind === "atom" && r.snk.atoms[0] === i && r.src.kind === "bond" && r.src.atoms.includes(i)).map((r) => pageDeg(px[i], px[r.src.atoms[0] === i ? r.src.atoms[1] : r.src.atoms[0]]));
+}
 function placeLonePairs(mol, ctx, job) {
   const px = atomPxOf(mol), { f, measure } = ctx;
   const sources = /* @__PURE__ */ new Map();
@@ -9541,7 +9545,8 @@ function placeLonePairs(mol, ctx, job) {
         const across = bondDirs.some((b) => angDiff(deg2, b) + angDiff(b, want) <= angDiff(deg2, want) + 0.5 && angDiff(deg2, b) > 0.5 && angDiff(b, want) > 0.5);
         const away = pairIndex === 0 && target && (angDiff(deg2, want) > 90 || across);
         if (!(deg2 % 90) && clear >= 1 && sep >= 35 && !away) axialClear = true;
-        const score = Math.max(0, 1 - clear) * 1e3 + Math.max(0, 35 - sep) * 30 + (deg2 % 90 ? 180 : 0) + (away ? 1e3 : 0) + (pairIndex === 0 && target ? angDiff(deg2, want) : -sep * 0.2);
+        const hooked = pairIndex === 0 && target && hookDirs(mol, job, i, px).some((h) => angDiff(deg2, h) < 70) ? 100 : 0;
+        const score = Math.max(0, 1 - clear) * 1e3 + Math.max(0, 35 - sep) * 30 + (deg2 % 90 ? 180 : 0) + (away ? 1e3 : 0) + hooked + (pairIndex === 0 && target ? angDiff(deg2, want) : -sep * 0.2);
         if (score < best) {
           best = score;
           angle2 = deg2;
@@ -9640,7 +9645,9 @@ function pairSeat(mol, job, i, ctx) {
   const bondDirs = mol.bonds.filter((b) => b.type !== HBOND2 && b.atoms.includes(i)).map((b) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
   const hSide = ctx && bondDirs.length === 1 && hydrogenSide(mol, ctx, i) !== null && Math.abs(angDiff(0, bondDirs[0]) - angDiff(180, bondDirs[0])) > 40 ? angDiff(0, bondDirs[0]) > angDiff(180, bondDirs[0]) ? 0 : 180 : null;
   const free = [0, 90, 180, 270].filter((deg2) => deg2 !== hSide && angDiff(deg2, want) <= 90 && bondDirs.every((b) => angDiff(deg2, b) >= 35));
-  return free.length ? free.reduce((a, b) => angDiff(b, want) < angDiff(a, want) ? b : a) : null;
+  const hooks = hookDirs(mol, job, i, px), clear = free.filter((deg2) => hooks.every((h) => angDiff(deg2, h) >= 70));
+  const seats = clear.length ? clear : free;
+  return seats.length ? seats.reduce((a, b) => angDiff(b, want) < angDiff(a, want) ? b : a) : null;
 }
 function alignFree(mol, ctx, i) {
   const a = mol.atoms[i], { d } = drawn2(mol, ctx), p = [a.location[0] * L, -a.location[1] * L];

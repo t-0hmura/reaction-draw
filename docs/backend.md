@@ -68,7 +68,7 @@ report = octet_draw.draw(resolved_dict_or_path, 'out', dpi=600)
 | `--browser` / `browser` | `auto` (system Chrome, falling back to Playwright's Chromium), `chrome`, `chromium`, or an executable path |
 | `--cache DIR` / `cache_dir` | With `--octet`: build cache directory (defaults to `OCTET_DRAW_CACHE`; if unset, `$XDG_CACHE_HOME/reaction-draw` or `~/.cache/reaction-draw`) |
 | `--node PATH` / `node` | With `--octet`: path to the `node` executable |
-| `options` (`draw()` only) | Retry parameters passed by `draw_figure.py`: `repairCharges`, `repairArrows` (with `repairArrowIds`, `reverseCurved`), and `repairNumbers` (with `ownMarginPx`) widen the candidate search; `fixedCurved` and `fixedNumbers` lock saved arrow routes and number positions |
+| `options` (`draw()` only) | Retry parameters passed by `draw_figure.py`: `repairCharges`, `repairArrows` (with `repairArrowIds`, `reverseCurved`, and `hookSeats`, which keeps a reacting lone pair off the side where a local arrow's hook comes onto the same atom), and `repairNumbers` (with `ownMarginPx`) widen the candidate search; `fixedCurved` and `fixedNumbers` lock saved arrow routes and number positions |
 
 Exit codes: `0` when rendering succeeds (any layout/drawing failures are printed and recorded under `report.problems` in `.state.json`); `2` on invalid input or a failed browser step.
 

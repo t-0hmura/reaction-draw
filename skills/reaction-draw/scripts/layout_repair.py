@@ -146,15 +146,22 @@ def _seg_gap(a, b, p, q):
 
 
 def _arrow_chords(result, figure):
-    """{panel: [(from refs, to refs)]} of the curved arrows that the failed overlap_arrow_bond findings name."""
+    """{panel: [(from refs, to refs)]} of the curved arrows that the failed overlap_arrow_bond findings name, and of
+    every curved arrow in a panel where a hydrogen bond crossed a bond (moves that uncross it keep the arrows' ways)."""
     ids = {m.group(1) for x in result['checks'].get('overlap_arrow_bond', {}).get('findings', [])
            for m in re.finditer(r'arrow (\S+) touches bond', x)}
     out = {}
     for p in figure.resolved['panels']:
         for a in p.get('curved', []):
-            if a.get('id') in ids:
+            if a.get('id') in ids or p['id'] in _hbond_crossed(result):
                 out.setdefault(p['id'], []).append((list(a['from']['refs']), list(a['to']['refs'])))
     return out
+
+
+def _hbond_crossed(result):
+    """The panels where a hydrogen bond's line crossed a bond."""
+    return {m.group(1) for x in result['checks'].get('bond_crossing', {}).get('findings', [])
+            for m in re.finditer(r'^hbond ([\w-]+)\.', x)}
 
 
 def _panel_cost(lay, pid, gap=0.14):
@@ -190,6 +197,22 @@ def _panel_cost(lay, pid, gap=0.14):
         for _, q in points[k+1:]:
             collision += max(0.0, .35 - layout.dist(p, q)) ** 2
     at = dict(points)
+    # a hydrogen bond whose line crossed a bond: every line of the panel's hydrogen bonds against the other bonds and
+    # the labels
+    if pid in getattr(lay, 'hbond_panels', ()):
+        for ha, hb in lay.panels[lay.pidx[pid]]['hbonds']:
+            ra, rb = '%s:%s' % (ha['sid'], ha['atom']), '%s:%s' % (hb['sid'], hb['atom'])
+            if ra not in at or rb not in at:
+                continue
+            for r1, r2, p, q in bonds:
+                if r1 not in (ra, rb) and r2 not in (ra, rb):
+                    collision += 4 * max(0.0, .2 - _seg_gap(at[ra], at[rb], p, q)) ** 2
+            for ref, box in labels:
+                if ref in (ra, rb):
+                    continue
+                for t in (.15, .3, .5, .7, .85):
+                    pt = (at[ra][0] + t * (at[rb][0] - at[ra][0]), at[ra][1] + t * (at[rb][1] - at[ra][1]))
+                    collision += 4 * max(0.0, .12 - rules.pt_box_gap(pt, box)) ** 2
     # a curved arrow that touched a bond: the bonds near the line between its ends, which its route has to pass
     for ends_from, ends_to in getattr(lay, 'arrow_chords', {}).get(pid, ()):
         if not all(r in at for r in ends_from + ends_to):
@@ -426,6 +449,7 @@ def candidates(spec, result, figure):
     lay.run()
     lay.number_sizes = {}
     lay.arrow_chords = _arrow_chords(result, figure)
+    lay.hbond_panels = _hbond_crossed(result)
     if (set(result['failed']).intersection({'number_place', 'number_clear'})
             and not set(result['failed']).intersection({'graph', 'stereochemistry', 'cdxml'})):
         import numpy as np
@@ -530,3 +554,4 @@ def candidates(spec, result, figure):
                 lay.notes.append('automatic layout: hand coordinates nudged by at most %.3f bond lengths (limit %.1f)' %
                                  (max(hand), HAND_LIMIT))
             yield specutil._assemble(spec, lay.arrange())
+
