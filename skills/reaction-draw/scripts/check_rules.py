@@ -1506,11 +1506,11 @@ def _report_bonds(f):
 
 
 def _stretch_ok(f, b, r):
-    """A bond grown for the local curved arrow named in the report (one that starts or ends at this bond), or for the
-    seat of the number of one of its atoms, to at most STRETCH_MAX standard lengths."""
-    if r.get('stretched_for') == 'number':
-        return (any((f.atoms.get(x) or {}).get('number') for x in (b['a'], b['b'])) and r['length'] is not None
-                and r['length'] <= STRETCH_MAX * f.bond_pt + LENGTH_TOL_PT)
+    """A bond grown for the local curved arrow named in the report (one that starts or ends at this bond), for the seat
+    of the number of one of its atoms, or for room between crowded labels, to at most STRETCH_MAX standard lengths."""
+    if r.get('stretched_for') in ('number', 'room'):
+        return ((r['stretched_for'] == 'room' or any((f.atoms.get(x) or {}).get('number') for x in (b['a'], b['b'])))
+                and r['length'] is not None and r['length'] <= STRETCH_MAX * f.bond_pt + LENGTH_TOL_PT)
     arrow = next((c for c in f.curved if c['id'] == r.get('stretched_for')), None)
     ends = [e['refs'] for e in (arrow['from'], arrow['to']) if e['kind'] == 'bond'] if arrow else []
     return (any(set(x) == {b['a'], b['b']} for x in ends) and r['length'] is not None

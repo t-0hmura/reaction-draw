@@ -388,7 +388,7 @@ function localBondOf(r: CurvedReq): [number, number] | null {
 }
 function stretchArrowBonds(mol: any, job: any) {
   const ask = job.options?.stretchArrows, rows: any[] = [];
-  if (!ask?.ids?.length && !job.options?.stretchAt?.refs?.length) return rows;
+  if (!ask?.ids?.length && !job.options?.stretchAt?.refs?.length && !job.options?.stretchBonds?.length) return rows;
   const ratio = Math.min(STRETCH_MAX, Math.max(1, Number(ask?.ratio) || 1));
   for (const r of (job.curved ?? []) as CurvedReq[]) {
     const pair = ask?.ids?.includes(r.id) ? localBondOf(r) : null;
@@ -425,6 +425,23 @@ function stretchArrowBonds(mol: any, job: any) {
       for (const j of atoms) { const q = mol.atoms[j].location; mol.atoms[j].location = [q[0] + ux * grow, q[1] + uy * grow, ...q.slice(2)]; }
       rows.push({bond: bi, arrow: 'number', ratio: atRatio});
     });
+  }
+  // bonds grown to give crowded labels and marks room (opts.stretchBonds [{a, b, move, ratio}] by atom ref): the side of
+  // `move` moves out along the bond; reported as stretched for 'room'
+  for (const sb of (job.options?.stretchBonds ?? []) as any[]) {
+    const refs = job.refs ?? [], ia = refs.indexOf(sb.a), ib = refs.indexOf(sb.b), im = refs.indexOf(sb.move);
+    if (ia < 0 || ib < 0 || (im !== ia && im !== ib)) continue;
+    const bi = mol.bonds.findIndex((b: any) => b.type !== HBOND && b.atoms.includes(ia) && b.atoms.includes(ib));
+    if (bi < 0 || rows.some((x) => x.bond === bi)) continue;
+    const anchor = im === ia ? ib : ia, atoms = branchSide(mol, im, anchor, bi);
+    if (!atoms) continue;
+    const r = Math.min(STRETCH_MAX, Math.max(1, Number(sb.ratio) || 1));
+    const from = mol.atoms[anchor].location, to = mol.atoms[im].location, length = Math.hypot(to[0] - from[0], to[1] - from[1]);
+    const grow = r - length;
+    if (grow <= 1e-6) continue;
+    const ux = (to[0] - from[0]) / length, uy = (to[1] - from[1]) / length;
+    for (const j of atoms) { const q = mol.atoms[j].location; mol.atoms[j].location = [q[0] + ux * grow, q[1] + uy * grow, ...q.slice(2)]; }
+    rows.push({bond: bi, arrow: 'room', ratio: r});
   }
   return rows;
 }
