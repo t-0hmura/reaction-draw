@@ -120,16 +120,16 @@ Omit these species keys on the first run so the layout engine places every speci
 
 Order of precedence: coordinates inherited from an earlier panel override `rotate` and `flip`; `offset` shifts the species next; and `xy` sets individual atoms last.
 
-If a hydrogen-bond line crosses a label or bond, run `python fix_hbonds.py INPUT --out NEW_DIR` once; this saves an adjusted `input.hbonds.json` beside the input file. If the line still overlaps, move the smaller fragment (usually the residue) with `offset` or `rotate`, keeping the substrate in place and the contact short.
+When the user asks to move a hydrogen-bond line that crosses a label or bond, run `python fix_hbonds.py INPUT --out NEW_DIR` once; this saves an adjusted `input.hbonds.json` beside the input file. If the line still overlaps, move the smaller fragment (usually the residue) with `offset` or `rotate`, keeping the substrate in place and the contact short.
 
 ## draw_figure.py
 
 ```bash
 python draw_figure.py INPUT.json --out DIR
-python draw_figure.py A.json B.json C.json --out DIR
+python draw_figure.py A.json B.json C.json --out DIR --versions
 ```
 
-With several input files, each is drawn at the same time in `DIR/<file name>` (`DIR/A`, `DIR/B`, `DIR/C`). The last line, `BEST: …`, names a passing version with the fewest `WARNING` lines, or else the one with the fewest `FIX` lines; the exit status is that version's.
+Only when the user asks for several versions, `--versions` draws each input file at the same time in `DIR/<file name>` (`DIR/A`, `DIR/B`, `DIR/C`). The last line, `BEST: …`, names a passing version with the fewest `WARNING` lines, or else the one with the fewest `FIX` lines; the exit status is that version's.
 
 - Exit `0`: All checks pass (and, with `--positive-control`, the positive control).
 - Exit `1`: One or more checks fail.

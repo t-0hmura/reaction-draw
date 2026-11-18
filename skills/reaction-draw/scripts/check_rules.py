@@ -2553,9 +2553,14 @@ def _side_chain_ok(f, code, piece):
         return any(el(r) == 'C' and any(el(n) == 'O' for n in f.nbrs[r])
                    and sum(1 for n in f.nbrs[r] if el(n) in ('O', partner)) >= 2 for r in within(k))
     rings = _small_rings(f, within(7)) if code in ('His', 'Trp', 'Phe', 'Tyr') else set()
-    if code == 'His':                            # imidazole: its two N apart (not a pyrazole)
-        return any(len(r) == 5 and sum(el(x) == 'N' for x in r) == 2 and min(piece[x] for x in r) <= 3
-                   and not any(el(x) == 'N' and el(n) == 'N' for x in r for n in f.nbrs[x] if n in r) for r in rings)
+    if code == 'His':          # imidazole: its two N apart (not a pyrazole), joined to the chain at C4 (beside one N only)
+        for r in rings:
+            if len(r) == 5 and sum(el(x) == 'N' for x in r) == 2 and min(piece[x] for x in r) <= 3 \
+                    and not any(el(x) == 'N' and el(n) == 'N' for x in r for n in f.nbrs[x] if n in r):
+                first = [x for x in r if piece[x] == min(piece[y] for y in r)]
+                if all(el(x) == 'C' and sum(1 for n in f.nbrs[x] if n in r and el(n) == 'N') == 1 for x in first):
+                    return True
+        return False
     if code == 'Trp':
         return any(len(r) == 5 and sum(el(x) == 'N' for x in r) == 1 and any(len(r & q) == 2 and len(q) == 6 for q in rings)
                    for r in rings)
@@ -2577,7 +2582,7 @@ def _side_chain_ok(f, code, piece):
     return None
 
 
-SIDE_CHAIN_NAMES = {'His': 'CH2 and an imidazole ring', 'Trp': 'CH2 and an indole', 'Phe': 'CH2 and a phenyl ring',
+SIDE_CHAIN_NAMES = {'His': 'CH2 on C4 of an imidazole ring', 'Trp': 'CH2 and an indole', 'Phe': 'CH2 and a phenyl ring',
                     'Tyr': 'CH2 and a 4-hydroxyphenyl ring', 'Ser': 'CH2OH', 'Thr': 'CH(OH)CH3', 'Cys': 'CH2SH',
                     'Sec': 'CH2SeH', 'Met': 'CH2CH2SCH3', 'Lys': '(CH2)4NH2', 'Arg': '(CH2)3 and a guanidine',
                     'Asp': 'CH2COO', 'Glu': 'CH2CH2COO', 'Asn': 'CH2CONH2', 'Gln': 'CH2CH2CONH2'}
