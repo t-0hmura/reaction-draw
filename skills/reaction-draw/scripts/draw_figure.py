@@ -310,6 +310,33 @@ def retry_placements(resolved, out, fig, result, draw, draw_args, stats):
         def better(checked):
             after = _counts(checked)
             return all(after[n] <= before[n] for n in before) and any(after[n] < before[n] for n in failed)
+        jobs, sides = [(retry_resolved, options)], [None]
+        if flag == 'repairNumbers':
+            # a numbered atom whose label writes H (CH2) may need its H on another side to leave the number a seat:
+            # each other side is drawn beside the plain retry, and the one with the fewest findings is kept
+            bonds = {}
+            for p in fig.resolved['panels']:
+                for b in p['bonds']:
+                    for r in (b['a'], b['b']):
+                        bonds[r] = bonds.get(r, 0) + 1
+            numbered = {n['ref'] for n in saved.get('numbers', [])}
+            for kept in saved.get('atoms', []):
+                ref = kept['ref']
+                if ref in numbered and kept.get('h') and kept.get('align') and re.search(re.escape(ref) + r'(?!\d)', findings):
+                    for align in ('left', 'right', 'above', 'below') if bonds.get(ref, 0) >= 2 else ('left', 'right'):
+                        if align != kept['align']:
+                            variant = copy.deepcopy(retry_resolved)
+                            next(a for p in variant['panels'] for a in p['atoms'] if a['ref'] == ref)['native_align'] = align
+                            jobs.append((variant, options))
+                            sides.append((ref, align))
+        if len(jobs) > 1:
+            drawn = _candidates(jobs, out, fig, draw, draw_args, lambda checked: False, stats, 'retry_placements')
+            scored = [(sum(_counts(checked).values()), k) for k, (_, checked, _, error) in enumerate(drawn)
+                      if error is None and better(checked)]
+            k = min(scored)[1] if scored else 0
+            retry_resolved, side = jobs[k][0], sides[k]
+        else:
+            side = None
         candidate, checked, ok, error = _candidate(retry_resolved, out, fig, draw, draw_args, options, better,
                                                  stats, 'retry_placements', keep_resolved=True)
         if error:
@@ -321,6 +348,8 @@ def retry_placements(resolved, out, fig, result, draw, draw_args, stats):
         if ok:
             fig, result, accepted = candidate, checked, options
             HOOK_SEATS['on'] = HOOK_SEATS['on'] or bool(options.get('hookSeats'))
+            if side:
+                LABEL_ALIGNS[side[0]] = side[1]
     return fig, result, notes
 
 
@@ -632,6 +661,7 @@ def retry_hbond_flips(out, fig, result, draw, draw_args, stats):
 
 
 HOOK_SEATS = {'on': False}     # a kept drawing of this run needed hookSeats (two arrows touched): later retries keep it
+LABEL_ALIGNS = {}              # the side of an atom's written H that a kept drawing chose for its number: later retries keep it
 
 
 def _repair_options(fig, result):
@@ -952,6 +982,7 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     times['resolve'] = time.time() - t0
     notes = list(resolved.get('notes', []))     # kept in the state's summary with the result
     HOOK_SEATS['on'] = False
+    LABEL_ALIGNS.clear()
     retry_counts = {stage: {'draws': 0} for stage in
                     ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs', 'retry_hbond_flips',
                      'retry_route_near')}
@@ -1002,6 +1033,14 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
             retry_args = {'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir,
                           'node_modules': node_modules, 'browser_cmd': browser_cmd}
             numbers_only = set(result['failed']) <= {'number_place', 'number_clear'}
+            unaligned = draw
+            def draw(resolved, dest, options=None, **kw):
+                if LABEL_ALIGNS:
+                    resolved = copy.deepcopy(resolved)
+                    for a in (a for p in resolved['panels'] for a in p['atoms']):
+                        if a['ref'] in LABEL_ALIGNS and 'native_align' not in a:
+                            a['native_align'] = LABEL_ALIGNS[a['ref']]
+                return unaligned(resolved, dest, options=options, **kw)
             try:
                 # Resolve saved arrow/number placement before trying molecular motions.
                 fig, result, retried = retry_placements(resolved, out, fig, result, draw, retry_args, retry_counts['retry_placements'])
