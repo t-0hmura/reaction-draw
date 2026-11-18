@@ -216,12 +216,13 @@ def _names(aid, text):
 
 def _retryable(result):
     """Retry only if at least one finding can change with automatic placement (of the hydrogen-bond findings, a line
-    that crosses a bond)."""
+    that crosses a bond or another hydrogen bond's line)."""
     return any(not (name in ('arrows_steps', 'residue_codes', 'hbond_dots')
                     or name == 'radical_marks' and 'not from radicals' in finding
                     or name == 'arrows_ends' and finding.startswith('arrow ') and ': no route found from ' in finding
                     or ('hbond ' in finding or 'hydrogen bond' in finding)
-                    and not (name == 'bond_crossing' and finding.startswith('hbond ') and ' crosses bond ' in finding))
+                    and not (name == 'bond_crossing' and finding.startswith('hbond ')
+                             and (' crosses bond ' in finding or ' crosses hbond ' in finding)))
                for name in result['failed'] for finding in result['checks'][name]['findings'])
 
 
@@ -583,7 +584,22 @@ def retry_hbond_flips(out, fig, result, draw, draw_args, stats):
     pids = {m.group(1) for n in failed for x in result['checks'][n]['findings']
             for m in re.finditer(r'(?<![\w.])([\w-]+)\.[\w-]+:\d+', x) if m.group(1) in panels}
     groups = _hbond_groups(fig.resolved, pids)
-    jobs = [(pid, sid, group, axis) for pid, sid, group in groups for axis in ('y', 'x')][:HBOND_FLIP_MAX]
+    jobs = [((pid,), sid, group, axis) for pid, sid, group in groups for axis in ('y', 'x')]
+    # a hydrogen bond's line that crosses a bond or another one: first the smaller species of the crossing, mirrored in
+    # every panel where it crosses
+    size = collections.Counter(a['species'] for p in fig.resolved['panels'] for a in p['atoms'])
+    crossed = collections.defaultdict(set)
+    for x in result['checks']['bond_crossing']['findings']:
+        if x.startswith('hbond ') and (' crosses bond ' in x or ' crosses hbond ' in x):
+            named = dict.fromkeys(r.rsplit(':', 1)[0] for r in fig.atoms
+                                  if re.search(r'(?<![\w.])' + re.escape(r) + r'(?!\d)', x))
+            largest = max(named, key=lambda sid: size[sid])
+            for sid in named:
+                if sid != largest:
+                    crossed[sid.split('.', 1)[1]].add(sid.split('.', 1)[0])
+    first = [(tuple(sorted(crossed[key])), sorted(crossed[key])[0] + '.' + key, {key}, axis)
+             for key in sorted(crossed, key=lambda k: size[sorted(crossed[k])[0] + '.' + k]) for axis in ('y', 'x')]
+    jobs = (first + jobs)[:HBOND_FLIP_MAX]
     if not jobs:
         return fig, result, []
     def rank(checked):
@@ -594,7 +610,13 @@ def retry_hbond_flips(out, fig, result, draw, draw_args, stats):
                 and rank(checked) < rank(result) and not _closer(result, checked)
                 and not any('no route found' in x and x not in result['checks']['arrows_ends']['findings']
                             for x in checked['checks']['arrows_ends']['findings']))
-    drawn = [(_mirrored(fig.resolved, pid, group, axis), None) for pid, sid, group, axis in jobs]
+    def mirrored(pids, group, axis):
+        r = fig.resolved
+        for pid in pids:
+            r = _mirrored(r, pid, {pid + '.' + g.split('.', 1)[-1] if '.' not in g or g.split('.', 1)[0] not in pids else g
+                                   for g in group}, axis)
+        return r
+    drawn = [(mirrored(pids, group, axis), None) for pids, sid, group, axis in jobs]
     results = _candidates(drawn, out, fig, draw, draw_args, lambda checked: False, stats, 'retry_hbond_flips')
     scored = [(rank(checked), k) for k, (_, checked, _, error) in enumerate(results) if error is None and better(checked)]
     if not scored:
@@ -603,9 +625,10 @@ def retry_hbond_flips(out, fig, result, draw, draw_args, stats):
     candidate, checked, ok, _ = _candidate(drawn[k][0], out, fig, draw, draw_args, None, better, stats, 'retry_hbond_flips')
     if not ok:
         return fig, result, []
-    pid, sid, group, axis = jobs[k]
-    return candidate, checked, ['hydrogen-bonded group %s mirrored %s in panel %s' % (
-        ', '.join(sorted(group)), 'left-right' if axis == 'x' else 'up-down', pid)]
+    pids, sid, group, axis = jobs[k]
+    return candidate, checked, ['hydrogen-bonded group %s mirrored %s in panel%s %s' % (
+        ', '.join(sorted(g.split('.', 1)[-1] for g in group)), 'left-right' if axis == 'x' else 'up-down',
+        's' if len(pids) > 1 else '', ', '.join(pids))]
 
 
 HOOK_SEATS = {'on': False}     # a kept drawing of this run needed hookSeats (two arrows touched): later retries keep it
@@ -707,8 +730,10 @@ def retry_layout(spec, out, fig, result, draw, draw_args, stats):
         if not set(result['failed']).intersection({'arrows_ends', 'arrows_shape'}):
             options['ownMarginPx'] = 8.5
         def better(checked, result=result):
+            # a hydrogen bond's crossing line counts with the findings: one that moves elsewhere may still be fewer
+            kept = lambda r, n: {x for x in r['checks'][n]['findings'] if not (n == 'bond_crossing' and x.startswith('hbond '))}
             safe = not checked['checks']['stereochemistry']['findings'] and all(
-                set(checked['checks'][n]['findings']) <= set(result['checks'][n]['findings']) for n in protected)
+                kept(checked, n) <= kept(result, n) for n in protected)
             return safe and rank(checked) < rank(result) and not _closer(result, checked)
         candidate, checked, ok, error = _candidate(resolved, out, fig, draw, draw_args, options, better, stats, 'retry_layout')
         if error:

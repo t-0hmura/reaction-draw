@@ -180,7 +180,7 @@ def _arrow_chords(result, figure):
 
 
 def _hbond_crossed(result):
-    """The panels where a hydrogen bond's line crossed a bond."""
+    """The panels where a hydrogen bond's line crossed a bond or another hydrogen bond's line."""
     return {m.group(1) for x in result['checks'].get('bond_crossing', {}).get('findings', [])
             for m in re.finditer(r'^hbond ([\w-]+)\.', x)}
 
@@ -268,6 +268,13 @@ def _collisions(lay, pid, gap, points, labels, bonds, pts, boxes):
             mine = (ends[None, :, :, None] == lines[:, None, None, :]).any(axis=(2, 3))
             g = _seg_gaps(a[:, :, None], b[:, :, None], P[:, None], Q[:, None])
             collision += total(np.where(mine, 0.0, 4 * np.maximum(0.0, .2 - g) ** 2))
+            # and against each other, two lines that share no atom
+            u, v = np.triu_indices(len(lines), 1)
+            apart = ~(lines[u][:, :, None] == lines[v][:, None, :]).any(axis=(1, 2))
+            if apart.any():
+                u, v = u[apart], v[apart]
+                g = _seg_gaps(a[:, u], b[:, u], a[:, v], b[:, v])
+                collision += total(4 * np.maximum(0.0, .2 - g) ** 2)
             if len(labels):
                 t = np.array([.15, .3, .5, .7, .85])
                 g = _pt_box_gaps((a[:, :, None, 0] + t * (b[:, :, None, 0] - a[:, :, None, 0])).reshape(rows, -1),
@@ -558,10 +565,20 @@ def _best_move(lay, pid, gap, roots, original):
             for distance in (.1, .2, .3, .4, .8, 1.6):
                 candidate = {m:(x+u[0]*distance,y+u[1]*distance) for m,(x,y) in xy.items()}
                 if _allowed(lay,sid,candidate,original):
-                    places.append(candidate)
-        for candidate, after in zip(places, _shifted_costs(lay, pid, gap, sid, places) if places else ()):
+                    places.append((candidate, sid+': moved partner to clear the panel'))
+        # turned or mirrored in place, for a partner whose hydrogen bond's line crosses: after the shifts
+        if pid in getattr(lay, 'hbond_panels', ()):
+            cx, cy = (sum(q[k] for q in xy.values()) / len(xy) for k in (0, 1))
+            centered = {m: (x - cx, y - cy) for m, (x, y) in xy.items()}
+            for deg, flip in [(d, None) for d in (30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180)] + [(0, 'x'), (0, 'y')]:
+                candidate = {m: (x + cx, y + cy) for m, (x, y) in layout.transform(centered, deg, flip=flip).items()}
+                if _allowed(lay, sid, candidate, original):
+                    places.append((candidate, sid + (': mirrored partner %s to clear the panel' % (
+                        'left-right' if flip == 'x' else 'up-down') if flip else ': turned partner %+d deg to clear the panel' % deg)))
+        costs = _shifted_costs(lay, pid, gap, sid, [c for c, _ in places]) if places else ()
+        for (candidate, reason), after in zip(places, costs):
             if after < before-1e-6 and (best is None or after-before < best[0]):
-                best = (after-before,sid,candidate,sid+': moved partner to clear the panel',{})
+                best = (after-before,sid,candidate,reason,{})
         lay.xy[sid] = xy
     return best
 

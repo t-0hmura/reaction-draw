@@ -2542,8 +2542,9 @@ def _side_chain_ok(f, code, piece):
         return any(el(r) == 'C' and any(el(n) == 'O' for n in f.nbrs[r])
                    and sum(1 for n in f.nbrs[r] if el(n) in ('O', partner)) >= 2 for r in within(k))
     rings = _small_rings(f, within(7)) if code in ('His', 'Trp', 'Phe', 'Tyr') else set()
-    if code == 'His':
-        return any(len(r) == 5 and sum(el(x) == 'N' for x in r) == 2 and min(piece[x] for x in r) <= 3 for r in rings)
+    if code == 'His':                            # imidazole: its two N apart (not a pyrazole)
+        return any(len(r) == 5 and sum(el(x) == 'N' for x in r) == 2 and min(piece[x] for x in r) <= 3
+                   and not any(el(x) == 'N' and el(n) == 'N' for x in r for n in f.nbrs[x] if n in r) for r in rings)
     if code == 'Trp':
         return any(len(r) == 5 and sum(el(x) == 'N' for x in r) == 1 and any(len(r & q) == 2 and len(q) == 6 for q in rings)
                    for r in rings)
@@ -2785,8 +2786,8 @@ def det_plus_place(f):
 
 
 def det_bond_crossing(f):
-    """Two bonds of a panel that cross, a hydrogen bond that crosses a bond, or two unbonded atoms closer than 0.4 bond
-    length. Transition states (drawn in perspective) and eta centers are exempt."""
+    """Two bonds of a panel that cross, a hydrogen bond that crosses a bond or another hydrogen bond, or two unbonded
+    atoms closer than 0.4 bond length. Transition states (drawn in perspective) and eta centers are exempt."""
     def free(ref):
         a = f.atoms[ref]
         return not a.get('ts') and not a.get('hidden_h') and a.get('kind') != 'center'
@@ -2805,6 +2806,12 @@ def det_bond_crossing(f):
                 if panel(c['a']) == panel(h[0]) and not set(h) & {c['a'], c['b']} and \
                         co.dist_seg_seg(f.xy(h[0]), f.xy(h[1]), f.xy(c['a']), f.xy(c['b'])) < 0.5:
                     out.append('hbond %s-%s crosses bond %s-%s' % (h[0], h[1], c['a'], c['b']))
+    lines = [h for h in f.hbonds if all(r in f.atoms for r in h)]
+    for i, h in enumerate(lines):
+        for g in lines[i + 1:]:
+            if panel(g[0]) == panel(h[0]) and not set(h) & set(g) and \
+                    co.dist_seg_seg(f.xy(h[0]), f.xy(h[1]), f.xy(g[0]), f.xy(g[1])) < 0.5:
+                out.append('hbond %s-%s crosses hbond %s-%s' % (h[0], h[1], g[0], g[1]))
     bonded = {frozenset((b['a'], b['b'])) for b in f.bonds}
     refs = [r for r in f.atoms if free(r)]
     limit = 0.4 * f.bond_pt
@@ -2943,6 +2950,9 @@ def repair_hints(f, name, findings):
             places = [place for place in places if ', arrow ' in place]
         action = ('remove this arrow\'s manual bend and any plus along its path; bring its ends closer with near between species, '
                   'or move the receiving branch with xy within one species' if name == 'arrows_ends' and 'no route found' in finding else
+                  'pair each H with the acceptor on its own side (swap the two acceptors when they are equivalent, such as the '
+                  'two O of a carboxylate), or turn the donor group with xy so that the lines do not cross'
+                  if ' crosses hbond ' in finding else
                   'run `python scripts/fix_hbonds.py INPUT --out NEW_DIR` once; if the line still overlaps, follow the hydrogen-bond '
                   'note under "Hand placement" in scripts/README.md' if 'hbond ' in finding else
                   'first add the missing H to the bracket atom in the SMILES; only when the source draws an unpaired electron on '
