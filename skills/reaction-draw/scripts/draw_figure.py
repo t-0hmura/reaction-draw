@@ -314,11 +314,12 @@ def retry_placements(resolved, out, fig, result, draw, draw_args, stats):
         if flag == 'repairNumbers':
             # a numbered atom whose label writes H (CH2) may need its H on another side to leave the number a seat:
             # each other side is drawn beside the plain retry, and the one with the fewest findings is kept
-            bonds = {}
+            bonds, bonds_of = {}, {}
             for p in fig.resolved['panels']:
                 for b in p['bonds']:
-                    for r in (b['a'], b['b']):
+                    for r, q in ((b['a'], b['b']), (b['b'], b['a'])):
                         bonds[r] = bonds.get(r, 0) + 1
+                        bonds_of.setdefault(r, []).append(q)
             numbered = {n['ref'] for n in saved.get('numbers', [])}
             for kept in saved.get('atoms', []):
                 ref = kept['ref']
@@ -329,6 +330,37 @@ def retry_placements(resolved, out, fig, result, draw, draw_args, stats):
                             next(a for p in variant['panels'] for a in p['atoms'] if a['ref'] == ref)['native_align'] = align
                             jobs.append((variant, options))
                             sides.append((ref, align))
+            # its own charge circle turned into another wide gap between its bonds, leaving the number its seat, alone
+            # and with the circle of a bonded atom turned out of its way too
+            pos = {a['ref']: (a['x'], a['y']) for a in saved.get('atoms', [])}
+            circled = {a['ref']: a['charge_angle'] for a in saved.get('atoms', [])
+                       if a.get('circled') and a.get('charge_angle') is not None}
+            h_side = {a['ref']: {'right': 0, 'above': 90, 'left': 180, 'below': 270}.get(a.get('align'))
+                      for a in saved.get('atoms', []) if a.get('h')}
+
+            def other_gaps(r):          # places in the wide gaps between its bonds, off its written H and its circle
+                x0, y0 = pos[r]
+                dirs = sorted(math.degrees(math.atan2(y0 - pos[q][1], pos[q][0] - x0)) % 360
+                              for q in bonds_of.get(r, ()) if q in pos)
+                away = lambda a, b: min((a - b) % 360, (b - a) % 360)
+                out = []
+                for k, d in enumerate(dirs if len(dirs) >= 2 else ()):
+                    size = (dirs[(k + 1) % len(dirs)] - d) % 360 or 360
+                    for at in ((d + size / 2, d + size / 4, d + 3 * size / 4) if size >= 180 else (d + size / 2,)):
+                        at = round(at % 360)
+                        if size >= 90 and away(at, circled[r]) > 45 and (h_side.get(r) is None or away(at, h_side[r]) > 40):
+                            out.append(at)
+                return out
+            for ref in [r for r in circled if r in numbered and r in pos and re.search(re.escape(r) + r'(?!\d)', findings)]:
+                for mid in other_gaps(ref):
+                    turns = [{ref: mid}] + [{ref: mid, q: m2} for q in bonds_of.get(ref, ()) if q in circled and q in pos
+                                            for m2 in other_gaps(q)]
+                    for turn in turns:
+                        variant = copy.deepcopy(retry_resolved)
+                        for a in (a for p in variant['panels'] for a in p['atoms'] if a['ref'] in turn):
+                            a['charge_angle'] = turn[a['ref']]
+                        jobs.append((variant, options))
+                        sides.append(('charge', turn))
         if len(jobs) > 1:
             drawn = _candidates(jobs, out, fig, draw, draw_args, lambda checked: False, stats, 'retry_placements')
             scored = [(sum(_counts(checked).values()), k) for k, (_, checked, _, error) in enumerate(drawn)
@@ -348,7 +380,9 @@ def retry_placements(resolved, out, fig, result, draw, draw_args, stats):
         if ok:
             fig, result, accepted = candidate, checked, options
             HOOK_SEATS['on'] = HOOK_SEATS['on'] or bool(options.get('hookSeats'))
-            if side:
+            if side and side[0] == 'charge':
+                CHARGE_ANGLES.update(side[1])
+            elif side:
                 LABEL_ALIGNS[side[0]] = side[1]
     return fig, result, notes
 
@@ -662,6 +696,7 @@ def retry_hbond_flips(out, fig, result, draw, draw_args, stats):
 
 HOOK_SEATS = {'on': False}     # a kept drawing of this run needed hookSeats (two arrows touched): later retries keep it
 LABEL_ALIGNS = {}              # the side of an atom's written H that a kept drawing chose for its number: later retries keep it
+CHARGE_ANGLES = {}             # the place of a numbered atom's charge circle that a kept drawing chose: later retries keep it
 
 
 def _repair_options(fig, result):
@@ -983,6 +1018,7 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     notes = list(resolved.get('notes', []))     # kept in the state's summary with the result
     HOOK_SEATS['on'] = False
     LABEL_ALIGNS.clear()
+    CHARGE_ANGLES.clear()
     retry_counts = {stage: {'draws': 0} for stage in
                     ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs', 'retry_hbond_flips',
                      'retry_route_near')}
@@ -1035,11 +1071,13 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
             numbers_only = set(result['failed']) <= {'number_place', 'number_clear'}
             unaligned = draw
             def draw(resolved, dest, options=None, **kw):
-                if LABEL_ALIGNS:
+                if LABEL_ALIGNS or CHARGE_ANGLES:
                     resolved = copy.deepcopy(resolved)
                     for a in (a for p in resolved['panels'] for a in p['atoms']):
                         if a['ref'] in LABEL_ALIGNS and 'native_align' not in a:
                             a['native_align'] = LABEL_ALIGNS[a['ref']]
+                        if a['ref'] in CHARGE_ANGLES and a.get('charge_angle') is None:
+                            a['charge_angle'] = CHARGE_ANGLES[a['ref']]
                 return unaligned(resolved, dest, options=options, **kw)
             try:
                 # Resolve saved arrow/number placement before trying molecular motions.

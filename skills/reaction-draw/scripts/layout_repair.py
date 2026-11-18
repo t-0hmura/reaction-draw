@@ -527,9 +527,81 @@ def _followers(lay, pid, sid, old, new):
     return out
 
 
+def _arrow_hs(result, figure):
+    """(arrow, H ref) for each H at an end of a curved arrow that touched a bond."""
+    ids = {m.group(1) for x in result['checks'].get('overlap_arrow_bond', {}).get('findings', [])
+           for m in re.finditer(r'arrow (\S+) touches bond', x)}
+    return [(a['id'], r) for p in figure.resolved['panels'] for a in p.get('curved', []) if a.get('id') in ids
+            for r in dict.fromkeys(a['from']['refs'] + a['to']['refs'])
+            if (figure.atoms.get(r) or {}).get('el') == 'H']
+
+
+def _h_turns(lay, result, figure, original):
+    """An H at an end of a curved arrow that touched a bond, turned about its atom into the open gap that faces the
+    arrow's other end (an H a base takes), and the base's molecule moved next to it, 35 degrees off the line of the
+    bond (so that the arrow's head points at the H, not along its bond) and clear of the rest:
+    ({species: places}, notes), or None."""
+    moved, notes = {}, []
+    arrows = {a['id']: a for p in figure.resolved['panels'] for a in p.get('curved', [])}
+    for aid, ref in _arrow_hs(result, figure):
+        sid, m = ref.rsplit(':', 1)[0], int(ref.rsplit(':', 1)[1])
+        mol = lay.mol.get(sid)
+        if mol is None or m not in mol.idx or len(mol.adj[mol.idx[m]]) != 1:
+            continue
+        a = arrows[aid]
+        others = [r for r in dict.fromkeys(a['from']['refs'] + a['to']['refs'])
+                  if r.rsplit(':', 1)[0] != sid and r.rsplit(':', 1)[0] in lay.xy]
+        if not others:
+            continue
+        osid, om = others[0].rsplit(':', 1)[0], int(others[0].rsplit(':', 1)[1])
+        if osid in moved or om not in lay.xy[osid]:
+            continue
+        xy = dict(moved.get(sid, lay.xy[sid]))
+        root = mol.map[next(iter(mol.adj[mol.idx[m]]))]
+        c = xy[root]
+        dirs = [layout.ang(xy[q][0] - c[0], xy[q][1] - c[1]) for q in mol.nb_maps(root) if q != m]
+        if len(dirs) < 2:
+            continue
+        target = lay.xy[osid][om]
+        want = layout.ang(target[0] - c[0], target[1] - c[1])
+        mids = [(st + g / 2.0) % 360 for st, g in layout.gaps(dirs) if g >= 100]
+        if not mids:
+            continue
+        best = min(mids, key=lambda d: layout.adiff(d, want))
+        if layout.adiff(best, layout.ang(xy[m][0] - c[0], xy[m][1] - c[1])) < 30:
+            continue
+        u = layout.vec(best)
+        xy[m] = (c[0] + u[0], c[1] + u[1])
+        omol = lay.mol[osid]
+        d = layout.CONTACT_BASE + 0.2 * mol.labeled(mol.idx[m]) + 0.2 * omol.labeled(omol.idx[om])
+        mine = [lay.label_box(sid, q, xy) for q in xy if q != m]
+
+        def room(at):
+            theirs = [lay.label_box(osid, q, at) for q in at]
+            return min(max(p[0] - q[2], q[0] - p[2], p[1] - q[3], q[1] - p[3]) for p in mine for q in theirs)
+        oxy = None
+        for extra in (0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0):
+            tries = []
+            for off in (35, -35):
+                v = layout.vec(best + off)
+                shift = (xy[m][0] + v[0] * (d + extra) - target[0], xy[m][1] + v[1] * (d + extra) - target[1])
+                at = {q: (x + shift[0], y + shift[1]) for q, (x, y) in lay.xy[osid].items()}
+                tries.append((room(at), at))
+            gap, at = max(tries, key=lambda t: t[0])
+            if gap >= 0.6:           # more than half a bond from the rest of the molecule
+                oxy = at
+                break
+        if oxy is None or not (_allowed(lay, sid, xy, original) and _allowed(lay, osid, oxy, original)):
+            continue
+        moved[sid], moved[osid] = xy, oxy
+        notes.append('%s: H %d turned toward %s for arrow %s' % (sid, m, others[0], aid))
+    return (moved, notes) if moved else None
+
+
 def draw_limit(result, figure):
-    """How many candidates retry_layout draws: MAX_DRAWS, twice that when a curved arrow touched a bond."""
-    return MAX_DRAWS * (2 if _arrow_chords(result, figure) else 1)
+    """How many candidates retry_layout draws: MAX_DRAWS, twice that when a curved arrow touched a bond, and MAX_DRAWS
+    more when such an arrow ends at an H."""
+    return MAX_DRAWS * ((2 if _arrow_chords(result, figure) else 1) + (1 if _arrow_hs(result, figure) else 0))
 
 
 def _best_move(lay, pid, gap, roots, original):
@@ -621,8 +693,18 @@ def candidates(spec, result, figure):
     # with a curved arrow that touched a bond, the moves are first searched with the bonds along its way counted,
     # then again without them (the ordinary search)
     chords, start_xy, start_notes, lay_notes = lay.arrow_chords, copy.deepcopy(lay.xy), list(notes), list(lay.notes)
-    for lay.arrow_chords in ([chords, {}] if chords else [{}]):
-        lay.xy, notes, lay.notes = copy.deepcopy(start_xy), list(start_notes), list(lay_notes)
+    starts = [(start_xy, start_notes, c) for c in ([chords, {}] if chords else [{}])]
+    # an H at an arrow's end turned toward the arrow's other end, as the first start of the search
+    turned = _h_turns(lay, result, figure, original) if chords else None
+    if turned:
+        starts.insert(0, (dict(start_xy, **turned[0]), start_notes + turned[1], chords))
+        # first drawn as it is, then searched further from it
+        lay.xy = copy.deepcopy(starts[0][0])
+        lay.notes = list(dict.fromkeys(lay_notes + ['automatic layout: ' + n for n in starts[0][1]]))
+        emitted.add(tuple((s, m, round(x, 4), round(y, 4)) for s, xy in lay.xy.items() for m, (x, y) in xy.items()))
+        yield specutil._assemble(spec, lay.arrange())
+    for start, first_notes, lay.arrow_chords in starts:
+        lay.xy, notes, lay.notes = copy.deepcopy(start), list(first_notes), list(lay_notes)
         for attempt in range(MAX_DRAWS):
             changed = False
             gap = .14 + .06 * attempt
