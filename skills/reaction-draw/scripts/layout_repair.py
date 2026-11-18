@@ -10,6 +10,8 @@ import itertools
 import math
 import re
 
+import numpy as np
+
 import check_rules as rules
 import layout
 import specutil
@@ -131,18 +133,37 @@ def _blockers(lay, pid):
     return count
 
 
-def _seg_gap(a, b, p, q):
-    """The distance between segments a-b and p-q (0 when they cross)."""
+def _box_gaps(a, b):
+    """check_rules.box_gap of each row of a with the same row of b."""
+    dx = np.maximum(a[..., 0] - b[..., 2], b[..., 0] - a[..., 2])
+    dy = np.maximum(a[..., 1] - b[..., 3], b[..., 1] - a[..., 3])
+    return np.where((dx >= 0) | (dy >= 0), np.hypot(np.maximum(dx, 0.0), np.maximum(dy, 0.0)), np.maximum(dx, dy))
+
+
+def _pt_box_gaps(x, y, boxes):
+    """check_rules.pt_box_gap of every point (x, y) (rows, points) against every box (rows, boxes, 4): (rows, boxes,
+    points)."""
+    b0, b1, b2, b3 = (boxes[..., k, None] for k in range(4))
+    x, y = x[..., None, :], y[..., None, :]
+    dx = np.maximum(np.maximum(b0 - x, 0.0), x - b2)
+    dy = np.maximum(np.maximum(b1 - y, 0.0), y - b3)
+    depth = -np.minimum(np.minimum(x - b0, b2 - x), np.minimum(y - b1, b3 - y))
+    return np.where((dx == 0) & (dy == 0), depth, np.hypot(dx, dy))
+
+
+def _seg_gaps(a, b, p, q):
+    """_seg_gap of segment a-b against each segment p[k]-q[k]."""
     def side(u, v, w):
-        return (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
-    if side(a, b, p) * side(a, b, q) < 0 and side(p, q, a) * side(p, q, b) < 0:
-        return 0.0
+        return (v[..., 0] - u[..., 0]) * (w[..., 1] - u[..., 1]) - (v[..., 1] - u[..., 1]) * (w[..., 0] - u[..., 0])
+    cross = (side(a, b, p) * side(a, b, q) < 0) & (side(p, q, a) * side(p, q, b) < 0)
     def to_seg(w, u, v):
-        dx, dy = v[0] - u[0], v[1] - u[1]
+        dx, dy = v[..., 0] - u[..., 0], v[..., 1] - u[..., 1]
         l2 = dx * dx + dy * dy
-        t = 0.0 if l2 == 0 else max(0.0, min(1.0, ((w[0] - u[0]) * dx + (w[1] - u[1]) * dy) / l2))
-        return layout.dist(w, (u[0] + t * dx, u[1] + t * dy))
-    return min(to_seg(a, p, q), to_seg(b, p, q), to_seg(p, a, b), to_seg(q, a, b))
+        t = np.where(l2 == 0, 0.0, np.clip(((w[..., 0] - u[..., 0]) * dx + (w[..., 1] - u[..., 1]) * dy)
+                                           / np.where(l2 == 0, 1.0, l2), 0.0, 1.0))
+        return np.hypot(w[..., 0] - (u[..., 0] + t * dx), w[..., 1] - (u[..., 1] + t * dy))
+    d = np.minimum(np.minimum(to_seg(a, p, q), to_seg(b, p, q)), np.minimum(to_seg(p, a, b), to_seg(q, a, b)))
+    return np.where(cross, 0.0, d)
 
 
 def _arrow_chords(result, figure):
@@ -164,15 +185,20 @@ def _hbond_crossed(result):
             for m in re.finditer(r'^hbond ([\w-]+)\.', x)}
 
 
-def _panel_cost(lay, pid, gap=0.14):
-    """Conservative letters versus letters and non-own bonds, including separate species."""
-    labels, points, bonds = [], [], []
-    geometry = 0.0
-    for key in lay.panels[lay.pidx[pid]]['species']:
-        sid = pid + '.' + key
-        mol, raw = lay.mol[sid], lay.xy[sid]
-        geometry += _geometry(lay, sid, raw)
+def _species_part(lay, sid):
+    """A species' own share of the cost (geometry, atoms, label boxes, bonds), kept while its coordinates stay the same:
+    a move changes one species of the panel."""
+    raw = lay.xy[sid]
+    cache = lay.__dict__.setdefault('_cost_parts', {})
+    try:
+        key = (sid, tuple(raw.items()))
+        part = cache.get(key)
+    except TypeError:
+        key, part = None, None
+    if part is None:
+        mol = lay.mol[sid]
         xy = lay.expanded(sid, raw)
+        points, labels, bonds = [], [], []
         for i, atom in enumerate(mol.atoms):
             ref = sid + ':' + str(atom['map'])
             points.append((ref, xy[atom['map']]))
@@ -181,49 +207,107 @@ def _panel_cost(lay, pid, gap=0.14):
         for e in mol.order:
             a, b = (mol.map[i] for i in e)
             bonds.append((sid+':'+str(a), sid+':'+str(b), xy[a], xy[b]))
-    collision = 0.0
-    for k, (ref, box) in enumerate(labels):
-        for _, other in labels[k+1:]:
-            g = rules.box_gap(box, other)
-            collision += 4 * max(0.0, gap - g) ** 2
-        for a, b, p, q in bonds:
-            if ref in (a, b):
-                continue
-            # Sample the center and edges, not just bond endpoints: a label may cover its middle.
-            for t in (0, .2, .4, .5, .6, .8, 1):
-                pt = (p[0] + t*(q[0]-p[0]), p[1] + t*(q[1]-p[1]))
-                collision += max(0.0, gap + .05 - rules.pt_box_gap(pt, box)) ** 2
-    for k, (ref, p) in enumerate(points):
-        for _, q in points[k+1:]:
-            collision += max(0.0, .35 - layout.dist(p, q)) ** 2
-    at = dict(points)
+        part = (_geometry(lay, sid, raw), points, labels, bonds)
+        if key is not None:
+            if len(cache) > 100000:
+                cache.clear()
+            cache[key] = part
+    return part
+
+
+def _panel_lists(lay, pid):
+    """The panel's geometry penalty and its atoms, label boxes and bonds."""
+    labels, points, bonds = [], [], []
+    geometry = 0.0
+    for key in lay.panels[lay.pidx[pid]]['species']:
+        g, p, l, b = _species_part(lay, pid + '.' + key)
+        geometry += g
+        points += p
+        labels += l
+        bonds += b
+    return geometry, points, labels, bonds
+
+
+def _collisions(lay, pid, gap, points, labels, bonds, pts, boxes):
+    """The collision sum of the panel for each row of pts (rows, atoms, 2) and boxes (rows, labels, 4): the same atoms,
+    labels and bonds at other places.  In arrays, since the search prices every move it tries."""
+    rows = len(pts)
+    def total(x):
+        return x.reshape(rows, -1).sum(axis=1)
+    idx = {ref: k for k, (ref, _) in enumerate(points)}
+    own = np.array([idx[ref] for ref, _ in labels], dtype=int)
+    ends = np.array([(idx[a], idx[b]) for a, b, _, _ in bonds], dtype=int).reshape(-1, 2)
+    P, Q = pts[:, ends[:, 0]], pts[:, ends[:, 1]]
+    collision = np.zeros(rows)
+    if len(labels):
+        i, j = np.triu_indices(len(labels), 1)
+        collision += total(4 * np.maximum(0.0, gap - _box_gaps(boxes[:, i], boxes[:, j])) ** 2)
+        # Sample the center and edges, not just bond endpoints: a label may cover its middle.  Only a label and a bond
+        # whose boxes come within the margin can add anything.
+        mine = (ends[None, :, 0] == own[:, None]) | (ends[None, :, 1] == own[:, None])
+        span = np.concatenate((np.minimum(P, Q), np.maximum(P, Q)), axis=2)
+        k, l, e = np.nonzero((_box_gaps(boxes[:, :, None], span[:, None]) < gap + .05) & ~mine)
+        if len(k):
+            t = np.array([0, .2, .4, .5, .6, .8, 1])
+            p, q = P[k, e], Q[k, e]
+            g = _pt_box_gaps(p[:, None, 0] + t * (q[:, None, 0] - p[:, None, 0]),
+                             p[:, None, 1] + t * (q[:, None, 1] - p[:, None, 1]), boxes[k, l][:, None])
+            collision += np.bincount(k, (np.maximum(0.0, gap + .05 - g) ** 2).reshape(len(k), -1).sum(axis=1), rows)
+    i, j = np.triu_indices(pts.shape[1], 1)
+    d = pts[:, i] - pts[:, j]
+    collision += total(np.maximum(0.0, .35 - np.hypot(d[..., 0], d[..., 1])) ** 2)
     # a hydrogen bond whose line crossed a bond: every line of the panel's hydrogen bonds against the other bonds and
     # the labels
     if pid in getattr(lay, 'hbond_panels', ()):
-        for ha, hb in lay.panels[lay.pidx[pid]]['hbonds']:
-            ra, rb = '%s:%s' % (ha['sid'], ha['atom']), '%s:%s' % (hb['sid'], hb['atom'])
-            if ra not in at or rb not in at:
-                continue
-            for r1, r2, p, q in bonds:
-                if r1 not in (ra, rb) and r2 not in (ra, rb):
-                    collision += 4 * max(0.0, .2 - _seg_gap(at[ra], at[rb], p, q)) ** 2
-            for ref, box in labels:
-                if ref in (ra, rb):
-                    continue
-                for t in (.15, .3, .5, .7, .85):
-                    pt = (at[ra][0] + t * (at[rb][0] - at[ra][0]), at[ra][1] + t * (at[rb][1] - at[ra][1]))
-                    collision += 4 * max(0.0, .12 - rules.pt_box_gap(pt, box)) ** 2
+        lines = [(idx[ra], idx[rb]) for ra, rb in (('%s:%s' % (ha['sid'], ha['atom']), '%s:%s' % (hb['sid'], hb['atom']))
+                                                 for ha, hb in lay.panels[lay.pidx[pid]]['hbonds'])
+                 if ra in idx and rb in idx]
+        if lines:
+            lines = np.array(lines, dtype=int)
+            a, b = pts[:, lines[:, 0]], pts[:, lines[:, 1]]
+            mine = (ends[None, :, :, None] == lines[:, None, None, :]).any(axis=(2, 3))
+            g = _seg_gaps(a[:, :, None], b[:, :, None], P[:, None], Q[:, None])
+            collision += total(np.where(mine, 0.0, 4 * np.maximum(0.0, .2 - g) ** 2))
+            if len(labels):
+                t = np.array([.15, .3, .5, .7, .85])
+                g = _pt_box_gaps((a[:, :, None, 0] + t * (b[:, :, None, 0] - a[:, :, None, 0])).reshape(rows, -1),
+                                 (a[:, :, None, 1] + t * (b[:, :, None, 1] - a[:, :, None, 1])).reshape(rows, -1), boxes)
+                mine = (own[:, None, None] == lines[None, :, :]).any(axis=2)
+                collision += total(np.where(np.repeat(mine, len(t), axis=1), 0.0, 4 * np.maximum(0.0, .12 - g) ** 2))
     # a curved arrow that touched a bond: the bonds near the line between its ends, which its route has to pass
     for ends_from, ends_to in getattr(lay, 'arrow_chords', {}).get(pid, ()):
-        if not all(r in at for r in ends_from + ends_to):
+        if not all(r in idx for r in ends_from + ends_to):
             continue
-        a = tuple(sum(at[r][k] for r in ends_from) / len(ends_from) for k in (0, 1))
-        b = tuple(sum(at[r][k] for r in ends_to) / len(ends_to) for k in (0, 1))
-        for r1, r2, p, q in bonds:
-            if r1 in ends_from + ends_to or r2 in ends_from + ends_to:
-                continue
-            collision += 4 * max(0.0, .3 - _seg_gap(a, b, p, q)) ** 2
+        a = pts[:, [idx[r] for r in ends_from]].mean(axis=1)
+        b = pts[:, [idx[r] for r in ends_to]].mean(axis=1)
+        mine = set(idx[r] for r in ends_from + ends_to)
+        other = np.array([e0 not in mine and e1 not in mine for e0, e1 in ends.tolist()], dtype=bool)
+        collision += total(4 * np.maximum(0.0, .3 - _seg_gaps(a[:, None], b[:, None], P[:, other], Q[:, other])) ** 2)
+    return collision
+
+
+def _panel_cost(lay, pid, gap=0.14):
+    """Conservative letters versus letters and non-own bonds, including separate species."""
+    geometry, points, labels, bonds = _panel_lists(lay, pid)
+    pts = np.array([p for _, p in points], dtype=float).reshape(1, -1, 2)
+    boxes = np.array([box for _, box in labels], dtype=float).reshape(1, -1, 4)
+    collision = float(_collisions(lay, pid, gap, points, labels, bonds, pts, boxes)[0])
     return 1000 * geometry + 100 * collision + 500 * _blockers(lay, pid) + _number_room(lay, pid, points, labels, bonds)
+
+
+def _shifted_costs(lay, pid, gap, sid, places):
+    """_panel_cost with species sid at each of places, the pair terms of all of them in one array pass."""
+    keep, rows = lay.xy[sid], []
+    for xy in places:
+        lay.xy[sid] = xy
+        geometry, points, labels, bonds = _panel_lists(lay, pid)
+        rows.append((geometry, [q for _, q in points], [box for _, box in labels], _blockers(lay, pid),
+                     _number_room(lay, pid, points, labels, bonds)))
+    lay.xy[sid] = keep
+    pts = np.array([r[1] for r in rows], dtype=float).reshape(len(rows), -1, 2)
+    boxes = np.array([r[2] for r in rows], dtype=float).reshape(len(rows), -1, 4)
+    collision = _collisions(lay, pid, gap, points, labels, bonds, pts, boxes)
+    return [1000 * g + 100 * float(c) + 500 * blockers + room for (g, _, _, blockers, room), c in zip(rows, collision)]
 
 
 def _allowed(lay, sid, xy, original):
@@ -441,6 +525,47 @@ def draw_limit(result, figure):
     return MAX_DRAWS * (2 if _arrow_chords(result, figure) else 1)
 
 
+def _best_move(lay, pid, gap, roots, original):
+    """The move of one species of the panel that lowers its cost most: (change, species, places, reason, followers),
+    or None."""
+    before = _panel_cost(lay, pid, gap)
+    if before < 1e-7:
+        return None
+    best = None
+    for sid in (s for s in roots if lay.sp[s]['panel'] == pid and roots[s]):
+        xy = lay.xy[sid]
+        for candidate, reason in _alternatives(lay, sid, roots[sid]):
+            if not _allowed(lay, sid, candidate, original):
+                continue
+            follow = _followers(lay, pid, sid, xy, candidate)
+            kept = {f: lay.xy[f] for f in follow}
+            lay.xy[sid] = candidate
+            lay.xy.update(follow)
+            after = _panel_cost(lay, pid, gap)
+            lay.xy.update(kept)
+            if after < before-1e-6 and (best is None or after-before < best[0]):
+                best = (after-before, sid, candidate, reason, follow)
+        lay.xy[sid] = xy
+    # A copied partner can occupy a changed substrate's space. Translate it
+    # rigidly; arrange() then widens the panel and reanchors arrows and texts.
+    keys = lay.panels[lay.pidx[pid]]['species']
+    for key in keys[1:]:
+        sid = pid + '.' + key
+        xy = lay.xy[sid]
+        places = []
+        for dg in range(0,360,45):
+            u = layout.vec(dg)
+            for distance in (.1, .2, .3, .4, .8, 1.6):
+                candidate = {m:(x+u[0]*distance,y+u[1]*distance) for m,(x,y) in xy.items()}
+                if _allowed(lay,sid,candidate,original):
+                    places.append(candidate)
+        for candidate, after in zip(places, _shifted_costs(lay, pid, gap, sid, places) if places else ()):
+            if after < before-1e-6 and (best is None or after-before < best[0]):
+                best = (after-before,sid,candidate,sid+': moved partner to clear the panel',{})
+        lay.xy[sid] = xy
+    return best
+
+
 def candidates(spec, result, figure):
     """Yield at most draw_limit real-drawing candidates; no changes to the caller's spec."""
     if not relevant(result):
@@ -484,46 +609,20 @@ def candidates(spec, result, figure):
         for attempt in range(MAX_DRAWS):
             changed = False
             gap = .14 + .06 * attempt
+            # panels do not share species, so a panel's best move stays the same until a move in that panel; the
+            # moves are applied one at a time, best first over all panels
+            found = {}
             for _ in range(MAX_MOVES):
                 best = None
                 for pid in lay.pidx:
-                    before = _panel_cost(lay, pid, gap)
-                    if before < 1e-7:
-                        continue
-                    for sid in (s for s in roots if lay.sp[s]['panel'] == pid and roots[s]):
-                        xy = lay.xy[sid]
-                        for candidate, reason in _alternatives(lay, sid, roots[sid]):
-                            if not _allowed(lay, sid, candidate, original):
-                                continue
-                            follow = _followers(lay, pid, sid, xy, candidate)
-                            kept = {f: lay.xy[f] for f in follow}
-                            lay.xy[sid] = candidate
-                            lay.xy.update(follow)
-                            after = _panel_cost(lay, pid, gap)
-                            lay.xy.update(kept)
-                            if after < before-1e-6 and (best is None or after-before < best[0]):
-                                best = (after-before, sid, candidate, reason, follow)
-                        lay.xy[sid] = xy
-                    # A copied partner can occupy a changed substrate's space. Translate it
-                    # rigidly; arrange() then widens the panel and reanchors arrows and texts.
-                    keys = lay.panels[lay.pidx[pid]]['species']
-                    for key in keys[1:]:
-                        sid = pid + '.' + key
-                        xy = lay.xy[sid]
-                        for dg in range(0,360,45):
-                            u = layout.vec(dg)
-                            for distance in (.1, .2, .3, .4, .8, 1.6):
-                                candidate = {m:(x+u[0]*distance,y+u[1]*distance) for m,(x,y) in xy.items()}
-                                if not _allowed(lay,sid,candidate,original):
-                                    continue
-                                lay.xy[sid] = candidate
-                                after = _panel_cost(lay,pid,gap)
-                                if after < before-1e-6 and (best is None or after-before < best[0]):
-                                    best = (after-before,sid,candidate,sid+': moved partner to clear the panel',{})
-                        lay.xy[sid] = xy
+                    if pid not in found:
+                        found[pid] = _best_move(lay, pid, gap, roots, original)
+                    if found[pid] is not None and (best is None or found[pid][0] < best[0]):
+                        best = found[pid]
                 if best is None:
                     break
                 _, sid, candidate, reason, follow = best
+                found.pop(lay.sp[sid]['panel'], None)
                 lay.xy[sid] = candidate
                 lay.xy.update(follow)
                 if follow:
