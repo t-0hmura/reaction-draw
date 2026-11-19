@@ -9737,7 +9737,7 @@ function placeFoldedHydrogens(mol, ctx, job) {
     const bondDirs = mol.bonds.filter((b) => b.atoms.includes(i) && b.type !== HBOND2 && !b.atoms.some((j) => mol.atoms[j].hidden)).map((b) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
     const cost = () => {
       const side = SIDE_DEG[hydrogenSide(mol, ctx, i) ?? ""];
-      return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 2e5 : 0) + (dotSeat !== null && side === dotSeat ? 2e5 : 0) + foreignShort(mol, ctx, job, i) * 20 + (side !== void 0 && bondDirs.some((b) => angDiff(side, b) < 45) ? 15e4 : 0);
+      return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 2e5 : 0) + (dotSeat !== null && side === dotSeat ? 2e5 : 0) + foreignShort(mol, ctx, job, i) * 20 + (side !== void 0 && bondDirs.some((b) => angDiff(side, b) < 45) ? 1e6 : 0);
     };
     let best = stacked ? Infinity : cost(), chosen = mol.atoms[i].align;
     if (best < 1) continue;

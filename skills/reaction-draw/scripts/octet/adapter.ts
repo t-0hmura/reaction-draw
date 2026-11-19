@@ -818,7 +818,8 @@ function placeFoldedHydrogens(mol: any, ctx: Ctx, job: any) {
       const side = SIDE_DEG[hydrogenSide(mol, ctx, i) ?? ''];
       return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 200000 : 0) + (dotSeat !== null && side === dotSeat ? 200000 : 0)
         + foreignShort(mol, ctx, job, i) * 20
-        + (side !== undefined && bondDirs.some((b: number) => angDiff(side, b) < 45) ? 150000 : 0);
+        // H written on a drawn bond fails the checks and no later step moves it: it outweighs any contact of letters
+        + (side !== undefined && bondDirs.some((b: number) => angDiff(side, b) < 45) ? 1e6 : 0);
     };
     let best = stacked ? Infinity : cost(), chosen = mol.atoms[i].align;
     if (best < 1) continue;
