@@ -9446,6 +9446,18 @@ function placeCharges(mol, ctx, job) {
   const nbrDirs = (i) => mol.bonds.filter((b) => b.atoms.includes(i) && !b.atoms.some((j) => mol.atoms[j].hidden)).map((b) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
   const chosen = /* @__PURE__ */ new Map();
   const reacting = new Set((job.curved ?? []).filter((r) => r.electrons !== 1 && r.src.kind === "atom").map((r) => r.src.atoms[0]));
+  const speciesOf = (j) => String(job.refs?.[j] ?? "").replace(/:[^:]*$/, "");
+  const partnersOf = (i) => new Set(mol.bonds.filter((b) => b.type === HBOND2 && b.atoms.includes(i)).map((b) => b.atoms[0] === i ? b.atoms[1] : b.atoms[0]));
+  const reached = new Set((job.curved ?? []).flatMap((r) => [...r.src.atoms, ...r.snk.atoms]).map(speciesOf));
+  const foreignRoom = (i, c, Rout) => {
+    const mine = speciesOf(i), partners = partnersOf(i);
+    let room = Infinity;
+    if (!mine) return room;
+    pcs.forEach((list, j) => {
+      if (j !== i && !partners.has(j) && speciesOf(j) && speciesOf(j) !== mine && !reached.has(speciesOf(j))) for (const p of list) room = Math.min(room, boxDist(c, p.box) - Rout);
+    });
+    return room;
+  };
   const cost = (i, k) => {
     const c = centers.get(i)[k];
     if (!c) return { total: 1e9, clear: -1e3, ownership: 1e6 };
@@ -9476,8 +9488,9 @@ function placeCharges(mol, ctx, job) {
       if (other < own + 0.05 * ctx.pt || symbol2 && (pg(symbol2) - Rout > 2.95 * ctx.pt || tail && pg(tail) < pg(symbol2) + 0.05 * ctx.pt || stacked.some((p) => pg(p.ink) < pg(symbol2) + 0.05 * ctx.pt))) ownership = 1e6;
       if (pcs[i].some((p) => !p.sign && pg(p.box) - Rout < -0.45 * ctx.pt)) ownership = 1e6;
     }
-    const total = ownership + (sep < 26 ? 1e6 : 0) + (clear < 2 ? 1e3 + (2 - clear) * 200 : 0) + (clear < 10 ? (10 - clear) ** 2 * 0.8 : 0) + Math.max(0, 50 - sep) * 2 + corr + near + 0.03 * angDiff(th, 45);
-    return { total, clear, th, ownership, sep, corr };
+    const foreign = foreignRoom(i, c, Rout), crowded = Math.max(0, 0.5 * L - foreign);
+    const total = ownership + (sep < 26 ? 1e6 : 0) + (clear < 2 ? 1e3 + (2 - clear) * 200 : 0) + (clear < 10 ? (10 - clear) ** 2 * 0.8 : 0) + Math.max(0, 50 - sep) * 2 + corr + near + 0.03 * angDiff(th, 45) + crowded * 20;
+    return { total, clear, th, ownership, sep, corr, crowded };
   };
   const groups = [];
   const inGroup = /* @__PURE__ */ new Set();
@@ -9505,7 +9518,7 @@ function placeCharges(mol, ctx, job) {
     const diagonals = [45, 135, 315, 225, 0, 180, 90, 270].map((a) => angles.indexOf(a));
     const open = (i, k) => {
       const c = cost(i, k);
-      return c.clear >= minClear && !c.ownership && (c.sep ?? 0) >= 35 && !c.corr;
+      return c.clear >= minClear && !c.ownership && (c.sep ?? 0) >= 35 && !c.corr && !c.crowded;
     };
     const shared = diagonals.find((k) => g.every((i) => open(i, k)));
     const cheapest = (i) => {
@@ -9700,6 +9713,20 @@ function alignFree(mol, ctx, i) {
   const runs = d.labels.filter((_, k) => d.labelAt[k] && d.labelAt[k][0] === p[0] && d.labelAt[k][1] === p[1]);
   return !runs.length || runs.length === 1 && a.label.length === 1 && runs[0].text === a.label;
 }
+function foreignShort(mol, ctx, job, i) {
+  const speciesOf = (j) => String(job.refs?.[j] ?? "").replace(/:[^:]*$/, "");
+  const mine = speciesOf(i);
+  if (!mine) return 0;
+  const reached = new Set((job.curved ?? []).flatMap((r) => [...r.src.atoms, ...r.snk.atoms]).map(speciesOf));
+  const partners = new Set(mol.bonds.filter((b) => b.type === HBOND2 && b.atoms.includes(i)).map((b) => b.atoms[0] === i ? b.atoms[1] : b.atoms[0]));
+  const { pcs } = drawn2(mol, ctx);
+  let room = Infinity;
+  for (const part of pcs[i]) if (!part.sign) pcs.forEach((list, j) => {
+    const s = speciesOf(j);
+    if (j !== i && !partners.has(j) && s && s !== mine && !reached.has(s)) for (const q of list) room = Math.min(room, boxGap(part.box, q.box));
+  });
+  return Math.max(0, 0.5 * L - room);
+}
 function placeFoldedHydrogens(mol, ctx, job) {
   for (let i = 0; i < mol.atoms.length; i++) {
     const dotSeat = radicalSeat(mol, job, i);
@@ -9710,7 +9737,7 @@ function placeFoldedHydrogens(mol, ctx, job) {
     const bondDirs = mol.bonds.filter((b) => b.atoms.includes(i) && b.type !== HBOND2 && !b.atoms.some((j) => mol.atoms[j].hidden)).map((b) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
     const cost = () => {
       const side = SIDE_DEG[hydrogenSide(mol, ctx, i) ?? ""];
-      return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 2e5 : 0) + (dotSeat !== null && side === dotSeat ? 2e5 : 0) + (side !== void 0 && bondDirs.some((b) => angDiff(side, b) < 45) ? 15e4 : 0);
+      return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 2e5 : 0) + (dotSeat !== null && side === dotSeat ? 2e5 : 0) + foreignShort(mol, ctx, job, i) * 20 + (side !== void 0 && bondDirs.some((b) => angDiff(side, b) < 45) ? 15e4 : 0);
     };
     let best = stacked ? Infinity : cost(), chosen = mol.atoms[i].align;
     if (best < 1) continue;
@@ -9779,6 +9806,17 @@ function placeRadicals(mol, ctx, job) {
           }
         });
         angles.push(open, (open + 120) % 360);
+      } else if (own) {
+        const all = drawn2(mol, ctx).pcs, mine = String(job.refs?.[i] ?? "").replace(/:[^:]*$/, "");
+        const theirs = all.flatMap((list, j) => j !== i && mine && String(job.refs?.[j] ?? "").replace(/:[^:]*$/, "") !== mine ? list.map((q) => q.box) : []);
+        const c = center(own.box), reach = Math.max(own.box[2] - own.box[0], own.box[3] - own.box[1]) / 2 + 0.1 * L;
+        const room = (deg2) => {
+          const t = deg2 * Math.PI / 180, q = [c[0] + reach * Math.cos(t), c[1] - reach * Math.sin(t)];
+          return Math.min(Infinity, ...theirs.map((b) => boxDist(q, b)));
+        };
+        const sides2 = [30, 150, 330, 210, 90, 270];
+        const clear = sides2.find((deg2) => room(deg2) >= 0.5 * L);
+        if (theirs.length) angles.push(clear ?? sides2.reduce((x, y) => room(y) > room(x) ? y : x));
       }
     }
     a.angles = {

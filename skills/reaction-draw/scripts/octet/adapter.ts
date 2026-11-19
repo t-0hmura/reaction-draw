@@ -489,6 +489,19 @@ function placeCharges(mol: any, ctx: Ctx, job: any) {
   const nbrDirs = (i: number) => mol.bonds.filter((b: any) => b.atoms.includes(i) && !b.atoms.some((j: number) => mol.atoms[j].hidden)).map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
   const chosen = new Map<number, Pt>();
   const reacting = new Set<number>((job.curved ?? []).filter((r: CurvedReq) => r.electrons !== 1 && r.src.kind === 'atom').map((r: CurvedReq) => r.src.atoms[0]));
+  // the letters of other molecules that no curved arrow reaches (residues held by hydrogen bonds, whose seats the later
+  // retries keep), apart from the atom's hydrogen-bond partners (check_rules.py species_gap: half a bond of white
+  // between two molecules)
+  const speciesOf = (j: number) => String(job.refs?.[j] ?? '').replace(/:[^:]*$/, '');
+  const partnersOf = (i: number) => new Set<number>(mol.bonds.filter((b: any) => b.type === HBOND && b.atoms.includes(i)).map((b: any) => b.atoms[0] === i ? b.atoms[1] : b.atoms[0]));
+  const reached = new Set<string>(((job.curved ?? []) as CurvedReq[]).flatMap((r) => [...r.src.atoms, ...r.snk.atoms]).map(speciesOf));
+  const foreignRoom = (i: number, c: Pt, Rout: number) => {
+    const mine = speciesOf(i), partners = partnersOf(i);
+    let room = Infinity;
+    if (!mine) return room;
+    pcs.forEach((list, j) => { if (j !== i && !partners.has(j) && speciesOf(j) && speciesOf(j) !== mine && !reached.has(speciesOf(j))) for (const p of list) room = Math.min(room, boxDist(c, p.box) - Rout); });
+    return room;
+  };
   const cost = (i: number, k: number) => {
     const c = centers.get(i)![k];
     if (!c) return {total: 1e9, clear: -1e3, ownership: 1e6};
@@ -526,8 +539,10 @@ function placeCharges(mol: any, ctx: Ctx, job: any) {
       // the ring may reach into the empty corner of its own label box only as far as check_rules.py allows (0.5 pt)
       if (pcs[i].some((p) => !p.sign && pg(p.box) - Rout < -0.45 * ctx.pt)) ownership = 1e6;
     }
-    const total = ownership + (sep < 26 ? 1e6 : 0) + (clear < 2 ? 1000 + (2 - clear) * 200 : 0) + (clear < 10 ? (10 - clear) ** 2 * 0.8 : 0) + Math.max(0, 50 - sep) * 2 + corr + near + 0.03 * angDiff(th, 45);
-    return {total, clear, th, ownership, sep, corr};
+    const foreign = foreignRoom(i, c, Rout), crowded = Math.max(0, 0.5 * L - foreign);
+    const total = ownership + (sep < 26 ? 1e6 : 0) + (clear < 2 ? 1000 + (2 - clear) * 200 : 0) + (clear < 10 ? (10 - clear) ** 2 * 0.8 : 0) + Math.max(0, 50 - sep) * 2 + corr + near + 0.03 * angDiff(th, 45)
+      + crowded * 20;
+    return {total, clear, th, ownership, sep, corr, crowded};
   };
   // the same atom in several panels (job.sameAtom) is placed together
   const groups: number[][] = [];
@@ -542,7 +557,7 @@ function placeCharges(mol: any, ctx: Ctx, job: any) {
     // the first open seat, diagonals first: upper right, upper left, lower right, lower left, then right, left, above,
     // below; other directions only when none is open
     const diagonals = [45, 135, 315, 225, 0, 180, 90, 270].map((a) => angles.indexOf(a));
-    const open = (i: number, k: number) => { const c = cost(i, k); return c.clear >= minClear && !c.ownership && (c.sep ?? 0) >= 35 && !c.corr; };
+    const open = (i: number, k: number) => { const c = cost(i, k); return c.clear >= minClear && !c.ownership && (c.sep ?? 0) >= 35 && !c.corr && !c.crowded; };
     const shared = diagonals.find((k) => g.every((i) => open(i, k)));
     const cheapest = (i: number) => { let kk = 0, bv = Infinity; angles.forEach((_, k) => { const c = cost(i, k).total; if (c < bv) { bv = c; kk = k; } }); return kk; };
     for (const i of g) {
@@ -769,6 +784,23 @@ function alignFree(mol: any, ctx: Ctx, i: number): boolean {
   const runs = d.labels.filter((_: any, k: number) => d.labelAt[k] && d.labelAt[k][0] === p[0] && d.labelAt[k][1] === p[1]);
   return !runs.length || (runs.length === 1 && a.label.length === 1 && runs[0].text === a.label);
 }
+// How far the white between atom i's letters and the letters of other molecules falls short of half a bond
+// (check_rules.py species_gap), counting only molecules no curved arrow reaches (the later retries keep their seats) and
+// leaving out the atom's hydrogen-bond partners.
+function foreignShort(mol: any, ctx: Ctx, job: any, i: number): number {
+  const speciesOf = (j: number) => String(job.refs?.[j] ?? '').replace(/:[^:]*$/, '');
+  const mine = speciesOf(i);
+  if (!mine) return 0;
+  const reached = new Set<string>(((job.curved ?? []) as CurvedReq[]).flatMap((r) => [...r.src.atoms, ...r.snk.atoms]).map(speciesOf));
+  const partners = new Set<number>(mol.bonds.filter((b: any) => b.type === HBOND && b.atoms.includes(i)).map((b: any) => b.atoms[0] === i ? b.atoms[1] : b.atoms[0]));
+  const {pcs} = drawn(mol, ctx);
+  let room = Infinity;
+  for (const part of pcs[i]) if (!part.sign) pcs.forEach((list: any[], j: number) => {
+    const s = speciesOf(j);
+    if (j !== i && !partners.has(j) && s && s !== mine && !reached.has(s)) for (const q of list) room = Math.min(room, boxGap(part.box, q.box));
+  });
+  return Math.max(0, 0.5 * L - room);
+}
 function placeFoldedHydrogens(mol: any, ctx: Ctx, job: any) {
   for (let i = 0; i < mol.atoms.length; i++) {
     const dotSeat = radicalSeat(mol, job, i);
@@ -783,6 +815,7 @@ function placeFoldedHydrogens(mol: any, ctx: Ctx, job: any) {
     const cost = () => {
       const side = SIDE_DEG[hydrogenSide(mol, ctx, i) ?? ''];
       return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 200000 : 0) + (dotSeat !== null && side === dotSeat ? 200000 : 0)
+        + foreignShort(mol, ctx, job, i) * 20
         + (side !== undefined && bondDirs.some((b: number) => angDiff(side, b) < 45) ? 150000 : 0);
     };
     let best = stacked ? Infinity : cost(), chosen = mol.atoms[i].align;
@@ -843,6 +876,17 @@ function placeRadicals(mol: any, ctx: Ctx, job: any) {
         let open = 0, wide = -1;
         taken.forEach((t, k) => { const g = ((k + 1 < taken.length ? taken[k + 1] : taken[0] + 360) - t); if (g > wide + 1e-6) { wide = g; open = (t + g / 2) % 360; } });
         angles.push(open, (open + 120) % 360);
+      } else if (own) {
+        // a lone atom (Br*): the dot on a side half a bond clear of other molecules' letters (check_rules.py species_gap),
+        // upper right first
+        const all = drawn(mol, ctx).pcs, mine = String(job.refs?.[i] ?? '').replace(/:[^:]*$/, '');
+        const theirs = all.flatMap((list: any[], j: number) => j !== i && mine && String(job.refs?.[j] ?? '').replace(/:[^:]*$/, '') !== mine ? list.map((q: any) => q.box) : []);
+        const c = center(own.box), reach = Math.max(own.box[2] - own.box[0], own.box[3] - own.box[1]) / 2 + 0.1 * L;
+        const room = (deg: number) => { const t = (deg * Math.PI) / 180, q: Pt = [c[0] + reach * Math.cos(t), c[1] - reach * Math.sin(t)];
+          return Math.min(Infinity, ...theirs.map((b: Box) => boxDist(q, b))); };
+        const sides = [30, 150, 330, 210, 90, 270];
+        const clear = sides.find((deg) => room(deg) >= 0.5 * L);
+        if (theirs.length) angles.push(clear ?? sides.reduce((x, y) => (room(y) > room(x) ? y : x)));
       }
     }
     a.angles = {...(a.angles ?? {}), radical0: fixed ?? angles[0] ?? 30,
