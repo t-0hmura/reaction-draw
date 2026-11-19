@@ -1299,7 +1299,9 @@ function placeNumbers(mol: any, ctx: Ctx, job: any, curvedPolys: number[][][], d
   const OWN_MIN = 6, OWN_WISH = 8, OWN_MARGIN = opts.ownMarginPx ?? 6.5, LETTER_MIN = 12.5, LETTER_CLEAR = 27;
   const rows: any[] = [], problems: string[] = [];
   const symOf = (i: number) => {
-    const ps = pcs[i].filter((p) => !p.sign).sort((x, y) => boxDist(px[i], x.box) - boxDist(px[i], y.box));
+    // the element's own letter first (the C of a CH2 centred on its atom, whose point lies under the H), then the nearest
+    const own = (p: any) => (p.text === mol.atoms[i].label ? 0 : 1);
+    const ps = pcs[i].filter((p) => !p.sign).sort((x, y) => own(x) - own(y) || boxDist(px[i], x.box) - boxDist(px[i], y.box));
     if (!ps.length) return null;
     const sym = ps[0].box, symInk = ps[0].ink, tails = ps.slice(1).map((p) => p.box);
     const dir = tails.length ? Math.sign(tails.reduce((s, t) => s + (t[0] + t[2]) / 2, 0) / tails.length - (sym[0] + sym[2]) / 2) : 0;
@@ -1364,7 +1366,9 @@ function placeNumbers(mol: any, ctx: Ctx, job: any, curvedPolys: number[][][], d
       // never between two labels: the letters of every other atom stay LETTER_MIN away (a rule), LETTER_CLEAR if there is room
       const between = (nearestLetter < LETTER_MIN ? 150 + (LETTER_MIN - nearestLetter) * 5 : 0) + (nearestLetter < LETTER_CLEAR ? ((LETTER_CLEAR - nearestLetter) / 4) ** 2 * 0.6 : 0);
       // on the side of the symbol: not past it toward the rest of the label (after the H3 of CH3)
-      const side = si && si.tails.length && ((si.dir > 0 && cx > si.sym[2]) || (si.dir < 0 && cx < si.sym[0])) ? 300 : 0;
+      // (judged at the middle of the glyphs' ink, as check_rules.py does, with 1 px to spare)
+      const ix = (box[0] + box[2]) / 2;
+      const side = si && si.tails.length && ((si.dir > 0 && ix > si.sym[2] - 1) || (si.dir < 0 && ix < si.sym[0] + 1)) ? 300 : 0;
       const ownTerm = si ? (own < OWN_MIN ? 100 + (OWN_MIN - own) * 50 : ((own - OWN_WISH) / 4) ** 2 * 0.6) : 0;
       const cost = ang + rad + clr + lineHit + assoc + between + side + ownTerm;
       const terms = {angle: r2(ang), radius: r2(rad), clearance: r2(clr), line_box: lineHit, ownership: r2(assoc), between_labels: r2(between), symbol_side: side, own_gap: r2(ownTerm)};
