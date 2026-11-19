@@ -675,14 +675,28 @@ def det_overlap_arrow_text(f):
     return out
 
 
+def _arrow_hbond(f, aid):
+    """The two atoms a curved arrow joins when it runs from one atom to another atom or to the gap between it and
+    another (a proton taken across a hydrogen bond): a hydrogen bond between those same two atoms meets the arrow at
+    both its ends, so their contact cannot be avoided.  None for other arrows."""
+    arrow = next((c for c in f.curved if c['id'] == aid), None)
+    if arrow is None or arrow['from'].get('kind') != 'atom' or arrow['to'].get('kind') not in ('atom', 'gap'):
+        return None
+    atoms = frozenset(arrow['from']['refs']) | frozenset(arrow['to']['refs'])
+    return atoms if len(atoms) == 2 else None
+
+
 def det_overlap_arrow_bond(f):
     sc = f.scene()
     out = []
     for aid, shapes in sc['arrows']:
         box = _union_bbox(shapes)
+        joined = _arrow_hbond(f, aid)
         for s in sc['bonds'] + sc['marks']:
             if _far(box, s.bbox, 1.0):
                 continue
+            if joined and s.owner and s.owner[0] == 'hbond' and frozenset(s.owner[1]) == joined:
+                continue                            # the hydrogen bond the arrow runs along, between its own two ends
             c = min(shape_clear(a, s, overlap_only=True) for a in shapes)
             if c <= 0.0:
                 out.append('arrow %s touches %s (%.2f pt)' % (aid, _ink_name(s), c))
