@@ -1422,6 +1422,18 @@ def _seat_key(lay, pid, sats):
     return hashlib.sha1(repr(parts).encode()).hexdigest()
 
 
+def panel_cost(lay, pid):
+    """_panel_cost of one panel as the layout stands, outside seat_satellites (which sets the same inputs)."""
+    keep = {k: lay.__dict__[k] for k in ('arrow_chords', 'hbond_panels', 'number_sizes') if k in lay.__dict__}
+    try:
+        lay.arrow_chords, lay.hbond_panels, lay.number_sizes = {pid: _chords(lay, pid)}, {pid}, keep.get('number_sizes', {})
+        return _panel_cost(lay, pid)
+    finally:
+        for k in ('arrow_chords', 'hbond_panels', 'number_sizes'):
+            lay.__dict__.pop(k, None)
+        lay.__dict__.update(keep)
+
+
 def seat_satellites(lay):
     """Layout.run, after the dotted-bond spacing: in a panel where the layout predicts that a hydrogen bond's dotted line
     crosses a bond or another line, or touches a label (hbond_trouble), each satellite (a residue held only by

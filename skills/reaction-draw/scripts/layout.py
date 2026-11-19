@@ -896,7 +896,7 @@ class Layout(object):
         return {ar['from']['atom'] for ar in self.panels[self.pidx[self.sp[sid]['panel']]]['arrows']
                 if ar['from']['sid'] == sid and ar['from']['atom2'] is None}
 
-    def ink(self, sid, xy, pads=False):
+    def ink(self, sid, xy, pads=False, skip=()):
         """What a species draws, for spacing: ([points along its bare bonds and at its bare vertices], [label boxes]).
         With pads, the box of an atom an arrow starts from grows by PAIR_PAD on every side: its dots go on a side chosen later."""
         mol = self.mol[sid]
@@ -904,29 +904,33 @@ class Layout(object):
         src = self.pair_sources(sid) if pads else set()
         grow = lambda b: (b[0] - PAIR_PAD, b[1] - PAIR_PAD, b[2] + PAIR_PAD, b[3] + PAIR_PAD)
         boxes = [grow(self.label_box(sid, mol.map[i], ex)) if mol.map[i] in src else self.label_box(sid, mol.map[i], ex)
-                 for i in range(mol.n) if mol.labeled(i)]
-        boxes += [grow(self.label_box(sid, mol.map[i], ex)) for i in range(mol.n) if not mol.labeled(i) and mol.map[i] in src]
-        pts = [ex[mol.map[i]] for i in range(mol.n) if not mol.labeled(i)]
+                 for i in range(mol.n) if mol.labeled(i) and mol.map[i] not in skip]
+        boxes += [grow(self.label_box(sid, mol.map[i], ex)) for i in range(mol.n)
+                  if not mol.labeled(i) and mol.map[i] in src and mol.map[i] not in skip]
+        pts = [ex[mol.map[i]] for i in range(mol.n) if not mol.labeled(i) and mol.map[i] not in skip]
         for e in mol.order:
             a, b = (mol.map[i] for i in e)
             pts += [(ex[a][0] + t * (ex[b][0] - ex[a][0]), ex[a][1] + t * (ex[b][1] - ex[a][1])) for t in (0.25, 0.5, 0.75)]
         return pts, boxes
 
-    def panel_ink(self, pid, skip=None, pads=False):
-        """The ink of everything placed in a panel except species skip, with the hydrogen-bond lines between them."""
+    def panel_ink(self, pid, skip=None, pads=False, ends=None):
+        """The ink of everything placed in a panel except species skip, with the hydrogen-bond lines between them.
+        ends: {species: atoms} left out (the far ends of skip's hydrogen bonds)."""
         pts, boxes = [], []
         for key in self.panels[self.pidx[pid]]['species']:
             o = '%s.%s' % (pid, key)
             if o != skip and o in self.xy:
-                p, b = self.ink(o, self.xy[o], pads)
+                p, b = self.ink(o, self.xy[o], pads, (ends or {}).get(o, ()))
                 pts += p
                 boxes += b
         return pts, boxes + self.hbond_line_boxes(pid, skip)
 
-    def shortfall(self, sid, xy, other, pads=False):
+    def shortfall(self, sid, xy, other, pads=False, skip=()):
         """Sum of squares of how much species sid at xy falls short of SPECIES_GAP from the ink other (panel_ink)."""
         g = SPECIES_GAP
-        pts, boxes = self.ink(sid, xy, pads)
+        pts, boxes = self.ink(sid, xy, pads, skip)
+        if not pts and not boxes:        # a lone atom that is a hydrogen bond's end: nothing left to keep apart
+            return 0.0
         xs = [p[0] for p in pts] + [b[0] for b in boxes] + [b[2] for b in boxes]
         ys = [p[1] for p in pts] + [b[1] for b in boxes] + [b[3] for b in boxes]
         lo_x, hi_x, lo_y, hi_y = min(xs) - g, max(xs) + g, min(ys) - g, max(ys) + g
@@ -1093,6 +1097,13 @@ class Layout(object):
         if changed:
             self.notes.append('%s: IUPAC geometry adjusted %d hand coordinates (at most %.3f bonds)' % (sid, len(changed), max(changed)))
         xy = {mol.map[i]: p for i, p in positioned.items()}
+        if sp['xy']:
+            # hand coordinates keep their shape, but not on top of what the panel already holds (the molecule placed
+            # first can move when its own hand coordinates are made regular)
+            cleared = self.clear_of_panel(sid, xy, pads=True, hbond_ends=True)
+            if cleared is not xy:
+                self.notes.append('%s: hand coordinates stood closer than half a bond to another molecule; moved it clear' % sid)
+            xy = cleared
         self.xy[sid] = xy
 
     def reference(self, sid):
@@ -1680,12 +1691,21 @@ class Layout(object):
             return {k: go(p) for k, p in xy.items()}
         return xy
 
-    def clear_of_panel(self, sid, xy, pads=False):
+    def clear_of_panel(self, sid, xy, pads=False, hbond_ends=False):
         """A molecule kept where it stood in another panel (derive) moves only when it now stands closer than SPECIES_GAP
         to what is placed in this panel: the shortest shift (0.1 to 2 bonds, every 30 degrees) that clears it, else the
-        one that leaves it least short.  pads: count the dots of reacting pairs (see ink)."""
-        other = self.panel_ink(self.sp[sid]['panel'], skip=sid, pads=pads)
-        if self.shortfall(sid, xy, other, pads) <= 1e-9:
+        one that leaves it least short.  pads: count the dots of reacting pairs (see ink).  hbond_ends: the two end atoms
+        of a hydrogen bond to another molecule are left out, as check_rules.det_species_gap leaves them out."""
+        pid = self.sp[sid]['panel']
+        own, ends = set(), {}
+        if hbond_ends:
+            for a, b in self.panels[self.pidx[pid]]['hbonds']:
+                for x, y in ((a, b), (b, a)):
+                    if x['sid'] == sid and y['sid'] != sid:
+                        own.add(x['atom'])
+                        ends.setdefault(y['sid'], set()).add(y['atom'])
+        other = self.panel_ink(pid, skip=sid, pads=pads, ends=ends)
+        if self.shortfall(sid, xy, other, pads, own) <= 1e-9:
             return xy
         best = None
         for k in range(1, 21):
@@ -1693,7 +1713,7 @@ class Layout(object):
             for dg in range(0, 360, 30):
                 u = vec(dg)
                 moved = {m: (x + u[0] * d, y + u[1] * d) for m, (x, y) in xy.items()}
-                short = self.shortfall(sid, moved, other, pads)
+                short = self.shortfall(sid, moved, other, pads, own)
                 key = (round(short, 6), d)
                 if best is None or key < best[0]:
                     best = (key, moved)
@@ -1821,6 +1841,26 @@ class Layout(object):
         self.iupac_hbond_spacing()
         from layout_repair import seat_satellites      # residues held only by hydrogen bonds, where a dotted line crosses
         seat_satellites(self)
+        # every molecule after the first of its panel keeps half a bond of white from the others (check_rules
+        # det_species_gap): the shortest shift that clears it, the two ends of a hydrogen bond left out; then the
+        # hydrogen bonds get their dotted span back.  A panel whose letters and bonds would crowd more stays as it was.
+        from layout_repair import panel_cost
+        for _ in range(2):
+            for pid in order:
+                sids = ['%s.%s' % (pid, key) for key in self.panels[self.pidx[pid]]['species'][1:]]
+                kept = {sid: self.xy[sid] for sid in sids if sid in self.xy}
+                before, moved = panel_cost(self, pid), []
+                for sid in kept:
+                    cleared = self.clear_of_panel(sid, self.xy[sid], hbond_ends=True)
+                    if cleared is not self.xy[sid]:
+                        self.xy[sid] = cleared
+                        moved.append(sid)
+                if moved and panel_cost(self, pid) > before + 1e-6:
+                    self.xy.update(kept)
+                    moved = []
+                for sid in moved:
+                    self.notes.append('%s: stood closer than half a bond to another molecule; moved it clear' % sid)
+            self.iupac_hbond_spacing()
         return self.arrange()
 
     def fit_intra_hbonds(self):
