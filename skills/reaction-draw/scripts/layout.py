@@ -25,6 +25,8 @@ NEAR_DIST = 1.3             # default distance of a "near" placement of a specie
 TEXT_NEAR_GAP = 0.8         # default distance of a "near" text: from the atom to the near edge of the text
 TEXT_APART = 0.8            # white space kept between two names of different molecules (texts, residue names), so
                             # that each reads as its own molecule's (check_rules.TEXT_APART_BONDS is the failing limit)
+FORM_FOLD = 2.5             # a bond formed inside one molecule whose atoms stand farther apart (bond lengths) is folded
+FORM_NEAR = 2.0             # to bring them this near (fold_forming)
 CAP = 0.716                 # cap height of Arial per em
 
 # Arial (= Helvetica, Liberation Sans) advance widths per 1000 em, ASCII
@@ -1758,6 +1760,8 @@ class Layout(object):
             anchor = '%s.%s' % (pid, keys[0])
             ref = self.reference(anchor)
             self.place(anchor, self.derive(anchor, ref) if ref else self.history(anchor) or self.anchor_frame(anchor))
+            if not ref:
+                self.fold_forming(anchor)
             # partners joined by contacts, nearest first
             links = self.contacts(pid)
             for _ in range(len(keys)):
@@ -1879,47 +1883,121 @@ class Layout(object):
                     crowd += 10 * sum(crossed(ends[0], ends[1], xy[mol.map[i]], xy[mol.map[j]])
                                       for i, j in map(tuple, mol.order) if not {mol.map[i], mol.map[j]} & {a['atom'], b['atom']})
                     return max(0.0, d - w) + 5 * max(0.0, w - d) + crowd
-                def reflect(xy, idxs, p, q):
-                    (px, py), (qx, qy) = xy[mol.map[p]], xy[mol.map[q]]
-                    ux, uy = qx - px, qy - py
-                    n2 = ux * ux + uy * uy or 1.0
-                    out = dict(xy)
-                    for k in idxs:
-                        x, y = xy[mol.map[k]]
-                        t = ((x - px) * ux + (y - py) * uy) / n2
-                        out[mol.map[k]] = (2 * (px + t * ux) - x, 2 * (py + t * uy) - y)
-                    return out
-                def turn(xy, idxs, r, deg):
-                    c = xy[mol.map[r]]
-                    out = dict(xy)
-                    moved = transform({mol.map[k]: (xy[mol.map[k]][0] - c[0], xy[mol.map[k]][1] - c[1]) for k in idxs}, deg)
-                    out.update({m: (c[0] + x, c[1] + y) for m, (x, y) in moved.items()})
-                    return out
-                xy = dict(self.xy[sid])
-                best = score(xy)
-                start = best
-                for _ in range(4):
-                    improved = False
-                    for k in range(1, len(path) - 1):
-                        r, toward, back = path[k], path[k - 1], path[k + 1]
-                        beyond = [i for i in mol.subtree(r, back) if i != r]
-                        if acc in beyond or frozenset((r, back)) in mol.ring_bonds:
-                            continue
-                        branch = mol.subtree(toward, r)
-                        cands = [reflect(xy, beyond, r, back)]
-                        if acc not in branch and frozenset((r, toward)) not in mol.ring_bonds:
-                            cands += [reflect(xy, branch, r, back), turn(xy, branch, r, 120), turn(xy, branch, r, -120)]
-                        for cand in cands:
-                            if any(dist(cand[m], xy[m]) > 1e-6 for m in hand):
-                                continue
-                            s_ = score(cand)
-                            if s_ < best - 1e-6:
-                                best, xy, improved = s_, cand, True
-                    if not improved:
-                        break
-                if best < start - 1e-6:
+                xy = self.fold_chain(sid, path, score)
+                if xy is not None:
                     self.xy[sid] = xy
                     self.notes.append('%s: turned toward its hydrogen bond %d-%d' % (sid, a['atom'], b['atom']))
+
+    def fold_chain(self, sid, path, score, rigid_double=False):
+        """Fold species sid along path (atom indices from the end that moves to the other end): reflect the part beyond
+        each atom about the bond toward the other end, or turn or reflect the branch holding the moving end, keeping each
+        change that lowers score(xy); the folded coordinates, or None when nothing lowered it.  Ring bonds stay; with
+        rigid_double, no change pivots at a double bond either (its E/Z stays).  Hand-placed atoms do not move."""
+        mol = self.mol[sid]
+        hand = set(self.sp[sid]['xy'])
+        acc = path[-1]
+        def reflect(xy, idxs, p, q):
+            (px, py), (qx, qy) = xy[mol.map[p]], xy[mol.map[q]]
+            ux, uy = qx - px, qy - py
+            n2 = ux * ux + uy * uy or 1.0
+            out = dict(xy)
+            for k in idxs:
+                x, y = xy[mol.map[k]]
+                t = ((x - px) * ux + (y - py) * uy) / n2
+                out[mol.map[k]] = (2 * (px + t * ux) - x, 2 * (py + t * uy) - y)
+            return out
+        def turn(xy, idxs, r, deg):
+            c = xy[mol.map[r]]
+            out = dict(xy)
+            moved = transform({mol.map[k]: (xy[mol.map[k]][0] - c[0], xy[mol.map[k]][1] - c[1]) for k in idxs}, deg)
+            out.update({m: (c[0] + x, c[1] + y) for m, (x, y) in moved.items()})
+            return out
+        def fixed(e):
+            return e in mol.ring_bonds or rigid_double and mol.order.get(e, 1) >= 2
+        xy = dict(self.xy[sid])
+        best = score(xy)
+        start = best
+        for _ in range(4):
+            improved = False
+            for k in range(1, len(path) - 1):
+                r, toward, back = path[k], path[k - 1], path[k + 1]
+                beyond = [i for i in mol.subtree(r, back) if i != r]
+                if acc in beyond or fixed(frozenset((r, back))):
+                    continue
+                branch = mol.subtree(toward, r)
+                cands = [reflect(xy, beyond, r, back)]
+                if acc not in branch and not fixed(frozenset((r, toward))):
+                    cands += [reflect(xy, branch, r, back), turn(xy, branch, r, 120), turn(xy, branch, r, -120)]
+                for cand in cands:
+                    if any(dist(cand[m], xy[m]) > 1e-6 for m in hand):
+                        continue
+                    s_ = score(cand)
+                    if s_ < best - 1e-6:
+                        best, xy, improved = s_, cand, True
+            if not improved:
+                break
+        return xy if best < start - 1e-6 else None
+
+    def fold_forming(self, sid):
+        """A bond a curved arrow forms inside one molecule (a [3,3] shift, a ring closure) whose two atoms stand more than
+        FORM_FOLD bond lengths apart: fold the chain between them (fold_chain) to bring them within FORM_NEAR, without
+        crowding the molecule or crossing its own bonds, before its partners are placed by their contacts."""
+        if self.sp[sid]['xy']:
+            return
+        mol = self.mol[sid]
+        bonded = {frozenset(e) for e in mol.order}
+        def crossed(p1, p2, q1, q2):
+            def side(o, a_, b_):
+                return (a_[0] - o[0]) * (b_[1] - o[1]) - (a_[1] - o[1]) * (b_[0] - o[0])
+            return (side(p1, p2, q1) * side(p1, p2, q2) < 0) and (side(q1, q2, p1) * side(q1, q2, p2) < 0)
+        for ar in self.panels[self.pidx[self.sp[sid]['panel']]]['arrows']:
+            members = ar['to'].get('members') or []
+            if len(members) != 2 or any(m['sid'] != sid for m in members):
+                continue
+            ma, mb = members[0]['atom'], members[1]['atom']
+            if dist(self.xy[sid][ma], self.xy[sid][mb]) <= FORM_FOLD:
+                continue
+            def score(xy):
+                d = dist(xy[ma], xy[mb])
+                crowd = 0.0
+                maps = list(xy)
+                for i, m in enumerate(maps):
+                    for n in maps[i + 1:]:
+                        if {m, n} == {ma, mb} or frozenset((mol.idx[m], mol.idx[n])) in bonded:
+                            continue
+                        crowd += max(0.0, 0.9 - dist(xy[m], xy[n])) * 20
+                crowd += 10 * sum(crossed(xy[ma], xy[mb], xy[mol.map[i]], xy[mol.map[j]])
+                                  for i, j in map(tuple, mol.order) if not {mol.map[i], mol.map[j]} & {ma, mb})
+                # the arrow drawn along the new bond needs its way clear: no other atom near the middle of the line
+                (ax, ay), (bx, by) = xy[ma], xy[mb]
+                for m in maps:
+                    if m in (ma, mb):
+                        continue
+                    for t in (.25, .5, .75):
+                        crowd += max(0.0, 0.5 - dist(xy[m], (ax + t * (bx - ax), ay + t * (by - ay)))) * 10
+                return max(0.0, d - FORM_NEAR) + 5 * max(0.0, 1.2 - d) + crowd
+            best = None
+            for start, goal in ((ma, mb), (mb, ma)):      # the end on the chain moves; a ring end stays
+                h, acc = mol.idx[start], mol.idx[goal]
+                prev, todo = {h: None}, [h]
+                while todo:
+                    x = todo.pop(0)
+                    for y in mol.adj[x]:
+                        if y not in prev:
+                            prev[y] = x
+                            todo.append(y)
+                if acc not in prev:
+                    continue
+                path = [acc]
+                while path[-1] != h:
+                    path.append(prev[path[-1]])
+                path.reverse()
+                xy = self.fold_chain(sid, path, score, rigid_double=True)
+                if xy is not None and (best is None or score(xy) < score(best)):
+                    best = xy
+            if best is not None:
+                self.xy[sid] = best
+                self.notes.append('%s: folded toward its forming bond %d-%d' % (sid, ma, mb))
 
     def iupac_hbond_spacing(self):
         """Leave a two-label-height visible dotted span, moving whole species only."""

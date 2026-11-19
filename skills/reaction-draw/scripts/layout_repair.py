@@ -231,6 +231,20 @@ def _panel_lists(lay, pid):
     return geometry, points, labels, bonds
 
 
+def _name_owners(lay, labels):
+    """For each label, the species whose residue name it is, or None (an atom label)."""
+    cache = lay.__dict__.setdefault('_name_owners', {})
+    key = tuple(ref for ref, _ in labels)
+    if key not in cache:
+        out = []
+        for ref in key:
+            sid, m = ref.rsplit(':', 1)
+            mol = lay.mol[sid]
+            out.append(sid if specutil.atom_kind(lay.sp[sid], mol.atoms[mol.idx[int(m)]]) == 'residue' else None)
+        cache[key] = out
+    return cache[key]
+
+
 def _collisions(lay, pid, gap, points, labels, bonds, pts, boxes):
     """The collision sum of the panel for each row of pts (rows, atoms, 2) and boxes (rows, labels, 4): the same atoms,
     labels and bonds at other places.  In arrays, since the search prices every move it tries."""
@@ -244,7 +258,14 @@ def _collisions(lay, pid, gap, points, labels, bonds, pts, boxes):
     collision = np.zeros(rows)
     if len(labels):
         i, j = np.triu_indices(len(labels), 1)
-        collision += total(4 * np.maximum(0.0, gap - _box_gaps(boxes[:, i], boxes[:, j])) ** 2)
+        apart = _box_gaps(boxes[:, i], boxes[:, j])
+        collision += total(4 * np.maximum(0.0, gap - apart) ** 2)
+        # residue names of two molecules keep the layout's room between names, or neither reads as its own
+        owners = _name_owners(lay, labels)
+        names = np.array([owners[a] is not None and owners[b] is not None and owners[a] != owners[b]
+                          for a, b in zip(i.tolist(), j.tolist())], dtype=bool)
+        if names.any():
+            collision += total(np.where(names, 4 * np.maximum(0.0, layout.TEXT_APART - apart) ** 2, 0.0))
         # Sample the center and edges, not just bond endpoints: a label may cover its middle.  Only a label and a bond
         # whose boxes come within the margin can add anything.
         mine = (ends[None, :, 0] == own[:, None]) | (ends[None, :, 1] == own[:, None])
