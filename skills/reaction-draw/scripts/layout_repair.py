@@ -5,7 +5,9 @@ The cheap search uses the layout's label boxes; acceptance uses every rule on th
 saved/reloaded drawing. Rings stay rigid, bridges move as whole branches, and wedges are
 recomputed from the original SMILES. Explicit coordinates may move at most 0.3 bonds.
 """
+import collections
 import copy
+import hashlib
 import itertools
 import math
 import re
@@ -13,6 +15,7 @@ import re
 import numpy as np
 
 import check_rules as rules
+import svg_geometry as co
 import layout
 import specutil
 
@@ -755,3 +758,708 @@ def candidates(spec, result, figure):
                                  (max(hand), HAND_LIMIT))
             yield specutil._assemble(spec, lay.arrange())
 
+
+
+# ------------------------------------------------------------------ hydrogen-bond satellites
+# A satellite takes part in its panel only through hydrogen bonds (a residue held by dotted lines): not the panel's
+# first species, no curved arrow at it, no bond formed or broken with another species, nothing given about its place.
+HB_CROSS = 0.05             # a dotted line closer than this to a bond or to another dotted line: a crossing (bonds)
+HB_LABEL = 0.0              # a dotted line closer than this to another atom's label box: a contact (bonds)
+
+
+def _ends(e):
+    return e.get('members') or [e]
+
+
+def satellites(lay, pid):
+    """{sid: [(my map, other sid, other map)]} of the panel's satellites and their hydrogen bonds to other species."""
+    panel = lay.panels[lay.pidx[pid]]
+    keys = panel['species']
+    if not keys:
+        return {}
+    sids = [pid + '.' + k for k in keys]
+    busy = {sids[0]}
+    busy |= {r['sid'] for ar in panel['arrows'] for e in (ar['from'], ar['to']) for r in _ends(e)}
+    busy |= {r['sid'] for pair in panel.get('pseudobonds') or [] for r in pair if isinstance(r, dict) and 'sid' in r}
+    for eta in panel.get('eta') or []:
+        for r in [eta.get('metal')] + list(eta.get('atoms') or []):
+            if isinstance(r, dict) and 'sid' in r:
+                busy.add(r['sid'])
+    where = {}
+    for sid in sids:
+        for m in lay.mol[sid].idx:
+            where.setdefault(m, sid)
+    for other in (lay.next_panel.get(pid), lay.prev_panel.get(pid)):      # a bond formed or broken between two species
+        if other is None or other == pid:
+            continue
+        for key in lay.panels[lay.pidx[other]]['species']:
+            mol = lay.mol[other + '.' + key]
+            for e in mol.order:
+                a, b = (mol.map[i] for i in e)
+                sa, sb = where.get(a), where.get(b)
+                if sa and sb and sa != sb:
+                    busy |= {sa, sb}
+    out = {}
+    for sid in sids:
+        sp = lay.sp[sid]
+        if sid in busy or sp['xy'] or sp['offset'] or sp['rotate'] or sp['flip'] or sp['near'] is not None:
+            continue
+        links = [(b['atom'], a['sid'], a['atom']) if b['sid'] == sid else (a['atom'], b['sid'], b['atom'])
+                 for a, b in panel['hbonds'] if sid in (a['sid'], b['sid']) and a['sid'] != b['sid']]
+        if links:
+            out[sid] = links
+    return out
+
+
+def _seg_box(p, q, box):
+    """Gap between segment p-q and box (x1, y1, x2, y2): 0 when they meet."""
+    x1, y1, x2, y2 = box
+    if any(x1 <= r[0] <= x2 and y1 <= r[1] <= y2 for r in (p, q)):
+        return 0.0
+    corners = ((x1, y1), (x2, y1), (x2, y2), (x1, y2))
+    return min(co.dist_seg_seg(p, q, corners[k], corners[(k + 1) % 4]) for k in range(4))
+
+
+def _exit(p, q, box):
+    """How far along p -> q (a fraction) the segment leaves box, which holds p (0 when it does not)."""
+    x1, y1, x2, y2 = box
+    if not (x1 <= p[0] <= x2 and y1 <= p[1] <= y2):
+        return 0.0
+    t = 1.0
+    for k, lo, hi in ((0, x1, x2), (1, y1, y2)):
+        d = q[k] - p[k]
+        if d > 1e-12:
+            t = min(t, (hi - p[k]) / d)
+        elif d < -1e-12:
+            t = min(t, (lo - p[k]) / d)
+    return max(0.0, t)
+
+
+def _panel_geometry(lay, pid, xy=None):
+    """({(sid, map): point}, [((sid, map), label box)], [((sid, a), (sid, b))]) of what is placed in a panel, with
+    xy ({sid: places}) standing in for some species."""
+    pts, labels, bonds = {}, [], []
+    for key in lay.panels[lay.pidx[pid]]['species']:
+        sid = pid + '.' + key
+        raw = (xy or {}).get(sid, lay.xy.get(sid))
+        if raw is None:
+            continue
+        mol = lay.mol[sid]
+        at = lay.expanded(sid, raw)
+        for i, a in enumerate(mol.atoms):
+            pts[(sid, a['map'])] = at[a['map']]
+            if mol.labeled(i):
+                labels.append(((sid, a['map']), lay.label_box(sid, a['map'], at)))
+        for e in mol.order:
+            a, b = (mol.map[i] for i in e)
+            bonds.append(((sid, a), (sid, b)))
+    return pts, labels, bonds
+
+
+def _dotted(lay, p, q, boxes):
+    """The drawn part of a dotted line between atoms at p and q: from the edge of each end's label box plus the label
+    margin."""
+    margin = lay.style['label_margin_pt'] / lay.style['bond_length_pt']
+    length = layout.dist(p, q)
+    if length < 1e-9:
+        return p, q
+    ta = _exit(p, q, boxes[0]) if boxes[0] else 0.0
+    tb = _exit(q, p, boxes[1]) if boxes[1] else 0.0
+    ta, tb = ta + margin / length, tb + margin / length
+    if ta + tb >= 1.0:
+        mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+        return mid, mid
+    return ((p[0] + ta * (q[0] - p[0]), p[1] + ta * (q[1] - p[1])), (q[0] + tb * (p[0] - q[0]), q[1] + tb * (p[1] - q[1])))
+
+
+def hbond_trouble(lay, pid, xy=None, cross=None, touch=None):
+    """What the layout predicts for the panel's hydrogen bonds: [(kind, line, other)] with kind 'bond' (the line
+    crosses a bond), 'hbond' (another line) or 'label' (it touches another atom's label box)."""
+    cross = HB_CROSS if cross is None else cross
+    touch = HB_LABEL if touch is None else touch
+    pts, labels, bonds = _panel_geometry(lay, pid, xy)
+    box = dict(labels)
+    lines = [((a['sid'], a['atom']), (b['sid'], b['atom'])) for a, b in lay.panels[lay.pidx[pid]]['hbonds']
+             if (a['sid'], a['atom']) in pts and (b['sid'], b['atom']) in pts]
+    out = []
+    for k, (ra, rb) in enumerate(lines):
+        p, q = pts[ra], pts[rb]
+        for c, d in bonds:
+            if c not in (ra, rb) and d not in (ra, rb) and co.dist_seg_seg(p, q, pts[c], pts[d]) < cross:
+                out.append(('bond', (ra, rb), (c, d)))
+        for rc, rd in lines[k + 1:]:
+            if not {rc, rd} & {ra, rb} and co.dist_seg_seg(p, q, pts[rc], pts[rd]) < cross:
+                out.append(('hbond', (ra, rb), (rc, rd)))
+        u, v = _dotted(lay, p, q, (box.get(ra), box.get(rb)))
+        if layout.dist(u, v) < 1e-9:
+            continue
+        for r, b in labels:
+            if r not in (ra, rb) and _seg_box(u, v, b) <= touch:
+                out.append(('label', (ra, rb), r))
+    return out
+
+
+SEAT_CANDIDATES = 400       # rigid seats tried per satellite
+SEAT_EXACT = 20             # of them, the cheapest whose crossings and contacts are counted exactly
+SEAT_FIT = 0.35             # a seat fitted to several hydrogen bonds misses each wanted end by at most this (bonds)
+SEAT_SWEEPS = 2             # sweeps over the satellites after the first
+
+
+def _hb_length(lay, box_a, box_b, u):
+    """The length iupac_hbond_spacing asks of a hydrogen bond along unit u between atoms with label boxes box_a and
+    box_b: a visible dotted span of two label heights plus each end's label and margin."""
+    bpt = lay.style['bond_length_pt']
+    height = layout.CAP * lay.style['font_size_pt'] / bpt
+    margin = lay.style['label_margin_pt'] / bpt
+    cut = sum((b[2] - b[0]) / 2 * abs(u[0]) + (b[3] - b[1]) / 2 * abs(u[1]) + margin for b in (box_a, box_b))
+    return 2 * height + cut + .05
+
+
+def _bond_dirs(lay, sid, m, xy):
+    p = xy[m]
+    return [layout.ang(xy[n][0] - p[0], xy[n][1] - p[1]) for n in lay.mol[sid].nb_maps(m) if n in xy]
+
+
+def _top_dirs(lay, sid, m, xy, k=3):
+    """The k freest directions at atom m: each gap's bisector, widest gap first, and for a gap of 150 degrees or more
+    also 45 degrees either side of it."""
+    dirs = _bond_dirs(lay, sid, m, xy)
+    if not dirs:
+        return [0.0, 120.0, 240.0][:k]
+    out = []
+    for start, size in sorted(layout.gaps(dirs), key=lambda g: -g[1]):
+        mid = (start + size / 2.0) % 360
+        out.append(mid)
+        if size >= 150:
+            out += [(mid + 45) % 360, (mid - 45) % 360]
+    return out[:k]
+
+
+def _axes(lay, sid, m, xy):
+    """Directions at atom m of the satellite that should point at its hydrogen-bond partner: along the D-H bond for an
+    H, else the bisectors of its widest gaps; [None] for a lone atom."""
+    mol = lay.mol[sid]
+    nb = [n for n in mol.nb_maps(m) if n in xy]
+    if not nb:
+        return [None]
+    if mol.is_h[mol.idx[m]] and len(nb) == 1:
+        d = xy[nb[0]]
+        return [layout.ang(xy[m][0] - d[0], xy[m][1] - d[1])]
+    return lay.open_dirs(sid, (m, None), xy) or [None]
+
+
+def _turned(rel, rot, mirror):
+    return layout.transform(rel, rot, mirror)
+
+
+def _fit(old, new):
+    """Turn (no mirror) and shift carrying points old onto new {key: point}: (function of a point, largest miss)."""
+    ks = list(old)
+    cx, cy = sum(old[k][0] for k in ks) / len(ks), sum(old[k][1] for k in ks) / len(ks)
+    nx, ny = sum(new[k][0] for k in ks) / len(ks), sum(new[k][1] for k in ks) / len(ks)
+    a = sum((old[k][0] - cx) * (new[k][0] - nx) + (old[k][1] - cy) * (new[k][1] - ny) for k in ks)
+    b = sum((old[k][0] - cx) * (new[k][1] - ny) - (old[k][1] - cy) * (new[k][0] - nx) for k in ks)
+    t = math.atan2(b, a)
+    c, s = math.cos(t), math.sin(t)
+    go = lambda p: (nx + c * (p[0] - cx) - s * (p[1] - cy), ny + s * (p[0] - cx) + c * (p[1] - cy))
+    return go, max(layout.dist(go(old[k]), new[k]) for k in ks)
+
+
+def _seat_candidates(lay, sid, links):
+    """Rigid seats of satellite sid for its hydrogen bonds links [(my map, other sid, other map)]: [(places, family)]."""
+    xy = lay.xy[sid]
+    out = []
+    mine_box = lambda m, at: lay.label_box(sid, m, at)
+    other_box = {(o, om): lay.label_box(o, om, lay.xy[o]) for _, o, om in links}
+    # 2. several hydrogen bonds on different atoms of the satellite: their ends fitted to free places at the partners
+    per_atom = collections.OrderedDict()
+    for my, o, om in links:
+        per_atom.setdefault(my, (o, om))
+    if len(per_atom) >= 2:
+        groups = collections.OrderedDict()         # partner atom -> the satellite's atoms bonded to it
+        for my in list(per_atom)[:4]:
+            groups.setdefault(per_atom[my], []).append(my)
+        options = []                               # per partner atom: [[(my, partner point, unit, partner box)]]
+        for (o, om), mine in groups.items():
+            pa = lay.xy[o][om]
+            if len(mine) == 2:                     # two of its atoms (two H) at one partner atom: on either side of a
+                bonds = _bond_dirs(lay, o, om, lay.xy[o])       # free direction of it, as far apart as they stand
+                h = layout.dist(xy[mine[0]], xy[mine[1]])
+                ways = []
+                for d in range(0, 360, 15):
+                    if all(layout.adiff(d, b) >= 30 for b in bonds):
+                        half = math.degrees(math.asin(min(1.0, h / (2 * _hb_length(lay, mine_box(mine[0], xy), other_box[(o, om)], layout.vec(d))))))
+                        for a, b in ((mine[0], mine[1]), (mine[1], mine[0])):
+                            ways.append([(a, pa, layout.vec(d + half), other_box[(o, om)]),
+                                         (b, pa, layout.vec(d - half), other_box[(o, om)])])
+                options.append(ways)
+            else:
+                for my in mine:
+                    options.append([[(my, pa, layout.vec(d), other_box[(o, om)])] for d in _top_dirs(lay, o, om, lay.xy[o])])
+        for mirror in (False, True):
+            shape = _turned(xy, 0.0, mirror)
+            for scale in (1.0, 1.15):
+                for combo in itertools.product(*options):
+                    targets = {my: layout.add(pa, u, scale * _hb_length(lay, mine_box(my, shape), box, u))
+                               for part in combo for my, pa, u, box in part}
+                    go, miss = _fit({my: shape[my] for my in targets}, targets)
+                    if miss <= SEAT_FIT:
+                        out.append(({m: go(p) for m, p in shape.items()}, 'fit'))
+    # 3. two hydrogen bonds at one atom of the satellite: the atom where two circles meet, the rest turned about it
+    for my in dict.fromkeys(l[0] for l in links):
+        partners = [(o, om) for m2, o, om in links if m2 == my]
+        for (o1, m1), (o2, m2) in itertools.combinations(partners, 2):
+            p1, p2 = lay.xy[o1][m1], lay.xy[o2][m2]
+            d = layout.dist(p1, p2)
+            if d < 1e-6:
+                continue
+            for mirror in (False, True):
+                base = _turned({m: (p[0] - xy[my][0], p[1] - xy[my][1]) for m, p in xy.items()}, 0.0, mirror)
+                for rot in range(0, 360, 15):
+                    rel = _turned(base, rot, False)
+                    box = mine_box(my, rel)
+                    # the lengths along the line from each partner to the middle of the two (then refined once)
+                    mid = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
+                    for side in (1, -1):
+                        x = mid
+                        for _ in range(2):
+                            u1 = ((x[0] - p1[0]), (x[1] - p1[1]))
+                            u2 = ((x[0] - p2[0]), (x[1] - p2[1]))
+                            n1, n2 = math.hypot(*u1) or 1.0, math.hypot(*u2) or 1.0
+                            r1 = _hb_length(lay, box, other_box[(o1, m1)], (u1[0] / n1, u1[1] / n1))
+                            r2 = _hb_length(lay, box, other_box[(o2, m2)], (u2[0] / n2, u2[1] / n2))
+                            a = (r1 * r1 - r2 * r2 + d * d) / (2 * d)
+                            h2 = r1 * r1 - a * a
+                            if h2 < 0:
+                                break
+                            ex, ey = (p2[0] - p1[0]) / d, (p2[1] - p1[1]) / d
+                            h = math.sqrt(h2)
+                            x = (p1[0] + a * ex - side * h * ey, p1[1] + a * ey + side * h * ex)
+                        else:
+                            out.append(({m: (x[0] + q[0], x[1] + q[1]) for m, q in rel.items()}, 'circles'))
+    # 1. one hydrogen bond leading: the satellite's atom on a free direction of the partner's atom, pointing back at it
+    singles = []
+    for my, o, om in links:
+        pa = lay.xy[o][om]
+        bonds = _bond_dirs(lay, o, om, lay.xy[o])
+        free = [d for d in range(0, 360, 15) if all(layout.adiff(d, b) >= 30 for b in bonds)]
+        axes = _axes(lay, sid, my, xy)
+        for delta in (0, 15, -15, 30, -30):
+            for mirror in (False, True):
+                base = _turned({m: (p[0] - xy[my][0], p[1] - xy[my][1]) for m, p in xy.items()}, 0.0, mirror)
+                for a in axes:
+                    for d in free:
+                        want = (d + 180 + delta) % 360
+                        rot = 0.0 if a is None else want - (-a if mirror else a)
+                        rel = _turned(base, rot, False)
+                        u = layout.vec(d)
+                        length = _hb_length(lay, mine_box(my, rel), other_box[(o, om)], u)
+                        for scale in (1.0, 1.15):
+                            at = layout.add(pa, u, scale * length)
+                            singles.append(({m: (at[0] + q[0], at[1] + q[1]) for m, q in rel.items()}, 'single'))
+                    if a is None:
+                        break
+    room = max(0, SEAT_CANDIDATES - len(out))
+    if len(singles) > room:          # spread the cut over the whole list (it is ordered by turn, then mirror)
+        step = len(singles) / float(room) if room else 0
+        singles = [singles[int(k * step)] for k in range(room)] if room else []
+    return (out + singles)[:SEAT_CANDIDATES]
+
+
+def _chords(lay, pid):
+    """[(from refs, to refs)] of every curved arrow of the panel, as _collisions reads them."""
+    out = []
+    for ar in lay.panels[lay.pidx[pid]]['arrows']:
+        ends = []
+        for e in (ar['from'], ar['to']):
+            refs = []
+            for r in _ends(e):
+                refs.append('%s:%s' % (r['sid'], r['atom']))
+                if r.get('atom2') is not None:
+                    refs.append('%s:%s' % (r['sid'], r['atom2']))
+            ends.append(refs)
+        out.append(tuple(ends))
+    return out
+
+
+def _seat_context(lay, pid, sid, links):
+    """What the seat terms of satellite sid read from the rest of the panel, which stays put while it moves."""
+    mol = lay.mol[sid]
+    panel = lay.panels[lay.pidx[pid]]
+    def centroid(refs):
+        pts = [lay.xy[s][m] for s, m in refs if s in lay.xy and m in lay.xy[s]]
+        return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)) if pts else None
+    arrow_dirs = collections.defaultdict(list)       # (sid, map) at an arrow end -> direction to the other end
+    chords = []
+    for ar in panel['arrows']:
+        ends = []
+        for e in (ar['from'], ar['to']):
+            refs = []
+            for r in _ends(e):
+                refs.append((r['sid'], r['atom']))
+                if r.get('atom2') is not None:
+                    refs.append((r['sid'], r['atom2']))
+            ends.append(refs)
+        a, b = centroid(ends[0]), centroid(ends[1])
+        if a is None or b is None:
+            continue
+        chords.append((a, b, set(ends[0]) | set(ends[1])))
+        for refs, there in ((ends[0], b), (ends[1], a)):
+            for s, m in refs:
+                if s in lay.xy and m in lay.xy[s] and layout.dist(lay.xy[s][m], there) > 1e-6:
+                    p = lay.xy[s][m]
+                    arrow_dirs[(s, m)].append(layout.ang(there[0] - p[0], there[1] - p[1]))
+    rows = []
+    for my, o, om in links:
+        omol = lay.mol[o]
+        donor_mine = mol.is_h[mol.idx[my]] and len(mol.adj[mol.idx[my]]) == 1
+        donor_other = omol.is_h[omol.idx[om]] and len(omol.adj[omol.idx[om]]) == 1
+        oxy = lay.xy[o]
+        rows.append({'my': my, 'o': o, 'om': om, 'q': oxy[om], 'box': lay.label_box(o, om, oxy),
+                     'my_d': mol.map[mol.adj[mol.idx[my]][0]] if donor_mine else None,
+                     'o_d': oxy[omol.map[omol.adj[omol.idx[om]][0]]] if donor_other else None,
+                     'o_bonds': [] if donor_other else _bond_dirs(lay, o, om, oxy),
+                     'arrow': arrow_dirs.get((o, om), [])})
+    # the same residue in the previous panel, seen from the same partner atom: keep its side
+    prev = None
+    pp = lay.prev_panel.get(pid)
+    if pp is not None:
+        psid = pp + '.' + lay.sp[sid]['key']
+        for my, o, om in links:
+            posid = pp + '.' + lay.sp[o]['key']
+            if psid in lay.xy and posid in lay.xy and om in lay.xy[posid]:
+                q = lay.xy[posid][om]
+                rel = {m: (p[0] - q[0], p[1] - q[1]) for m, p in lay.xy[psid].items() if m in lay.xy[sid]}
+                if rel:
+                    prev = (o, om, rel)
+                    break
+    return {'rows': rows, 'chords': chords, 'prev': prev}
+
+
+ARROW_BOW = 0.4             # how far a curved arrow may bow out from the line between its ends, per its length
+
+
+def _ink_points(lay, sid, xy):
+    mol = lay.mol[sid]
+    pts = [xy[m] for m in mol.map]
+    for e in mol.order:
+        a, b = (mol.map[i] for i in e)
+        pts.append(((xy[a][0] + xy[b][0]) / 2, (xy[a][1] + xy[b][1]) / 2))
+    return pts
+
+
+def _seat_terms(lay, sid, places, ctx):
+    """Line length, direction, arrow seat (with the room each curved arrow bows into) and previous-panel terms of each
+    seat."""
+    out = []
+    for xy in places:
+        pen = 0.0
+        for r in ctx['rows']:
+            p, q = xy[r['my']], r['q']
+            got = layout.dist(p, q)
+            if got < 1e-9:
+                pen += 1e4
+                continue
+            u = ((p[0] - q[0]) / got, (p[1] - q[1]) / got)
+            want = _hb_length(lay, lay.label_box(sid, r['my'], xy), r['box'], u)
+            pen += 2000.0 * max(0.0, want - got) ** 2 + 20.0 * max(0.0, got - 1.3 * want) ** 2
+            out_dir = layout.ang(u[0], u[1])                  # from the partner to the satellite
+            back = (out_dir + 180.0) % 360
+            if r['my_d'] is not None:                         # D-H...A bent
+                d = xy[r['my_d']]
+                bend = 180.0 - layout.adiff(layout.ang(d[0] - p[0], d[1] - p[1]), back)
+                pen += 0.05 * max(0.0, bend - 30.0) ** 2
+            else:                                             # the satellite's acceptor: the line clear of its bonds
+                bonds = _bond_dirs(lay, sid, r['my'], xy)
+                if bonds:
+                    pen += 0.05 * max(0.0, 40.0 - min(layout.adiff(back, b) for b in bonds)) ** 2
+            if r['o_d'] is not None:
+                d = r['o_d']
+                bend = 180.0 - layout.adiff(layout.ang(d[0] - q[0], d[1] - q[1]), out_dir)
+                pen += 0.05 * max(0.0, bend - 30.0) ** 2
+            elif r['o_bonds']:
+                pen += 0.05 * max(0.0, 40.0 - min(layout.adiff(out_dir, b) for b in r['o_bonds'])) ** 2
+            for a in r['arrow']:                              # the partner atom an arrow starts or ends at
+                pen += 0.05 * max(0.0, 60.0 - layout.adiff(out_dir, a)) ** 2
+            for a, b, refs in ctx['chords']:
+                if (sid, r['my']) not in refs and (r['o'], r['om']) not in refs:
+                    pen += 400.0 * max(0.0, .3 - co.dist_seg_seg(p, q, a, b)) ** 2
+        for a, b, refs in ctx['chords']:                     # keep out of the room a curved arrow bows into
+            c2 = (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2
+            if c2 < .25:
+                continue
+            c = math.sqrt(c2)
+            for x in _ink_points(lay, sid, xy):
+                t = ((x[0] - a[0]) * (b[0] - a[0]) + (x[1] - a[1]) * (b[1] - a[1])) / c2
+                if 0.0 < t < 1.0:
+                    d = abs((x[0] - a[0]) * (b[1] - a[1]) - (x[1] - a[1]) * (b[0] - a[0])) / c
+                    w = ARROW_BOW * c * 4 * t * (1 - t) + .35
+                    if d < w:
+                        pen += 10.0 * (w - d) ** 2
+        if ctx['prev'] is not None:
+            o, om, rel = ctx['prev']
+            q = lay.xy[o][om]
+            pen += 10.0 * sum((xy[m][0] - q[0] - v[0]) ** 2 + (xy[m][1] - q[1] - v[1]) ** 2 for m, v in rel.items()) / len(rel)
+        out.append(pen)
+    return out
+
+
+def _shortfalls(lay, sid, places, other):
+    """lay.shortfall of each seat, in arrays."""
+    g = layout.SPECIES_GAP
+    opts = np.array(other[0], dtype=float).reshape(-1, 2)
+    oboxes = np.array(other[1], dtype=float).reshape(-1, 4)
+    out = []
+    for k in range(0, len(places), 50):
+        inks = [lay.ink(sid, xy) for xy in places[k:k + 50]]
+        P = np.array([i[0] for i in inks], dtype=float).reshape(len(inks), -1, 2)
+        B = np.array([i[1] for i in inks], dtype=float).reshape(len(inks), -1, 4)
+        lo = np.minimum(P.min(axis=(0, 1)) if P.shape[1] else np.inf, B[..., :2].min(axis=(0, 1)) if B.shape[1] else np.inf) - g
+        hi = np.maximum(P.max(axis=(0, 1)) if P.shape[1] else -np.inf, B[..., 2:].max(axis=(0, 1)) if B.shape[1] else -np.inf) + g
+        q = opts[(opts[:, 0] >= lo[0]) & (opts[:, 0] <= hi[0]) & (opts[:, 1] >= lo[1]) & (opts[:, 1] <= hi[1])]
+        c = oboxes[(oboxes[:, 2] >= lo[0]) & (oboxes[:, 0] <= hi[0]) & (oboxes[:, 3] >= lo[1]) & (oboxes[:, 1] <= hi[1])]
+        s = np.zeros(len(inks))
+        Pb = np.concatenate((P, P), axis=2)                   # points as boxes
+        qb = np.concatenate((q, q), axis=1)
+        for a in (Pb, B):
+            for b in (qb, c):
+                if a.shape[1] and len(b):
+                    d = _box_gaps(a[:, :, None, :], b[None, None, :, :])
+                    s += (np.maximum(0.0, g - d) ** 2).sum(axis=(1, 2))
+        out += list(s)
+    return out
+
+
+def _sat_count(lay, pid, sid, xy, links):
+    """(hydrogen-bond, body) intersections that involve satellite sid at places xy: its dotted lines against every bond,
+    line and label of the panel, the other lines against its bonds and labels; its bonds against the other species'
+    bonds and labels, its labels against theirs, and 1 more when it comes closer than SPECIES_GAP to them."""
+    pts, labels, bonds = _panel_geometry(lay, pid, {sid: xy})
+    box = dict(labels)
+    lines = [((a['sid'], a['atom']), (b['sid'], b['atom'])) for a, b in lay.panels[lay.pidx[pid]]['hbonds']
+             if (a['sid'], a['atom']) in pts and (b['sid'], b['atom']) in pts]
+    mine_b = [b for b in bonds if b[0][0] == sid]
+    other_b = [b for b in bonds if b[0][0] != sid]
+    mine_l = [l for l in labels if l[0][0] == sid]
+    other_l = [l for l in labels if l[0][0] != sid]
+    hb = body = 0
+    for k, (ra, rb) in enumerate(lines):
+        p, q = pts[ra], pts[rb]
+        own = sid in (ra[0], rb[0])
+        lo = (min(p[0], q[0]) - .1, min(p[1], q[1]) - .1)
+        hi = (max(p[0], q[0]) + .1, max(p[1], q[1]) + .1)
+        near = lambda c, d: not (max(pts[c][0], pts[d][0]) < lo[0] or min(pts[c][0], pts[d][0]) > hi[0]
+                                 or max(pts[c][1], pts[d][1]) < lo[1] or min(pts[c][1], pts[d][1]) > hi[1])
+        for c, d in (bonds if own else mine_b):
+            if c not in (ra, rb) and d not in (ra, rb) and near(c, d) and co.dist_seg_seg(p, q, pts[c], pts[d]) < HB_CROSS:
+                hb += 1
+        for rc, rd in lines[k + 1:]:
+            if (own or sid in (rc[0], rd[0])) and not {rc, rd} & {ra, rb} and near(rc, rd) \
+                    and co.dist_seg_seg(p, q, pts[rc], pts[rd]) < HB_CROSS:
+                hb += 1
+        u, v = _dotted(lay, p, q, (box.get(ra), box.get(rb)))
+        if layout.dist(u, v) < 1e-9:
+            continue
+        for r, b in (labels if own else mine_l):
+            if r not in (ra, rb) and b[2] >= lo[0] and b[0] <= hi[0] and b[3] >= lo[1] and b[1] <= hi[1] and _seg_box(u, v, b) <= HB_LABEL:
+                hb += 1
+    if mine_b or mine_l:
+        xs = [pts[r][0] for r in pts if r[0] == sid]
+        ys = [pts[r][1] for r in pts if r[0] == sid]
+        lo, hi = (min(xs) - 1.0, min(ys) - 1.0), (max(xs) + 1.0, max(ys) + 1.0)
+        inside = lambda p: lo[0] <= p[0] <= hi[0] and lo[1] <= p[1] <= hi[1]
+        ob = [(c, d) for c, d in other_b if inside(pts[c]) or inside(pts[d])]
+        ol = [(r, b) for r, b in other_l if inside(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2))]
+        for a, b in mine_b:
+            for c, d in ob:
+                if co.dist_seg_seg(pts[a], pts[b], pts[c], pts[d]) < HB_CROSS:
+                    body += 1
+            for r, bx in ol:
+                if _seg_box(pts[a], pts[b], bx) <= 0.0:
+                    body += 1
+        for r, bx in mine_l:
+            for c, d in ob:
+                if _seg_box(pts[c], pts[d], bx) <= 0.0:
+                    body += 1
+            for r2, b2 in ol:
+                if layout._box_gap(bx, b2) < 0.0:
+                    body += 1
+    return hb, body
+
+
+def _line_estimate(lay, pid, sid, places):
+    """For each seat, about how many bonds, dotted lines and labels of the panel the satellite's dotted lines cross or
+    touch, and how many dotted lines of the others cross its bonds (in arrays; the exact count comes later for the
+    best seats)."""
+    panel = lay.panels[lay.pidx[pid]]
+    mol = lay.mol[sid]
+    maps = list(mol.map)
+    col = {m: k for k, m in enumerate(maps)}
+    X = np.array([[xy[m] for m in maps] for xy in places], dtype=float)
+    mine = [(a['atom'], (b['sid'], b['atom'])) if a['sid'] == sid else (b['atom'], (a['sid'], a['atom']))
+            for a, b in panel['hbonds'] if sid in (a['sid'], b['sid']) and a['sid'] != b['sid']]
+    others = [((a['sid'], a['atom']), (b['sid'], b['atom'])) for a, b in panel['hbonds']
+              if sid not in (a['sid'], b['sid']) and a['sid'] in lay.xy and b['sid'] in lay.xy]
+    obonds = []
+    for key in panel['species']:
+        o = pid + '.' + key
+        if o == sid or o not in lay.xy:
+            continue
+        om = lay.mol[o]
+        obonds += [((o, om.map[i]), (o, om.map[j])) for i, j in map(tuple, om.order)]
+    own = [(mol.map[i], mol.map[j]) for i, j in map(tuple, mol.order)]
+    _, labels, _ = _panel_geometry(lay, pid)
+    labels = [(r, b) for r, b in labels if r[0] != sid]
+    labeled = [mol.map[i] for i in range(mol.n) if mol.labeled(i)]
+    t = np.array([.25, .375, .5, .625, .75])
+    count = np.zeros(len(places))
+    for my, (o, m) in mine:
+        p = X[:, col[my]]
+        q = np.array(lay.xy[o][m], dtype=float)
+        # the line's middle against the other species' label boxes and its own letters (a box around each)
+        sx = p[:, 0, None] + t * (q[0] - p[:, 0, None])
+        sy = p[:, 1, None] + t * (q[1] - p[:, 1, None])
+        boxes = np.array([b for r, b in labels if r != (o, m)], dtype=float).reshape(-1, 4)
+        if len(boxes):
+            g = _pt_box_gaps(sx, sy, np.broadcast_to(boxes, (len(places),) + boxes.shape))
+            count += (g.min(axis=2) <= 0).sum(axis=1)
+        near = [col[k] for k in labeled if k != my]
+        if near:
+            c = X[:, near]
+            mbox = np.concatenate((c - (.3, .25), c + (.3, .25)), axis=2)
+            g = _pt_box_gaps(sx, sy, mbox)
+            count += (g.min(axis=2) <= 0).sum(axis=1)
+        rows = [b for b in obonds if (o, m) not in b] + [l for l in others if (o, m) not in l]
+        if rows:
+            P = np.array([lay.xy[a[0]][a[1]] for a, _ in rows], dtype=float)
+            Q = np.array([lay.xy[b[0]][b[1]] for _, b in rows], dtype=float)
+            g = _seg_gaps(p[:, None], np.broadcast_to(q, p.shape)[:, None], P[None], Q[None])
+            count += (g < HB_CROSS).sum(axis=1)
+        body = [(a, b) for a, b in own if my not in (a, b)]
+        if body:
+            P = X[:, [col[a] for a, _ in body]]
+            Q = X[:, [col[b] for _, b in body]]
+            g = _seg_gaps(p[:, None], np.broadcast_to(q, p.shape)[:, None], P, Q)
+            count += (g < HB_CROSS).sum(axis=1)
+    if others and own:
+        P = X[:, [col[a] for a, _ in own]]
+        Q = X[:, [col[b] for _, b in own]]
+        for a, b in others:
+            pa = np.array(lay.xy[a[0]][a[1]], dtype=float)
+            pb = np.array(lay.xy[b[0]][b[1]], dtype=float)
+            g = _seg_gaps(np.broadcast_to(pa, P.shape), np.broadcast_to(pb, P.shape), P, Q)
+            count += (g < HB_CROSS).sum(axis=1)
+    return count
+
+
+SEAT_SHORT = 150            # seats whose distance to the other species is measured, after a first cheap ranking
+SEAT_PRICED = 60            # of them, the seats priced with the whole panel's cost
+
+
+def _seat_best(lay, pid, sid, links):
+    """The best rigid seat of satellite sid: (key, places, index) with key (intersections, cost); index 0 is the
+    current seat."""
+    cur = lay.xy[sid]
+    places = [cur] + [c for c, _ in _seat_candidates(lay, sid, links)]
+    ctx = _seat_context(lay, pid, sid, links)
+    other = lay.panel_ink(pid, skip=sid)
+    terms = _seat_terms(lay, sid, places, ctx)
+    rough = _line_estimate(lay, pid, sid, places)
+    order = [0] + sorted(range(1, len(places)), key=lambda k: terms[k] + 300.0 * rough[k])[:SEAT_SHORT]
+    short = dict(zip(order, _shortfalls(lay, sid, [places[k] for k in order], other)))
+    first = [0] + sorted(order[1:], key=lambda k: terms[k] + 300.0 * short[k] + 300.0 * rough[k])[:SEAT_PRICED]
+    base = dict(zip(first, _shifted_costs(lay, pid, .14, sid, [places[k] for k in first])))
+    cost = {k: base[k] + terms[k] + 300.0 * short[k] for k in first}
+    picks = [0] + sorted(first[1:], key=lambda k: cost[k] + 300.0 * rough[k])[:SEAT_EXACT]
+    best = None
+    for k in picks:
+        hb, body = _sat_count(lay, pid, sid, places[k], links)
+        key = (hb + body + (1 if short[k] > .01 else 0), round(cost[k], 6))
+        if best is None or key < best[0]:
+            best = (key, places[k], k)
+    return best
+
+
+_SEATS = collections.OrderedDict()       # the seat step's result per panel input: retries lay out the same panels again
+
+
+def _seat_key(lay, pid, sats):
+    """Everything the seat step of a panel reads: its hydrogen bonds, arrows and species with their places, and the
+    places in the previous panel."""
+    panel = lay.panels[lay.pidx[pid]]
+    parts = [pid, repr(panel['hbonds']), repr(panel['arrows']), repr(sorted(lay.style.items())), repr(sorted(sats.items()))]
+    for q in (pid, lay.prev_panel.get(pid)):
+        if q is None:
+            continue
+        for key in lay.panels[lay.pidx[q]]['species']:
+            sid = q + '.' + key
+            if sid in lay.xy:
+                sp = lay.sp[sid]
+                parts.append((sid, repr(sp['graph']), repr(sorted(sp['residue'].items())), repr(sorted(sp['label'].items())),
+                              repr(sorted(sp['abbrev'].items())), repr(sp['show']),
+                              tuple(sorted((m, round(x, 6), round(y, 6)) for m, (x, y) in lay.xy[sid].items()))))
+    return hashlib.sha1(repr(parts).encode()).hexdigest()
+
+
+def seat_satellites(lay):
+    """Layout.run, after the dotted-bond spacing: in a panel where the layout predicts that a hydrogen bond's dotted line
+    crosses a bond or another line, or touches a label (hbond_trouble), each satellite (a residue held only by
+    hydrogen bonds) is put on the rigid seat that crosses and touches least, most hydrogen bonds first, then swept
+    again; the panel keeps the new seats only when the predicted count goes down.  Hand-placed species, species an
+    arrow or a bond joins and the panel's first species stay."""
+    keep = {k: lay.__dict__[k] for k in ('arrow_chords', 'hbond_panels', 'number_sizes') if k in lay.__dict__}
+    try:
+        for p in lay.panels:
+            pid = p['id']
+            sats = {s: l for s, l in satellites(lay, pid).items() if s in lay.xy and all(o in lay.xy for _, o, _ in l)}
+            if not sats:
+                continue
+            before = hbond_trouble(lay, pid)
+            if not before:
+                continue
+            key = _seat_key(lay, pid, sats)
+            if key in _SEATS:
+                seats, note = _SEATS[key]
+                lay.xy.update({s: dict(xy) for s, xy in seats.items()})
+                if note:
+                    lay.notes.append(note)
+                continue
+            lay.arrow_chords = {pid: _chords(lay, pid)}
+            lay.hbond_panels = {pid}
+            lay.number_sizes = keep.get('number_sizes', {})
+            start = {s: lay.xy[s] for s in sats}
+            body0 = sum(_sat_count(lay, pid, s, lay.xy[s], l)[1] for s, l in sats.items())
+            first = [s for s, l in sats.items() if any(o not in sats for _, o, _ in l)]
+            later = [s for s in sats if s not in first]
+            order = sorted(first, key=lambda s: -len(sats[s])) + sorted(later, key=lambda s: -len(sats[s]))
+            for sweep in range(1 + SEAT_SWEEPS):
+                moved = False
+                for sid in order:
+                    if sweep and sum(_sat_count(lay, pid, sid, lay.xy[sid], sats[sid])) == 0:
+                        continue                # the sweeps again: only a satellite that still crosses or touches
+                    # first, a satellite tied to the rest is seated for those ties only: one tied only to satellites
+                    # comes after it, to where it then stands
+                    links = [l for l in sats[sid] if sweep or sid in later or l[1] not in later] or sats[sid]
+                    best = _seat_best(lay, pid, sid, links)
+                    if best is not None and best[2] != 0:
+                        lay.xy[sid] = best[1]
+                        moved = True
+                if not moved:
+                    break
+            after = hbond_trouble(lay, pid)
+            body1 = sum(_sat_count(lay, pid, s, lay.xy[s], l)[1] for s, l in sats.items())
+            changed = sorted(s for s in sats if lay.xy[s] is not start[s])
+            note = None
+            if changed and len(after) < len(before) and body1 <= body0:
+                note = ('panel %s: hydrogen-bonded %s re-seated (predicted dotted-line crossings and label contacts '
+                        '%d -> %d)' % (pid, ', '.join(changed), len(before), len(after)))
+                lay.notes.append(note)
+            else:
+                lay.xy.update(start)
+            _SEATS[key] = ({s: dict(lay.xy[s]) for s in sats}, note)
+            while len(_SEATS) > 200:
+                _SEATS.popitem(last=False)
+    finally:
+        for k in ('arrow_chords', 'hbond_panels', 'number_sizes'):
+            lay.__dict__.pop(k, None)
+        lay.__dict__.update(keep)

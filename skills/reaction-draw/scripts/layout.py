@@ -1800,6 +1800,8 @@ class Layout(object):
                     self.place(sid, self.clear_of_panel(sid, self.derive(sid, ref)) if ref else self.history(sid) or self.place_free(sid))
         self.fit_intra_hbonds()
         self.iupac_hbond_spacing()
+        from layout_repair import seat_satellites      # residues held only by hydrogen bonds, where a dotted line crosses
+        seat_satellites(self)
         return self.arrange()
 
     def fit_intra_hbonds(self):
