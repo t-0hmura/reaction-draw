@@ -9591,7 +9591,7 @@ function placeLonePairs(mol, ctx, job) {
         });
         const symbol2 = ownSymbol(mol, pcs, px, i);
         if (symbol2 && Math.min(...dots.map((dot2) => boxDist(dot2, symbol2))) > 0.5 * z) clear = Math.min(clear, 0);
-        const bondDirs = mol.bonds.filter((b) => b.type !== HBOND2 && b.atoms.includes(i)).map((b) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
+        const bondDirs = mol.bonds.filter((b) => b.type !== HBOND2 && b.atoms.includes(i) && !b.atoms.some((j) => mol.atoms[j].hidden)).map((b) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
         const sep = Math.min(180, ...bondDirs.map((b) => angDiff(deg2, b)));
         const across = bondDirs.some((b) => angDiff(deg2, b) + angDiff(b, want) <= angDiff(deg2, want) + 0.5 && angDiff(deg2, b) > 0.5 && angDiff(b, want) > 0.5);
         const away = pairIndex === 0 && target && (angDiff(deg2, want) > 90 || across);

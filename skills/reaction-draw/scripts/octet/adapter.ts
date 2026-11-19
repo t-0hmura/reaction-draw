@@ -633,7 +633,9 @@ function placeLonePairs(mol: any, ctx: Ctx, job: any) {
         // A seat past the H of the atom's own label (left of H2N) reads as the H's pair: blocked.
         const symbol = ownSymbol(mol, pcs, px, i);
         if (symbol && Math.min(...dots.map((dot) => boxDist(dot, symbol))) > .5 * z) clear = Math.min(clear, 0);
-        const bondDirs = mol.bonds.filter((b: any) => b.type !== HBOND && b.atoms.includes(i)).map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
+        // the drawn bonds (an H folded into the label is not drawn and takes no seat)
+        const bondDirs = mol.bonds.filter((b: any) => b.type !== HBOND && b.atoms.includes(i) && !b.atoms.some((j: number) => mol.atoms[j].hidden))
+          .map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
         const sep = Math.min(180, ...bondDirs.map((b: number) => angDiff(deg, b)));
         // a reacting pair takes no seat facing away (more than 90 degrees) from what it attacks
         // ... nor a seat with one of the atom's own bonds between it and what it attacks (the arrow would have to cross
