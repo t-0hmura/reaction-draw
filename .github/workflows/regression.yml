@@ -33,6 +33,7 @@ jobs:
         with:
           name: regression-out
           path: regression-out
+          include-hidden-files: true
 
   draw-windows:
     runs-on: windows-latest
@@ -61,3 +62,4 @@ jobs:
         with:
           name: regression-out-windows
           path: regression-out
+          include-hidden-files: true
