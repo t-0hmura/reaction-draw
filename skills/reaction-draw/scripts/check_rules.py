@@ -1658,7 +1658,9 @@ def det_cdxml(f):
     for ref in sorted(want & have):
         a, g = f.atoms[ref], c['atoms'][ref]
         q = int(a.get('charge') or 0)
-        if g['el'] is not None and g['el'] != a['el']:
+        # an abbreviation is written as a label ChemDraw does not read as chemistry; the reader may still take an element
+        # from its first letters (P1 as phosphorus), so it is checked by its text below
+        if g['el'] is not None and g['el'] != a['el'] and a.get('kind') != 'abbrev':
             out.append('CDXML alone: %s is %s, %s asked' % (ref, g['el'], a['el']))
         if g['charge'] != q:
             out.append('CDXML alone: %s has charge %+d, %+d asked' % (ref, g['charge'], q))
