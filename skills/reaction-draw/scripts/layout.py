@@ -1014,7 +1014,12 @@ class Layout(object):
         kind = specutil.atom_kind(self.sp[sid], a)
         nbrs = [xy[mol.map[j]] for j in mol.adj[mol.idx[m]]]
         dx = sum(p[0] - x for p in nbrs)
-        if kind == 'residue':                      # beside the root vertex, away from its bond
+        if kind == 'residue':                      # beside the root vertex, away from its bond (octet_draw.text_side)
+            dy = sum(p[1] - y for p in nbrs)
+            if nbrs and abs(dx) < 0.3 * math.hypot(dx, dy):   # a steep bond: the name centred above or below the vertex
+                if dy > 0:
+                    return (x - w / 2, y - 0.15 - h, x + w / 2, y - 0.15)
+                return (x - w / 2, y + 0.15, x + w / 2, y + 0.15 + h)
             if dx <= 0:
                 return (x + 0.15, y - h / 2, x + 0.15 + w, y + h / 2)
             return (x - 0.15 - w, y - h / 2, x - 0.15, y + h / 2)
@@ -2111,7 +2116,7 @@ class Layout(object):
             pboxes[p['id']] = box
             for frame in p['boxes']:
                 if frame.get('ts'):
-                    bx = self.bbox([frame['ts']])
+                    bx = self.bbox(['%s.%s' % (p['id'], k) for k in frame['species']])
                     # Reserve room for brackets and the upper-right double dagger.
                     box = (min(box[0], bx[0] - .4), min(box[1], bx[1] - 1.0),
                            max(box[2], bx[2] + 1.0), max(box[3], bx[3] + .4))
@@ -2252,7 +2257,7 @@ class Layout(object):
                 sids = ['%s.%s' % (pid, k) for k in b['species']]
                 bx = self.bbox(sids)
                 boxes.append({'x1': bx[0] + ox - b['pad'], 'y1': bx[1] + oy - b['pad'], 'x2': bx[2] + ox + b['pad'], 'y2': bx[3] + oy + b['pad'], 'kind': b.get('kind', 'box'),
-                              **({'ts': b['ts']} if b.get('ts') else {})})
+                              **({'ts': b['ts'], 'ts_species': sids} if b.get('ts') else {})})
             out_panels[pid] = {'title': titles.get(pid), 'texts': texts, 'boxes': boxes,
                                'bbox': (pboxes[pid][0] + ox, pboxes[pid][1] + oy, pboxes[pid][2] + ox, pboxes[pid][3] + oy),
                                'offset': offsets[pid]}

@@ -1033,7 +1033,7 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     const ownEndHook = ((req.src.kind === 'bond' && req.snk.kind === 'atom' && req.src.atoms.includes(req.snk.atoms[0])) ||
       (req.src.kind === 'atom' && req.snk.kind === 'bond' && req.snk.atoms.includes(req.src.atoms[0]))) &&
       (opts.compactArrows ?? []).includes(req.id);
-    const minLen = (compactHook ? 0.3 : ownEndHook ? 0.45 : 0.62) * L, kind = req.electrons === 1 ? 'fishhook' : 'curved';
+    const minLen = (compactHook || ownEndHook ? 0.45 : 0.62) * L, kind = req.electrons === 1 ? 'fishhook' : 'curved';
     // a bond's electrons moving to a neighboring bond of the same atom: a short arrow in the angle between them is natural
     const tight = req.src.kind === 'bond' && req.snk.kind === 'bond' && req.src.atoms.some((x) => req.snk.atoms.includes(x));
     const localPair = req.src.kind === 'bond' && req.snk.kind === 'atom' && req.src.atoms.includes(req.snk.atoms[0]) ? req.src.atoms

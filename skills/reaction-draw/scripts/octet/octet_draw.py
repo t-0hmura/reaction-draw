@@ -447,7 +447,8 @@ def build_job(resolved, options=None):
                 k = cap(caption('‡', float(bx['x2']) + .25, baseline(float(bx['y1']) - .2, label_pt),
                                 'left', size=label_pt), 'ts')
                 ts_frames.append({'shape': len(shapes) - 1, 'caption': k,
-                                  'atoms': [index[a['ref']] for a in p['atoms'] if a.get('species') == bx['ts']]})
+                                  'atoms': [index[a['ref']] for a in p['atoms']
+                                            if a.get('species') in (bx.get('ts_species') or [bx['ts']])]})
         for t in p.get('texts', []):
             size = float(t.get('size') or label_pt)
             c = caption(t['text'], float(t['x']), baseline(t['y'], size), t.get('align', 'center'), size=t.get('size'), color=t.get('color'))

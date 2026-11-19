@@ -9,7 +9,7 @@ IUPAC rules ([decided by the agent](../skills/reaction-draw/references/iupac-rul
 - Start from a template, keep its atom maps, and record the source figure and page.
 - Use the bundled scripts; do not write your own parser, checker, or renderer.
 - Let the scripts generate the initial layout; fix issues in the input file, never in the rendered drawing.
-- The scripts fix the layout automatically. The agent fixes only input errors and chemistry errors, and revises the layout only when the user asks. A figure that still fails the checks is handed over with its findings, which the user can point out or fix in the CDXML file.
+- The scripts fix the layout automatically. The agent fixes input errors and chemistry errors; when the checks fail, it revises the layout at most twice, each time drawing three revised versions at once and continuing from the best. A figure that still fails the checks is handed over with its findings, which the user can point out or fix in the CDXML file.
 
 ## Size and layout
 

@@ -4,8 +4,8 @@
 
   python draw_figure.py INPUT.json --out DIR [--dpi 600 | --png-width N] [--browser-cmd "ssh HOST PYTHON"]
                         [--positive-control] [--quiet] [--octet PATH --node-modules PATH]
-  python draw_figure.py A.json B.json C.json --out DIR --versions   (only when the user asks: versions drawn at once,
-                        each in DIR/<name>; BEST names one)
+  python draw_figure.py A.json B.json C.json --out DIR --versions   (a layout revision, or when the user asks:
+                        versions drawn at once, each in DIR/<name>; BEST names one)
   python draw_figure.py --check-env [--browser-cmd "ssh HOST PYTHON"]
 
 Exit status (of the BEST version when several are drawn): 0 when every check passes (and, with --positive-control, the positive control finds every planted error), 1 when a check fails,
@@ -56,9 +56,13 @@ START = time.time()
 LAST_PROGRESS = None
 SPEC_NEXT = 'NEXT: fix each input error in the input file and rerun the same command; do not stop.'
 INPUT_NEXT = 'NEXT: these FIX lines are in the input itself; fix them in the input file and rerun the same command.'
-LAYOUT_NEXT = ('NEXT: the script has already fixed what it can of the layout; do not revise the layout. Check the '
-               'chemistry (AUDIT) and rerun only after fixing a chemistry error in the input; otherwise hand over this '
-               'figure and report its FIX lines.')
+LAYOUT_NEXT = ('NEXT: the script has already fixed what it can of the layout. Check the chemistry (AUDIT) first and fix '
+               'any chemistry error in the input. Then revise the layout: write three differently revised copies of the input '
+               'that address the FIX lines and draw them at once with `python scripts/draw_figure.py a.json b.json c.json '
+               '--versions --out DIR`.')
+VERSIONS_NEXT = ('NEXT: after the first layout revision, revise once more from the BEST version in the same way; after the '
+                 'second, hand over the BEST figure and report its FIX lines.')
+VERSION_ENV = 'REACTION_DRAW_VERSION'               # set for each drawing of a --versions run (one NEXT line for them all)
 # what a run writes into DIR; the files of an earlier run are removed first, so that a failed run leaves no stale figure
 # or verdict behind (.state.json then says why it failed)
 OUTPUTS = ('figure.cdxml', 'figure.svg', 'figure.png', 'figure_small.png', '.state.json')
@@ -1431,7 +1435,7 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     files = sorted(p.name for p in out.iterdir() if p.is_file() and not p.name.startswith('.'))
     lines.append('files: ' + ', '.join(files))
     lines.append('RESULT: %s' % ('all checks pass' if ok else 'CHECKS FAILED'))
-    if not ok:
+    if not ok and not os.environ.get(VERSION_ENV):
         lines.append(LAYOUT_NEXT)
     audit = check_rules.audit_lines(fig.features)
     _write_state(out, checks={'result': result, 'positive_control': pc, 'times_s': times,
@@ -1476,15 +1480,15 @@ def check_environment(browser_cmd=None, octet_dir=None, node_modules=None, log=p
 
 def run_versions(specs, out, options, log=print):
     """Draw several versions of one input at once, each in out/<name>/, print each result and name the best one:
-    a passing version with the fewest WARNING lines, else the one with the fewest FIX lines (only when the user asks:
-    --versions)."""
+    a passing version with the fewest WARNING lines, else the one with the fewest FIX lines (--versions: a layout
+    revision after CHECKS FAILED, or when the user asks)."""
     import subprocess
     names = [p.stem for p in specs]
     if len(set(names)) < len(names):
         log('input error: give the versions different file names')
         return 2
     out.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, REACTION_DRAW_WORKERS=str(max(1, (os.cpu_count() or 1) // len(specs))))
+    env = dict(os.environ, REACTION_DRAW_WORKERS=str(max(1, (os.cpu_count() or 1) // len(specs))), **{VERSION_ENV: '1'})
     jobs = [subprocess.Popen([sys.executable, str(Path(__file__).resolve()), str(spec), '--out', str(out / name)] + options,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
             for spec, name in zip(specs, names)]
@@ -1519,6 +1523,8 @@ def run_versions(specs, out, options, log=print):
                                          out / name))
     for line in audit:
         log(line)
+    if code == 1:
+        log(VERSIONS_NEXT)
     return code
 
 
@@ -1535,7 +1541,7 @@ def main(argv=None):
     ap.add_argument('--browser-cmd', help='command that runs the browser part elsewhere, e.g. "ssh HOST /path/to/python"')
     ap.add_argument('--positive-control', action='store_true', help='also run the checker\'s positive control (the regression test does)')
     ap.add_argument('--quiet', action='store_true', help='print the result, stereo notes and audit')
-    ap.add_argument('--versions', action='store_true', help='draw several versions of the input at once (only when the user asks)')
+    ap.add_argument('--versions', action='store_true', help='draw several versions of the input at once (a layout revision, or when the user asks)')
     args = ap.parse_args(argv)
 
     def interrupted(signum, frame):
@@ -1556,8 +1562,8 @@ def main(argv=None):
                 and (not args.quiet or not line.lstrip().startswith(('FIX ', 'POSITIVE CONTROL')))):
             print(line, flush=True)
     if len(args.spec) > 1 and not args.versions:
-        print('STOP: draw one input file; the script fixes the layout itself. Several versions are drawn only when the user '
-              'asks for them (--versions).', flush=True)
+        print('STOP: draw one input file first; the script fixes the layout itself. Several versions are drawn with '
+              '--versions (a layout revision after CHECKS FAILED, or when the user asks).', flush=True)
         return 2
     if len(args.spec) > 1:
         options = [x for flag, value in (('--dpi', args.dpi), ('--png-width', args.png_width), ('--octet', args.octet),

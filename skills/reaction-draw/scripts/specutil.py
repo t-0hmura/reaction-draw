@@ -787,7 +787,12 @@ def load_spec_v2(data, path=None):
             panel['boxes'].append({'species': list(b['species']), 'pad': float(b.get('pad', 0.35)), 'kind': kind})
         for key in panel['species']:
             if by_id['%s.%s' % (pid, key)].get('ts'):
-                panel['boxes'].append({'species': [key], 'pad': 0.4, 'kind': 'brackets', 'ts': '%s.%s' % (pid, key)})
+                # the brackets hold the molecules hydrogen-bonded to the transition state too, so that no dotted line
+                # crosses them
+                partners = [h[1 - i]['species'] for h in panel['hbonds'] for i in (0, 1)
+                            if h[i]['species'] == key and h[1 - i]['species'] != key]
+                panel['boxes'].append({'species': [key] + list(dict.fromkeys(partners)), 'pad': 0.4, 'kind': 'brackets',
+                                       'ts': '%s.%s' % (pid, key)})
         panel['texts'] = []
         for ti, t in enumerate(p.get('texts') or []):
             where = 'panel %s texts[%d]' % (pid, ti)

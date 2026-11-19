@@ -10005,7 +10005,7 @@ function routeArrows(mol, ctx, job, seats = []) {
       const snkPts = ends(req.snk, 0.19 * L, [0.16 * L, 0.22 * L, 0.3 * L]).filter((s) => !repair || matches(s.p, req.snk)).map((s) => s.atom === void 0 ? s : { ...s, pen: s.pen + headAtPair(s.atom, s.p) });
       const compactHook = req.electrons === 1 && req.src.kind === "atom" && req.snk.kind === "gap";
       const ownEndHook = (req.src.kind === "bond" && req.snk.kind === "atom" && req.src.atoms.includes(req.snk.atoms[0]) || req.src.kind === "atom" && req.snk.kind === "bond" && req.snk.atoms.includes(req.src.atoms[0])) && (opts.compactArrows ?? []).includes(req.id);
-      const minLen = (compactHook ? 0.3 : ownEndHook ? 0.45 : 0.62) * L, kind = req.electrons === 1 ? "fishhook" : "curved";
+      const minLen = (compactHook || ownEndHook ? 0.45 : 0.62) * L, kind = req.electrons === 1 ? "fishhook" : "curved";
       const tight = req.src.kind === "bond" && req.snk.kind === "bond" && req.src.atoms.some((x) => req.snk.atoms.includes(x));
       const localPair = req.src.kind === "bond" && req.snk.kind === "atom" && req.src.atoms.includes(req.snk.atoms[0]) ? req.src.atoms : req.src.kind === "atom" && req.snk.kind === "bond" && req.snk.atoms.includes(req.src.atoms[0]) ? req.snk.atoms : null;
       const localBond = localPair ? [(px[localPair[0]][0] + px[localPair[1]][0]) / 2, (px[localPair[0]][1] + px[localPair[1]][1]) / 2] : null;
