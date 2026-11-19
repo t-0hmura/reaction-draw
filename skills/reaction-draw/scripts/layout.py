@@ -1380,7 +1380,22 @@ class Layout(object):
             err = sum(dist(out[m], target[m]) ** 2 for m in keys)
             if best is None or err < best[0] - 1e-9:
                 best = (err, out)
-        return best[1] if sp['xy'] else straighten(self.mol[sid], best[1])
+        # a molecule laid over its earlier places keeps that turn when a curved arrow reaches another molecule from it:
+        # turning it would break the room the arrow has to its partner
+        return best[1] if sp['xy'] or self.arrow_ends_to_others(sid) else straighten(self.mol[sid], best[1])
+
+    def arrow_ends_to_others(self, sid):
+        """The atoms (maps) of this molecule at the ends of curved arrows that reach another molecule in its panel
+        (a forming bond between two molecules counts both of its atoms)."""
+        out = set()
+        for ar in self.panels[self.pidx[self.sp[sid]['panel']]]['arrows']:
+            pairs = []
+            for e in (ar['from'], ar['to']):
+                for m in e.get('members') or [e]:
+                    pairs += [(m['sid'], m['atom'])] + ([(m['sid'], m['atom2'])] if m.get('atom2') is not None else [])
+            if len({x for x, _ in pairs}) > 1:
+                out.update(a for x, a in pairs if x == sid)
+        return out
 
     def assign_slots(self, sid, r, fixed, free, pos, old):
         rp = pos[r]

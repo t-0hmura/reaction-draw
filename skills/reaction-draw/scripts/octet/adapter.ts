@@ -750,6 +750,16 @@ function pairSeat(mol: any, job: any, i: number, ctx?: Ctx): number | null {
   const seats = clear.length ? clear : free;
   return seats.length ? seats.reduce((a, b) => (angDiff(b, want) < angDiff(a, want) ? b : a)) : null;
 }
+// The side (0 right, 180 left) toward which a fishhook leaves atom i's unpaired electron, or null: the written H keep
+// off it, so that the dot and the arrow read as the heavy atom's (OH*, not *HO).
+function radicalSeat(mol: any, job: any, i: number): number | null {
+  if (!mol.atoms[i].radical) return null;
+  const r = ((job.curved ?? []) as CurvedReq[]).find((c) => c.electrons === 1 && c.src.kind === 'atom' && c.src.atoms[0] === i);
+  if (!r) return null;
+  const px = atomPxOf(mol), target: Pt = r.snk.kind === 'atom' ? px[r.snk.atoms[0]]
+    : [(px[r.snk.atoms[0]][0] + px[r.snk.atoms[1]][0]) / 2, (px[r.snk.atoms[0]][1] + px[r.snk.atoms[1]][1]) / 2];
+  return angDiff(pageDeg(px[i], target), 0) <= 90 ? 0 : 180;
+}
 // Octet's render.ts reads an atom's alignment only to lay out the rest of its label (H, counts, a sign, more letters)
 // and to turn a label: one glyph alone (an O without H) or no label at all is drawn alike in every alignment, so every
 // alignment costs the same and the current one stays.  The label's own runs are those drawn at the atom (labelAt).
@@ -761,7 +771,8 @@ function alignFree(mol: any, ctx: Ctx, i: number): boolean {
 }
 function placeFoldedHydrogens(mol: any, ctx: Ctx, job: any) {
   for (let i = 0; i < mol.atoms.length; i++) {
-    if (mol.atoms[i].hidden || (job.fixedLabelAligns ?? []).includes(i) || !mol.bonds.some((b: any) => b.atoms.includes(i))) continue;
+    const dotSeat = radicalSeat(mol, job, i);
+    if (mol.atoms[i].hidden || (job.fixedLabelAligns ?? []).includes(i) || (!mol.bonds.some((b: any) => b.atoms.includes(i)) && dotSeat === null)) continue;
     const stacked = ['above', 'below'].includes(mol.atoms[i].align) && !stackable(mol, i);
     if (!stacked && alignFree(mol, ctx, i)) continue;
     // written H on the reacting pair's seat count as H on bond ink; so do H written within 45 degrees of one of the
@@ -771,7 +782,7 @@ function placeFoldedHydrogens(mol: any, ctx: Ctx, job: any) {
       .map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
     const cost = () => {
       const side = SIDE_DEG[hydrogenSide(mol, ctx, i) ?? ''];
-      return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 200000 : 0)
+      return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 200000 : 0) + (dotSeat !== null && side === dotSeat ? 200000 : 0)
         + (side !== undefined && bondDirs.some((b: number) => angDiff(side, b) < 45) ? 150000 : 0);
     };
     let best = stacked ? Infinity : cost(), chosen = mol.atoms[i].align;
@@ -803,7 +814,8 @@ function keepHydrogenSides(mol: any, ctx: Ctx, job: any) {
       // and never onto the seat of its reacting lone pair
       const px = atomPxOf(mol), toward = SIDE_DEG[want] ?? 0;
       if (mol.bonds.some((b: any) => b.atoms.includes(i) && b.type !== HBOND && !b.atoms.some((j: number) => mol.atoms[j].hidden)
-        && angDiff(pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]), toward) < 60) || pairSeat(mol, job, i, ctx) === toward) continue;
+        && angDiff(pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]), toward) < 60) || pairSeat(mol, job, i, ctx) === toward
+        || radicalSeat(mol, job, i) === toward) continue;
       const saved = mol.atoms[i].align;
       const fit = (stackable(mol, i) ? ['left', 'right', 'above', 'below'] : ['left', 'right']).find((align) => { mol.atoms[i].align = align; return sideOf(i) === want && labelClash(mol, ctx, i) < 1; });
       mol.atoms[i].align = fit ?? saved;
