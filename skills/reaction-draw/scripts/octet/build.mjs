@@ -123,7 +123,7 @@ if (args.has('record')) {
   const record = {
     page: path.basename(out), page_bytes: Buffer.byteLength(page), page_sha256: sha(page),
     octet_draw: {repository: UPSTREAM, commit, version: octetVersion, pinned: PINNED},
-    esbuild: esbuild.version, adapter_sha256: sha(fs.readFileSync(path.join(here, 'adapter.ts'))),
+    esbuild: esbuild.version, adapter_sha256: sha(fs.readFileSync(path.join(here, 'adapter.ts'), 'utf8').replace(/\r\n/g, '\n')),
     stand_ins: ['indigo-ketcher', '@tauri-apps/api/core'],
     inputs: Object.entries(outInputs).map(([k, v]) => ({file: name(k), bytes_in_page: v.bytesInOutput})).sort((a, b) => a.file.localeCompare(b.file)),
   };

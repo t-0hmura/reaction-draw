@@ -632,7 +632,8 @@ def bundled_page():
     except (OSError, ValueError):
         rec = {}
     want = rec.get('adapter_sha256')
-    if want and want != hashlib.sha256((HERE / 'adapter.ts').read_bytes()).hexdigest():
+    # line endings as stored in the repository (LF): a Windows checkout writes CRLF, which is not a change
+    if want and want != hashlib.sha256((HERE / 'adapter.ts').read_bytes().replace(b'\r\n', b'\n')).hexdigest():
         notes.append('adapter.ts has changed since dist/%s was built: the drawing uses the bundled page, without the '
                      'change (rebuild it with build.mjs, or pass --octet with an Octet Draw checkout)' % DIST_PAGE.name)
     return DIST_PAGE, notes
