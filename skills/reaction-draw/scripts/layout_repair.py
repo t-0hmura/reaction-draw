@@ -435,6 +435,8 @@ def _repair_lengths(lay, original):
             new_d = layout.ang(fresh[b][0]-fresh[a][0], fresh[b][1]-fresh[a][1])
             shifted = layout.transform({m:(x-fresh[a][0], y-fresh[a][1]) for m,(x,y) in fresh.items()}, old_d-new_d)
             candidate = {m:(x+xy[a][0], y+xy[a][1]) for m,(x,y) in shifted.items()}
+            if not lay.sp[sid]['xy']:          # turned onto the 30-degree lattice, not left at the angle of one bond
+                candidate = layout.straighten(mol, candidate)
             if _allowed(lay, sid, candidate, original):
                 lay.xy[sid], lay.chain[sid] = candidate, chain
                 notes.append(sid + ': redepicted changed ring topology from the original SMILES')

@@ -491,6 +491,7 @@ def depict(sp, force_rdkit=False):
     lens = sorted(dist(raw[a], raw[b]) for a, b in (tuple(e) for e in mol.order))
     s = lens[len(lens) // 2] or 1.0
     raw = {i: (x / s, y / s) for i, (x, y) in raw.items()}
+    raw = transform(raw, lattice_turn(mol, raw, key=lambda i: i))     # on the 30-degree lattice before the turns below
     path = mol.longest_path()
     best = None
     for rot in range(0, 360, 30):
@@ -783,6 +784,58 @@ def transform(pos, rot=0.0, mirror=False, flip=None):
         # rotation on the page (y down): x' = x c + y s, y' = -x s + y c
         out[k] = (x * c + y * s, -x * s + y * c)
     return out
+
+
+def six_rings(mol):
+    """The six-membered rings of a molecule (tuples of atom indices in ring order)."""
+    rings = {}
+    for e in mol.ring_bonds:
+        a, b = tuple(e)
+        stack = [(b, (b,))]
+        while stack:
+            x, path = stack.pop()
+            for y in mol.adj[x]:
+                if y == a and len(path) == 5:
+                    rings.setdefault(frozenset(path + (a,)), path + (a,))
+                elif y != a and y not in path and len(path) < 5:
+                    stack.append((y, path + (y,)))
+    return list(rings.values())
+
+
+def lattice_turn(mol, pos, key=None):
+    """Degrees (within +-15, counterclockwise on the page) that put a molecule's bonds on the 30-degree lattice of
+    standard drawings, so that its rings and chains run level or upright: the bonds of its most regular six-membered ring
+    (a ring a reaction left undistorted) if it has one, else its bonds between heavy atoms.  pos is keyed by
+    key(atom index), the atom's map by default."""
+    key = key or (lambda i: mol.map[i])
+    def phase(bonds):
+        sx = sy = 0.0
+        n = 0
+        for i, j in bonds:
+            a, b = pos.get(key(i)), pos.get(key(j))
+            if a is None or b is None or dist(a, b) < 1e-6:
+                continue
+            t = math.radians(ang(b[0] - a[0], b[1] - a[1]) * 12)
+            sx, sy, n = sx + math.cos(t), sy + math.sin(t), n + 1
+        return (math.hypot(sx, sy) / n if n else 0.0), sx, sy
+    def doubles(r):               # among equally regular rings, the one with more double bonds (an aromatic ring)
+        return sum(1 for i, j in zip(r, r[1:] + r[:1]) if float(mol.order[frozenset((i, j))]) > 1)
+    rings = [(round(ph[0], 2), doubles(r), ph) for r in six_rings(mol) for ph in [phase(list(zip(r, r[1:] + r[:1])))]]
+    best = max(rings, key=lambda x: x[:2])[2] if rings else phase([tuple(e) for e in mol.order if not any(mol.is_h[k] for k in e)])
+    if best[0] < 1e-6:
+        return 0.0
+    turn = -math.degrees(math.atan2(best[2], best[1])) / 12
+    return turn if abs(turn) > 0.5 else 0.0
+
+
+def straighten(mol, pos, key=None):
+    """pos turned about its middle onto the 30-degree lattice (lattice_turn)."""
+    turn = lattice_turn(mol, pos, key)
+    if not turn or not pos:
+        return pos
+    cx, cy = sum(x for x, _ in pos.values()) / len(pos), sum(y for _, y in pos.values()) / len(pos)
+    out = transform({k: (x - cx, y - cy) for k, (x, y) in pos.items()}, turn)
+    return {k: (x + cx, y + cy) for k, (x, y) in out.items()}
 
 
 # ------------------------------------------------------------------------------------------ the figure
@@ -1181,8 +1234,45 @@ class Layout(object):
             # a bond formed between atoms that were far apart (a rearrangement): draw the molecule anew and lay it over
             # the reference by the atoms whose neighbors did not change
             kept = [m for m in common if m not in reacting]
-            return self.keep_sides(sid, rmol, self.refit(sid, {m: ref[m] for m in (kept if len(kept) >= 2 else common)}))
-        return self.keep_sides(sid, rmol, pos)
+            return self.keep_ez(sid, self.keep_sides(sid, rmol, self.refit(sid, {m: ref[m] for m in (kept if len(kept) >= 2 else common)})))
+        return self.keep_ez(sid, self.keep_sides(sid, rmol, pos))
+
+    def keep_ez(self, sid, pos):
+        """A double bond whose E/Z the inherited places got wrong (one formed where a single bond stood): the smaller side
+        of one of its ends turned over that bond, as kept_shape does.  Ring bonds and hand-placed atoms stay."""
+        mol = self.mol[sid]
+        want = _stereo_wanted(mol)
+        if not want or any(m not in pos for m in mol.idx):
+            return pos
+        at = {mol.idx[m]: p for m, p in pos.items() if m in mol.idx}
+        hand = {mol.idx[m] for m in self.sp[sid]['xy'] if m in mol.idx}
+        for _ in range(len(want)):
+            got = _stereo_drawn(mol, at)
+            wrong = [e for e, c in want.items() if got.get(e) not in (None, c) and e not in mol.ring_bonds]
+            if not wrong:
+                break
+            a, b = tuple(wrong[0])
+            sides = []
+            for end, other in ((a, b), (b, a)):
+                atoms = set()
+                for n in mol.adj[end]:
+                    if n != other:
+                        atoms |= set(mol.subtree(n, end))
+                if atoms and not atoms & hand and other not in atoms:
+                    sides.append((len(atoms), end, other, atoms))
+            if not sides:
+                break
+            _, end, other, atoms = min(sides, key=lambda t: t[0])
+            (px, py), (qx, qy) = at[end], at[other]
+            ux, uy = qx - px, qy - py
+            n2 = ux * ux + uy * uy or 1.0
+            for k in atoms:
+                x, y = at[k]
+                t = ((x - px) * ux + (y - py) * uy) / n2
+                at[k] = (2 * (px + t * ux) - x, 2 * (py + t * uy) - y)
+            self.notes.append('%s: turned %s over the %d=%d bond for its E/Z' % (
+                sid, ', '.join(str(mol.map[k]) for k in sorted(atoms)), mol.map[end], mol.map[other]))
+        return {mol.map[i]: p for i, p in at.items()}
 
     def keep_sides(self, sid, rmol, pos):
         """A group that joins this molecule here and was part of another molecule in the previous panel (CO2 taken up
@@ -1285,7 +1375,7 @@ class Layout(object):
             err = sum(dist(out[m], target[m]) ** 2 for m in keys)
             if best is None or err < best[0] - 1e-9:
                 best = (err, out)
-        return best[1]
+        return best[1] if sp['xy'] else straighten(self.mol[sid], best[1])
 
     def assign_slots(self, sid, r, fixed, free, pos, old):
         rp = pos[r]
