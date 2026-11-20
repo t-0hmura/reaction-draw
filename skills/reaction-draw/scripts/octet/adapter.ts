@@ -1185,18 +1185,22 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
             if (sl !== null && sl <= L) { atBond = 700; break; }
           }
         const pivot = tight ? px[req.src.atoms.find((x) => req.snk.atoms.includes(x))!] : null, mid = path[Math.floor(n / 2)], half: Pt = [(s.p[0] + e.p[0]) / 2, (s.p[1] + e.p[1]) / 2];
-        const inward = pivot && (mid[0] - half[0]) * (pivot[0] - half[0]) + (mid[1] - half[1]) * (pivot[1] - half[1]) > 0 ? 600 : 0;
+        // the side of a local arrow comes before its clearance: it bulges away from its atom (or bond) even when it must
+        // cross another bond of that atom to do so
+        const inward = pivot && (mid[0] - half[0]) * (pivot[0] - half[0]) + (mid[1] - half[1]) * (pivot[1] - half[1]) > 0 ? 1e6 : 0;
         // a local arrow (a bond onto one of its own atoms, or a pair into one of its own bonds) bulges away from that bond:
         // its concave side faces the bond and the atom
         const side = (q: Pt) => (e.p[0] - s.p[0]) * (q[1] - s.p[1]) - (e.p[1] - s.p[1]) * (q[0] - s.p[0]);
-        const outward = localBond && side(mid) * side(localBond) > 0 ? 5000 : 0;
+        const outward = localBond && side(mid) * side(localBond) > 0 ? 1e6 : 0;
         const cost = inward + outward + hard + amb + aimDir + atBond + loop + s.pen + e.pen + soft * 20 + len * 0.04 + Math.max(0, wishLen - len) * 1.5 + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
-        const cand = {a, polys, cost, seat, worst, len, chord, s: s.tag, e: e.tag, hard, key};
+        const cand = {a, polys, cost, seat, worst, len, chord, s: s.tag, e: e.tag, hard, key, wrongSide: inward + outward};
         if (!bestFree || cost < bestFree.cost) bestFree = cand;
         if (!prev || cost + seat < prev.cost + prev.seat) withEnds.set(key, cand);
       }
     }
-    if (bestFree) break; // Keep a working manual bend; try automatic bends only when it has no route.
+    // Keep a manual bend whose route keeps clear of the ink and, for a local arrow, bulges to its proper side; otherwise
+    // the automatic bends are tried as well and the cheapest route wins.
+    if (bestFree && !bestFree.hard && !bestFree.wrongSide) break;
     }
     const best = bestFree ? withEnds.get(bestFree.key) : null;
     if (!best) { if (repair) problems.push(`arrow ${req.id}: no route found`); continue; }

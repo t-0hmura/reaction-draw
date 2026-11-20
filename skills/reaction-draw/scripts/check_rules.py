@@ -168,6 +168,8 @@ def warning_finding(name, message):
         return True
     if name == 'four_bond':
         return 'axis-aligned four-bond stereocenter' not in message
+    if name == 'overlap_arrow_bond':
+        return ' at its own atom ' in message
     if name == 'number_place':
         return 'margin under' in message or 'between two labels' in message
     if name == 'number_clear':
@@ -743,6 +745,17 @@ def _arrow_hbond(f, aid):
     return atoms if len(atoms) == 2 else None
 
 
+def _arrow_pivot(f, aid):
+    """The atom a local curved arrow turns about (a bond to one of its own atoms, an atom's pair into one of its own bonds,
+    or a bond into a bond sharing an atom with it); None for other arrows."""
+    arrow = next((c for c in f.curved if c['id'] == aid), None)
+    if arrow is None:
+        return None
+    a, b = set(arrow['from'].get('refs') or []), set(arrow['to'].get('refs') or [])
+    shared = a & b
+    return next(iter(shared)) if len(shared) == 1 and max(len(a), len(b)) == 2 else None
+
+
 def det_overlap_arrow_bond(f):
     sc = f.scene()
     ink = sc['bonds'] + sc['marks']
@@ -751,6 +764,7 @@ def det_overlap_arrow_bond(f):
     for aid, shapes in sc['arrows']:
         box = _union_bbox(shapes)
         joined = _arrow_hbond(f, aid)
+        pivot = _arrow_pivot(f, aid)
         # a clearance of 0 or less needs overlapping bboxes: only those pieces and ink are measured (99 for the rest)
         for s in (ink[i] for i in _near(ink_boxes, box, 0.0)) if box else ink:
             if joined and s.owner and s.owner[0] == 'hbond' and frozenset(s.owner[1]) == joined:
@@ -758,7 +772,12 @@ def det_overlap_arrow_bond(f):
             c = min([shape_clear(a, s, overlap_only=True) for a in shapes if not _far(a.bbox, s.bbox, SLACK)]
                     or [99.0 for _ in shapes[:1]])
             if c <= 0.0:
-                out.append('arrow %s touches %s (%.2f pt)' % (aid, _ink_name(s), c))
+                if pivot and s.owner and s.owner[0] == 'bond' and pivot in s.owner[1]:
+                    # a local arrow keeps its concave side to its atom; when another bond of that atom lies in the way,
+                    # no route on that side clears it (a warning)
+                    out.append('arrow %s crosses %s at its own atom %s (%.2f pt)' % (aid, _ink_name(s), pivot, c))
+                else:
+                    out.append('arrow %s touches %s (%.2f pt)' % (aid, _ink_name(s), c))
     return out
 
 
@@ -1828,11 +1847,43 @@ def _axis_rows(p, q, shapes):
     return rows
 
 
+def _joined_marks(shapes):
+    """The backend can cut one mark into polygons that share an edge; those pieces are read as one mark (their hull)."""
+    root = list(range(len(shapes)))
+
+    def top(i):
+        while root[i] != i:
+            i = root[i]
+        return i
+    for i, j in itertools.combinations(range(len(shapes)), 2):
+        if sum(any(math.dist(v, w) < .01 for w in shapes[j].pts) for v in shapes[i].pts) >= 2:
+            root[top(j)] = top(i)
+    out = []
+    for r in sorted({top(i) for i in range(len(shapes))}):
+        part = [s for i, s in enumerate(shapes) if top(i) == r]
+        if len(part) == 1:
+            out.append(part[0])
+            continue
+        pts = sorted({v for s in part for v in s.pts})
+
+        def half(seq):
+            h = []
+            for v in seq:
+                while len(h) > 1 and (h[-1][0] - h[-2][0]) * (v[1] - h[-2][1]) - (h[-1][1] - h[-2][1]) * (v[0] - h[-2][0]) <= 0:
+                    h.pop()
+                h.append(v)
+            return h[:-1]
+        mark = co.Shape(part[0].cls, 'poly', half(pts) + half(pts[::-1]), True, True, 0.0, '')
+        mark.owner = part[0].owner
+        out.append(mark)
+    return out
+
+
 def _styled_ink(f, b):
-    """Each saved SVG polygon of this bond, projected along/across its axis."""
+    """Each mark of this bond (the saved SVG polygons, a cut mark joined), projected along/across its axis."""
     p, q = f.xy(b['a']), f.xy(b['b'])
     own = (('bond', (b['a'], b['b'])), ('bond', (b['b'], b['a'])))
-    return _axis_rows(p, q, [s for s in f.scene()['bonds'] if s.owner in own])
+    return _axis_rows(p, q, _joined_marks([s for s in f.scene()['bonds'] if s.owner in own]))
 
 
 def _dash_findings(f, rows, style):
@@ -1874,7 +1925,8 @@ def det_partial_dashes(f):
 
 
 def _inner_side(f, b):
-    """Side of bond b that faces its ring (the backend's choice: octet_draw.delocalized_ring), else its neighbors."""
+    """Side of bond b that faces its ring (the backend's choice: octet_draw.delocalized_ring and ring_side, which turns
+    away from a partial bond leaving an end at a narrow angle), else its neighbors."""
     a, z = b['a'], b['b']
     adj = {r: [n for n in f.nbrs[r] if frozenset((r, n)) != frozenset((a, z))] for r in f.nbrs}
     styles = {frozenset((e['a'], e['b'])): e.get('style') for e in f.bonds}
@@ -1883,7 +1935,11 @@ def _inner_side(f, b):
     if ring:
         def cross(r):
             return (q[0] - p[0]) * (f.xy(r)[1] - p[1]) - (q[1] - p[1]) * (f.xy(r)[0] - p[0])
-        value = ring_side(ring, styles, cross)
+        def angle(end, r):
+            o, t = (p, q) if end == a else (q, p)
+            d = math.degrees(math.atan2(f.xy(r)[1] - o[1], f.xy(r)[0] - o[0]) - math.atan2(t[1] - o[1], t[0] - o[0])) % 360
+            return min(d, 360 - d)
+        value = ring_side(ring, styles, cross, angle)
         return math.copysign(1, value) if abs(value) > .01 else 0
     neighbors = [r for r in f.nbrs[a] + f.nbrs[z] if r not in (a, z)]
     cross = sum((q[0] - p[0]) * (f.xy(r)[1] - p[1]) -

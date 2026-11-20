@@ -420,7 +420,11 @@ def build_job(resolved, options=None):
             p0, p1 = pos[b['a']], pos[b['b']]
             def cross(r, p0=p0, p1=p1):
                 return (p1[0] - p0[0]) * (pos[r][1] - p0[1]) - (p1[1] - p0[1]) * (pos[r][0] - p0[0])
-            value = ring_side(ring, styles, cross) if ring else sum(cross(r) for r in adj[b['a']] + adj[b['b']])
+            def angle(end, r, p0=p0, p1=p1, a=b['a']):
+                o, q = (p0, p1) if end == a else (p1, p0)
+                t = math.degrees(math.atan2(pos[r][1] - o[1], pos[r][0] - o[0]) - math.atan2(q[1] - o[1], q[0] - o[0])) % 360
+                return min(t, 360 - t)
+            value = ring_side(ring, styles, cross, angle) if ring else sum(cross(r) for r in adj[b['a']] + adj[b['b']])
             e['position'] = 'left' if value < 0 else 'right'
         if b.get('color'):
             e['colour'] = b['color'].lower()
@@ -688,11 +692,20 @@ def delocalized_ring(adj, a, z, styles):
     return max(paths, key=lambda p: sum(styles.get(frozenset(e)) in ('1.5', 'partial') for e in zip(p, p[1:])))
 
 
-def ring_side(ring, styles, cross):
+NARROW_PARTIAL = 35.0    # degrees: a partial bond this close to a 1.5 bond at a shared atom takes the ring side
+
+
+def ring_side(ring, styles, cross, angle=None):
     """Which side of bond ring[0]-ring[-1] its ring lies on, as a signed value of cross (the caller's cross product of
     the bond with an atom). The two ring neighbors decide; when a twisted (perspective) ring puts them on opposite
-    sides, the neighbor joined by a 1.5 bond decides, else the whole ring."""
+    sides, the neighbor joined by a 1.5 bond decides, else the whole ring.  angle(end, r): the angle in degrees at end
+    between the bond and the bond end-r; a partial bond leaving an end within NARROW_PARTIAL lies along the ring side,
+    so the other side is returned (a dashed line there would run over the partial bond's marks)."""
     a, z = ring[0], ring[-1]
+    if angle is not None:
+        for end, r in ((a, ring[1]), (z, ring[-2])):
+            if styles.get(frozenset((end, r))) == 'partial' and angle(end, r) < NARROW_PARTIAL:
+                return -cross(r)
     sa, sz = cross(ring[1]), cross(ring[-2])
     if sa * sz > 0:
         return sa
