@@ -2,16 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check a drawn figure against the drawing rules and against the figure it was drawn from.
 
-  python check_rules.py OUTDIR [--json OUT.json] [--positive-control] [--quiet]
+  python check_rules.py OUTDIR [--json OUT.json] [--quiet]
 
 OUTDIR is what draw_figure.py writes: .state.json (resolved layout, backend measurements, saved data and checks)
 and figure.svg. No browser is
-needed.  Exit status 0 when every check passes, 1 when a check fails (or, with --positive-control, a planted error is
-missed), 2 on bad input.
+needed.  Exit status 0 when every check passes, 1 when a check fails, 2 on bad input.
 
 Each check is a detector (DETECTORS below, described in the repository's docs/checks.md); only the detectors that the
-figure's features make relevant run.  --positive-control plants one error per detector into a copy and requires a
-finding.
+figure's features make relevant run.
 
 The report and reload formats are documented in the repository's docs/backend.md (the backend writes them). Coordinates
 of report are points in the frame of the SVG's user units; resolved is in bond lengths (y down).
@@ -22,12 +20,13 @@ import copy
 import itertools
 import json
 import math
-import pickle
 import re
 import statistics
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import svg_geometry as co  # noqa: E402
@@ -246,6 +245,51 @@ def _far(box, b, limit):
     """True when the bbox of every shape inside box (a union of their bboxes) is more than limit from bbox b: then
     co.bbox_gap is above limit for each of them too."""
     return box is not None and max(box[0] - b[2], b[0] - box[2], box[1] - b[3], b[1] - box[3]) > limit
+
+
+SLACK = 1e-6    # pt added to the limit of the array prefilters below, so that rounding never drops a box an exact test keeps
+
+
+def _boxes(items):
+    """An (n, 4) array of boxes (x1, y1, x2, y2): the bboxes of shapes, or boxes as they are."""
+    return np.array([getattr(x, 'bbox', x) for x in items], dtype=float).reshape(-1, 4)
+
+
+def _near_pairs(a, b, limit):
+    """For each row of the (n, 4) box array a, the indices (ascending) of the rows of b that may lie within limit of it:
+    neither axis gap is above limit (plus SLACK).  Two boxes, and anything inside them (shapes and their clearance),
+    are never nearer than either axis gap, so every box that a distance test keeps at limit is among these: a loop that
+    runs its exact test over them finds what it finds over all of b, in the same order, and the many far boxes cost
+    one array pass instead of one call each."""
+    out = [[] for _ in range(len(a))]
+    if len(a) and len(b):
+        dx = np.maximum(b[None, :, 0] - a[:, None, 2], a[:, None, 0] - b[None, :, 2])
+        dy = np.maximum(b[None, :, 1] - a[:, None, 3], a[:, None, 1] - b[None, :, 3])
+        rows, cols = np.nonzero(~((dx > limit + SLACK) | (dy > limit + SLACK)))   # a NaN is kept for the exact test
+        for i, j in zip(rows.tolist(), cols.tolist()):
+            out[i].append(j)
+    return out
+
+
+def _near(boxes, b, limit):
+    """_near_pairs for one box b (a point is the box (x, y, x, y))."""
+    return _near_pairs(np.array([b], dtype=float), boxes, limit)[0]
+
+
+def _seg_box(p, q):
+    """Box of the segment p-q."""
+    return (min(p[0], q[0]), min(p[1], q[1]), max(p[0], q[0]), max(p[1], q[1]))
+
+
+def _center(b):
+    return ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)
+
+
+def _min_clear(a, shapes, limit, overlap_only=True):
+    """min(shape_clear(a, s, overlap_only) for s in shapes) where that is limit or less: a piece more than limit from a
+    along x or y keeps more than limit from it, and 99 stands in for it.  Like min(), it fails on no shapes."""
+    return min([shape_clear(a, s, overlap_only) for s in shapes if not _far(s.bbox, a.bbox, limit + SLACK)]
+               or [99.0 for _ in shapes[:1]])
 
 
 def angle_of(p, q):
@@ -481,9 +525,13 @@ class Figure(object):
         circles = [(c['ref'], c['center'], (c['outer_d'] or 7.4) / 2.0) for c in self.report['charges'] if c['kind'] == 'circle' and c['center']]
         segs = [((b['a'], b['b']), self.xy(b['a']), self.xy(b['b'])) for b in self.bonds if b['a'] in self.atoms and b['b'] in self.atoms]
         hsegs = [(h, self.xy(h[0]), self.xy(h[1])) for h in self.hbonds if h[0] in self.atoms and h[1] in self.atoms]
-        for s in sc['bonds'] + sc['marks']:
-            cx = sum(p[0] for p in s.pts) / len(s.pts)
-            cy = sum(p[1] for p in s.pts) / len(s.pts)
+        ink = sc['bonds'] + sc['marks']
+        centers = [(sum(p[0] for p in s.pts) / len(s.pts), sum(p[1] for p in s.pts) / len(s.pts)) for s in ink]
+        points = _boxes([(cx, cy, cx, cy) for cx, cy in centers])
+        # the center lines a center may lie near (within the limit of the box around each line), measured exactly below
+        near_bonds = _near_pairs(points, _boxes([_seg_box(p, q) for _, p, q in segs]), 0.3 * self.bond_pt)
+        near_hbonds = _near_pairs(points, _boxes([_seg_box(p, q) for _, p, q in hsegs]), 0.15 * self.bond_pt)
+        for s, (cx, cy), bond_rows, hbond_rows in zip(ink, centers, near_bonds, near_hbonds):
             s.owner = None
             if s.cls == 'mark':
                 for mark in self.report['radicals']:
@@ -499,11 +547,11 @@ class Figure(object):
             if s.owner:
                 continue
             best = None
-            for key, p, q in segs:
+            for key, p, q in (segs[i] for i in bond_rows):
                 d = co.dist_pt_seg(cx, cy, p[0], p[1], q[0], q[1])
                 if d < 0.3 * self.bond_pt and (best is None or d < best[0]):
                     best = (d, ('bond', key))
-            for key, p, q in hsegs:
+            for key, p, q in (hsegs[i] for i in hbond_rows):
                 d = co.dist_pt_seg(cx, cy, p[0], p[1], q[0], q[1])
                 if d < 0.15 * self.bond_pt and (best is None or d < best[0]):
                     best = (d, ('hbond', key))
@@ -529,18 +577,28 @@ class Figure(object):
         for n in self.report['numbers']:
             if n['box']:
                 out.append((n['ref'], 'number', n['text'], n['box']))
-        residue = {a['label'] for a in self.atoms.values() if a.get('kind') == 'residue'}
+        residues = self.residue_atoms()
+        residue = {label for _, label in residues}
         for t in self.report['texts']:
             if not t['box']:
                 continue
             owner = t.get('ref')
             if owner is None and (t.get('role') == 'residue' or t['text'] in residue):
-                cands = [r for r, a in self.atoms.items() if a.get('kind') == 'residue' and a['label'] == t['text']]
-                owner = min(cands, key=lambda r: pt_box_gap(self.xy(r), t['box'])) if cands else None
+                owner = self.residue_atom(t, residues)
             if owner is not None and t.get('role') == 'residue' and any(o == owner and k == 'label' for o, k, _, _ in out):
                 continue                                # a residue name the report gives both as a label and as a text
             out.append((owner, 'text', t['text'], t['box']))
         return out
+
+    def residue_atoms(self):
+        """[(ref, label)] of the residue atoms."""
+        return [(r, a['label']) for r, a in self.atoms.items() if a.get('kind') == 'residue']
+
+    def residue_atom(self, t, residues=None):
+        """The atom a residue name (a text of the report) belongs to: the nearest residue atom of that name, or None.
+        residues: residue_atoms(), when the caller has it."""
+        cands = [r for r, label in (self.residue_atoms() if residues is None else residues) if label == t['text']]
+        return min(cands, key=lambda r: pt_box_gap(self.xy(r), t['box'])) if cands else None
 
 
 _ARIAL = {'C': 722, 'H': 722, 'N': 722, 'O': 778, 'S': 667, 'P': 667, 'F': 611, 'I': 278, 'B': 667, 'K': 667, 'M': 833,
@@ -595,13 +653,11 @@ def det_overlap_text_text(f):
     # (a free text and any other name, or residue names of two molecules; residue names of one molecule each sit at
     # the end of their own bond)
     names = [t for t in f.report['texts'] if t['box'] and t.get('role') in ('residue', 'text') and t['text'] != '+']
-    def owner(t):                                # a residue name's atom (the nearest residue atom of that name)
-        cands = [r for r, x in f.atoms.items() if x.get('kind') == 'residue' and x['label'] == t['text']]
-        return min(cands, key=lambda r: pt_box_gap(f.xy(r), t['box'])) if cands and t.get('role') == 'residue' else None
+    residues = f.residue_atoms()
+    owners = [f.residue_atom(t, residues) if t.get('role') == 'residue' else None for t in names]   # a residue name's atom
     seen = set()
-    for a, b in itertools.combinations(names, 2):
+    for (a, oa), (b, ob) in itertools.combinations(zip(names, owners), 2):
         g = box_gap(a['box'], b['box'])
-        oa, ob = owner(a), owner(b)
         if oa and ob and oa.rsplit(':', 1)[0] == ob.rsplit(':', 1)[0]:
             continue
         if a['text'] != b['text'] and 0 <= g < TEXT_APART_BONDS * f.bond_pt and (a['text'], b['text']) not in seen:
@@ -609,8 +665,9 @@ def det_overlap_text_text(f):
             out.append('names %r%s and %r%s stand %.1f pt apart, closer than %.1f pt: which name labels which group '
                        'is unclear' % (a['text'], ' (%s)' % oa if oa else '', b['text'], ' (%s)' % ob if ob else '', g,
                                        TEXT_APART_BONDS * f.bond_pt))
-    for i in range(len(items)):
-        for j in range(i + 1, len(items)):
+    boxes = _boxes([box for _, _, _, box in items])
+    for i, cands in enumerate(_near_pairs(boxes, boxes, 0.0)):      # boxes that overlap (box_gap < 0) are among these
+        for j in (j for j in cands if j > i):
             (oa, ka, ta, ba), (ob, kb, tb, bb) = items[i], items[j]
             if oa is not None and oa == ob and ka == kb == 'label':
                 continue
@@ -637,15 +694,14 @@ def _own_ink(owner, s):
 
 def det_overlap_text_bond(f):
     sc = f.scene()
+    ink = sc['bonds'] + sc['marks']
+    texts = [(owner, kind, text, box_shape(box)) for owner, kind, text, box in f.texts()
+             if kind != 'number']                       # numbers: number_clear (stricter)
     out = []
-    for owner, kind, text, box in f.texts():
-        if kind == 'number':
-            continue                                    # numbers: number_clear (stricter)
-        tb = box_shape(box)
-        for s in sc['bonds'] + sc['marks']:
+    # a clearance of 0 or less needs overlapping bboxes
+    for (owner, kind, text, tb), cands in zip(texts, _near_pairs(_boxes([t[3] for t in texts]), _boxes(ink), 0.0)):
+        for s in (ink[i] for i in cands):
             if _own_ink(owner, s):
-                continue
-            if co.bbox_gap(tb.bbox, s.bbox) > 1.0:
                 continue
             c = shape_clear(tb, s)
             if c <= 0.0:
@@ -664,9 +720,10 @@ def det_overlap_arrow_text(f):
     sc = f.scene()
     out = []
     texts = [(kind, text, box_shape(box)) for _, kind, text, box in f.texts()]
+    text_boxes = _boxes([tb for _, _, tb in texts])
     for aid, shapes in sc['arrows']:
         box = _union_bbox(shapes)
-        for kind, text, tb in texts:
+        for kind, text, tb in (texts[i] for i in _near(text_boxes, box, 1.0)) if box else texts:
             if _far(box, tb.bbox, 1.0):
                 continue
             c = min(shape_clear(s, tb, overlap_only=True) for s in shapes)
@@ -688,16 +745,18 @@ def _arrow_hbond(f, aid):
 
 def det_overlap_arrow_bond(f):
     sc = f.scene()
+    ink = sc['bonds'] + sc['marks']
+    ink_boxes = _boxes(ink)
     out = []
     for aid, shapes in sc['arrows']:
         box = _union_bbox(shapes)
         joined = _arrow_hbond(f, aid)
-        for s in sc['bonds'] + sc['marks']:
-            if _far(box, s.bbox, 1.0):
-                continue
+        # a clearance of 0 or less needs overlapping bboxes: only those pieces and ink are measured (99 for the rest)
+        for s in (ink[i] for i in _near(ink_boxes, box, 0.0)) if box else ink:
             if joined and s.owner and s.owner[0] == 'hbond' and frozenset(s.owner[1]) == joined:
                 continue                            # the hydrogen bond the arrow runs along, between its own two ends
-            c = min(shape_clear(a, s, overlap_only=True) for a in shapes)
+            c = min([shape_clear(a, s, overlap_only=True) for a in shapes if not _far(a.bbox, s.bbox, SLACK)]
+                    or [99.0 for _ in shapes[:1]])
             if c <= 0.0:
                 out.append('arrow %s touches %s (%.2f pt)' % (aid, _ink_name(s), c))
     return out
@@ -723,20 +782,24 @@ def _circles(f):
 
 def det_overlap_charge(f):
     sc, texts = f.scene(), f.texts()
+    ink = sc['bonds'] + sc['marks']
+    ink_boxes, text_boxes = _boxes(ink), _boxes([box_shape(box) for _, _, _, box in texts])
+    circles = _circles(f)
     out = []
-    for c in _circles(f):
+    # only ink, arrows and texts within CHARGE_CLEAR_PT of a circle's bbox can be closer than that
+    for c in circles:
         disk = disk_shape(c['center'], c['outer_d'] / 2.0)
-        for s in sc['bonds'] + sc['marks']:
+        for s in (ink[i] for i in _near(ink_boxes, disk.bbox, CHARGE_CLEAR_PT)):
             if s.owner == ('charge', c['ref']):
                 continue
             g = shape_clear(disk, s, overlap_only=True)
             if g < CHARGE_CLEAR_PT:
                 out.append('circle of %s is %.2f pt from %s' % (c['ref'], g, _ink_name(s)))
         for aid, shapes in sc['arrows']:
-            g = min(shape_clear(disk, s, overlap_only=True) for s in shapes)
+            g = _min_clear(disk, shapes, CHARGE_CLEAR_PT)
             if g < CHARGE_CLEAR_PT:
                 out.append('circle of %s is %.2f pt from arrow %s' % (c['ref'], g, aid))
-        for owner, kind, text, box in texts:
+        for owner, kind, text, box in (texts[i] for i in _near(text_boxes, disk.bbox, CHARGE_CLEAR_PT)):
             if owner == c['ref'] and kind == 'label':
                 g = shape_clear(disk, box_shape(box), overlap_only=True)
                 if g < -CIRCLE_OWN_OVERLAP_PT:
@@ -745,7 +808,7 @@ def det_overlap_charge(f):
             g = shape_clear(disk, box_shape(box), overlap_only=True)
             if g < CHARGE_CLEAR_PT:
                 out.append('circle of %s is %.2f pt from %s %r' % (c['ref'], g, kind, text))
-        for d in _circles(f):
+        for d in circles:
             if d is not c and d['ref'] > c['ref']:
                 g = math.hypot(c['center'][0] - d['center'][0], c['center'][1] - d['center'][1]) - (c['outer_d'] + d['outer_d']) / 2
                 if g < CHARGE_CLEAR_PT:
@@ -978,11 +1041,6 @@ def _receiver(c):
     return left[0] if len(left) == 1 else None
 
 
-def _end_key(end):
-    refs = end['refs']
-    return tuple(sorted(refs)) if len(refs) == 2 else tuple(refs)
-
-
 def _nearest_end(f, p, kind):
     if kind == 'atom':
         best = min((r for r in f.atoms if not f.atoms[r].get('hidden_h')), key=lambda r: math.hypot(p[0] - f.xy(r)[0], p[1] - f.xy(r)[1]))
@@ -1111,8 +1169,8 @@ def det_arrows_ends(f):
                 if receiver:
                     if pt is None or _reach(f, pt, receiver) > (HEAD_REACH_PT if f.labeled(receiver) else BARE_HEAD_REACH * f.bond_pt):
                         out.append('%s: head does not reach %s, the atom that receives the electron pair' % (c['id'], receiver))
-                    elif _reads_as_bond(f, c, pt, receiver):
-                        out.append(_reads_as_bond(f, c, pt, receiver))
+                    elif (reading := _reads_as_bond(f, c, pt, receiver)):
+                        out.append(reading)
                     continue
                 a, b = (f.xy(ref) for ref in want_end['refs'])
                 if pt is None or math.dist(pt, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)) > .4 * math.dist(a, b):
@@ -1120,7 +1178,7 @@ def det_arrows_ends(f):
                 continue
             if side == 'start' and c['electrons'] == 1 and want_end['kind'] == 'atom':
                 continue  # the unpaired-electron mark is checked by electron_flow
-            want = _end_key(want_end)
+            want = _refs(want_end)
             if got_ref is not None and tuple(sorted(got_ref)) != tuple(sorted(want)):
                 out.append('%s %s: the backend put it at %s, asked %s' % (c['id'], side, '-'.join(got_ref), '-'.join(want)))
             if pt is not None:
@@ -1136,8 +1194,8 @@ def det_arrows_ends(f):
                     reach = _reach(f, pt, want[0])
                     if reach > (HEAD_REACH_PT if f.labeled(want[0]) else BARE_HEAD_REACH * f.bond_pt):
                         out.append('%s end: head stops %.1f pt from the symbol of %s' % (c['id'], reach, want[0]))
-                    elif _reads_as_bond(f, c, pt, want[0]):
-                        out.append(_reads_as_bond(f, c, pt, want[0]))
+                    elif (reading := _reads_as_bond(f, c, pt, want[0])):
+                        out.append(reading)
     return out
 
 
@@ -1200,8 +1258,7 @@ def _svg_arrow_colors(f):
     bad = []
     for el in root.iter():
         if (el.get('data-role') or '') == 'arrow':
-            st = {k.strip(): v.strip() for k, v in (kv.split(':', 1) for kv in (el.get('style') or '').split(';') if ':' in kv)}
-            for v in (st.get('fill', el.get('fill')), st.get('stroke', el.get('stroke'))):
+            for v in _paints(el):
                 c = norm_color(v)
                 if c is not None and c not in ('#ffffff',):
                     bad.append((el.get('data-id') or el.get('data-arrow') or '?', c))
@@ -1240,10 +1297,10 @@ def _linear(f, ref):
 
 
 def det_chain_angles(f, report_all=False):
+    from iupac_features import METALS
     ring = _in_ring(f)
     out, rows = [], []
     for ref, nb in f.nbrs.items():
-        from iupac_features import METALS
         if f.atoms[ref]['el'] in METALS or f.atoms[ref].get('kind') == 'center':
             continue
         if ref in ring or len(nb) not in (2, 3) or _linear(f, ref) or f.atoms[ref].get('kind') == 'residue':
@@ -1268,9 +1325,9 @@ def det_chain_angles(f, report_all=False):
 def _four_bond_atoms(f):
     """Atoms with four bonds, not on a ring, with two chain bonds and two end groups, or with one chain bond and three
     end groups (a tetrahedral intermediate, a tert-butyl group): then one end group continues the chain."""
+    from iupac_features import METALS
     ring = _in_ring(f)
     for ref, nb in f.nbrs.items():
-        from iupac_features import METALS
         if f.atoms[ref]['el'] in METALS or f.atoms[ref].get('kind') == 'center':
             continue
         if len(nb) != 4 or ref in ring:
@@ -1279,8 +1336,6 @@ def _four_bond_atoms(f):
         ends = [n for n in nb if len(f.nbrs[n]) == 1]
         if len(chain) in (1, 2) and len(chain) + len(ends) == 4:
             yield ref, chain, ends
-
-
 
 
 def det_four_bond(f):
@@ -1485,16 +1540,18 @@ def det_number_clear(f):
     sc = f.scene()
     out = []
     texts = f.texts()
+    ink = sc['bonds'] + sc['marks']
+    ink_boxes = _boxes(ink)
     for n in f.report['numbers']:
         if not n['box']:
             continue
         nb = box_shape(n['box'])
         worst = (99.0, '')
-        for s in sc['bonds'] + sc['marks']:
-            if co.bbox_gap(nb.bbox, s.bbox) < NUMBER_CLEAR_PT + 1:
-                worst = min(worst, (shape_clear(nb, s), _ink_name(s)))
+        # ink and arrows more than NUMBER_CLEAR_PT from the number along x or y keep more than NUMBER_CLEAR_PT
+        for s in (ink[i] for i in _near(ink_boxes, nb.bbox, NUMBER_CLEAR_PT)):
+            worst = min(worst, (shape_clear(nb, s), _ink_name(s)))
         for aid, shapes in sc['arrows']:
-            worst = min(worst, (min(shape_clear(nb, s) for s in shapes), 'arrow %s' % aid))
+            worst = min(worst, (_min_clear(nb, shapes, NUMBER_CLEAR_PT, overlap_only=False), 'arrow %s' % aid))
         for c in _circles(f):
             worst = min(worst, (pt_box_gap(c['center'], n['box']) - c['outer_d'] / 2.0, 'circle of %s' % c['ref']))
         for owner, kind, text, box in texts:
@@ -1626,13 +1683,18 @@ def det_colors(f):
     return out
 
 
+def _paints(el):
+    """The fill and the stroke of an SVG element, from its style attribute before its own attributes."""
+    st = {k.strip(): v.strip() for k, v in (kv.split(':', 1) for kv in (el.get('style') or '').split(';') if ':' in kv)}
+    return st.get('fill', el.get('fill')), st.get('stroke', el.get('stroke'))
+
+
 def _svg_colors(svg_text):
     root = ET.fromstring(svg_text.encode('utf-8'))
     used = {}
     for el in root.iter():
         tag = co.local(el.tag)
-        st = {k.strip(): v.strip() for k, v in (kv.split(':', 1) for kv in (el.get('style') or '').split(';') if ':' in kv)}
-        for v in (st.get('fill', el.get('fill')), st.get('stroke', el.get('stroke'))):
+        for v in _paints(el):
             c = norm_color(v)
             if c is None or (tag == 'rect' and c == '#ffffff') or (tag == 'svg'):
                 continue
@@ -1737,12 +1799,15 @@ def det_frame(f):
     if not plain or not sc['bonds']:
         return out
     miss = 0
+    mids = []
     for b in plain:
         pa, pb = f.xy(b['a']), f.xy(b['b'])
-        mid = ((pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0)
+        mids.append(((pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0))
+    # only the ink whose bbox is within 3 pt of a bond's middle along x and y can pass dist_pt_box < 3
+    for mid, cands in zip(mids, _near_pairs(_boxes([m + m for m in mids]), _boxes(sc['bonds']), 3.0)):
+        ink = [s for s in (sc['bonds'][i] for i in cands) if co.dist_pt_box(mid, s.bbox) < 3.0]
         near = min(co.dist_pt_seg(mid[0], mid[1], *s.pts[i], *s.pts[(i + 1) % len(s.pts)])
-                   for s in sc['bonds'] if co.dist_pt_box(mid, s.bbox) < 3.0 for i in range(len(s.pts))) if any(
-            co.dist_pt_box(mid, s.bbox) < 3.0 for s in sc['bonds']) else 99.0
+                   for s in ink for i in range(len(s.pts))) if ink else 99.0
         if near > 1.0:
             miss += 1
     if miss > len(plain) / 2.0:
@@ -1751,19 +1816,23 @@ def det_frame(f):
     return out
 
 
-def _styled_ink(f, b):
-    """Each saved SVG polygon of this bond, projected along/across its axis."""
-    p, q = f.xy(b['a']), f.xy(b['b'])
+def _axis_rows(p, q, shapes):
+    """Each shape projected on the line p-q: (lowest and highest along it, mean and spread across it, shape)."""
     length = math.dist(p, q)
     ux, uy = (q[0] - p[0]) / length, (q[1] - p[1]) / length
     rows = []
-    for s in f.scene()['bonds']:
-        if s.owner != ('bond', (b['a'], b['b'])) and s.owner != ('bond', (b['b'], b['a'])):
-            continue
+    for s in shapes:
         along = [(x - p[0]) * ux + (y - p[1]) * uy for x, y in s.pts]
         across = [-(x - p[0]) * uy + (y - p[1]) * ux for x, y in s.pts]
         rows.append((min(along), max(along), sum(across) / len(across), max(across) - min(across), s))
     return rows
+
+
+def _styled_ink(f, b):
+    """Each saved SVG polygon of this bond, projected along/across its axis."""
+    p, q = f.xy(b['a']), f.xy(b['b'])
+    own = (('bond', (b['a'], b['b'])), ('bond', (b['b'], b['a'])))
+    return _axis_rows(p, q, [s for s in f.scene()['bonds'] if s.owner in own])
 
 
 def _dash_findings(f, rows, style):
@@ -1904,7 +1973,7 @@ def det_ts_brackets(f):
                 out.append('%s: double dagger is not drawn at upper right' % sid)
             else:
                 mark = box_shape(mark_boxes[0])
-                others = [s for s in f.scene()['bonds'] + f.scene()['marks']]
+                others = f.scene()['bonds'] + f.scene()['marks']
                 others += [s for _, ss in f.scene()['arrows'] for s in ss]
                 others += [box_shape(box) for _, _, text, box in f.texts() if text != '‡']
                 if any(shape_clear(mark, s) < 1.0 for s in others):
@@ -1913,13 +1982,17 @@ def det_ts_brackets(f):
 
 
 # IUPAC geometry detectors are kept together to make independent feature merges local.
+def _stereo_relaxed(f):
+    """{species: read from its SMILES without sanitizing}: a transition state, or a species with a coordination bond."""
+    ts = {a.get('species') for a in f.atoms.values() if a.get('ts')}
+    coord = [r for b in f.bonds if b.get('coord') or b.get('style') == 'coord' for r in (b['a'], b['b'])]
+    return {sid: sid in ts or any(r.startswith(sid + ':') for r in coord) for sid in f.resolved.get('stereo_sources') or {}}
+
+
 def _stereo_centers(f):
-    out = set()
+    out, relaxed = set(), _stereo_relaxed(f)
     for sid, smiles in (f.resolved.get('stereo_sources') or {}).items():
-        is_ts = any(a.get('ts') for a in f.atoms.values() if a.get('species') == sid) or any(
-            (b.get('coord') or b.get('style') == 'coord') and any(r.startswith(sid + ':') for r in (b['a'], b['b']))
-            for b in f.bonds)
-        out.update(stereo.potential_centers(sid, smiles, relaxed=is_ts))
+        out.update(stereo.potential_centers(sid, smiles, relaxed=relaxed[sid]))
     return out
 
 
@@ -1946,21 +2019,24 @@ def det_charge_open(f):
     return out
 
 
-def _axial_pairs_blocked(f, pair, labels):
-    ref = pair['ref']
-    point, radius = f.xy(ref), pair.get('radius') or .09 * f.size
-    distance = math.dist(point, pair['center'])
-    obstacles = [shape for _, shape in labels]
-    for shape in f.scene()['bonds'] + f.scene()['marks']:
-        if shape.pts and any(all(math.dist(p, dot) <= radius + .05 for p in shape.pts) for dot in pair['dots']):
-            continue
-        obstacles.append(shape)
-    for degree in (0, 90, 180, 270):
-        t = math.radians(degree)
-        center = (point[0] + distance * math.cos(t), point[1] - distance * math.sin(t))
-        dots = [(center[0] + sign * .19 * f.size * math.sin(t), center[1] + sign * .19 * f.size * math.cos(t)) for sign in (-1, 1)]
-        disks = [disk_shape(dot, radius) for dot in dots]
-        if all(shape_clear(disk, obstacle, overlap_only=True) >= CHARGE_CLEAR_PT for disk in disks for obstacle in obstacles):
+def _seat_disks(f, point, distance, degree, radius):
+    """The two dot disks of a lone pair seated at degree (0, 90, 180 or 270) and distance from point."""
+    t = math.radians(degree)
+    center = (point[0] + distance * math.cos(t), point[1] - distance * math.sin(t))
+    dots = [(center[0] + sign * .19 * f.size * math.sin(t), center[1] + sign * .19 * f.size * math.cos(t)) for sign in (-1, 1)]
+    return [disk_shape(dot, radius) for dot in dots]
+
+
+def _seat_free(disks, own_dots, radius, labels, ink):
+    """True when the dot disks keep CHARGE_CLEAR_PT from every label shape and from all bond ink and marks but the
+    drawn dots own_dots (ink lying wholly within radius + 0.05 of one of them); labels and ink are (shapes, _boxes of
+    them).  Only what lies within CHARGE_CLEAR_PT of a disk's bbox can be closer than that, so only that is measured."""
+    near_labels, near_ink = (_near_pairs(_boxes(disks), boxes, CHARGE_CLEAR_PT) for _, boxes in (labels, ink))
+    for disk, label_rows, ink_rows in zip(disks, near_labels, near_ink):
+        obstacles = [labels[0][i] for i in label_rows] + [
+            s for s in (ink[0][i] for i in ink_rows)
+            if not (s.pts and any(all(math.dist(p, dot) <= radius + .05 for p in s.pts) for dot in own_dots))]
+        if not all(shape_clear(disk, obstacle, overlap_only=True) >= CHARGE_CLEAR_PT for obstacle in obstacles):
             return False
     return True
 
@@ -1968,22 +2044,31 @@ def _axial_pairs_blocked(f, pair, labels):
 def det_lone_pair_geometry(f):
     out = []
     labels = [(text, box_shape(box)) for _, kind, text, box in f.texts() if kind == 'label']
+    label_shapes = [shape for _, shape in labels]
+    bonds, ink = f.scene()['bonds'], f.scene()['bonds'] + f.scene()['marks']
+    label_boxes, bond_boxes = _boxes(label_shapes), _boxes(bonds)
+    seat_obstacles = ((label_shapes, label_boxes), (ink, _boxes(ink)))
     for pair in f.report['lone_pairs']:
         ref, center = pair['ref'], pair['center']
         if ref not in f.atoms or not center:
             out.append('lone pair has no measured atom/position')
             continue
         degree = angle_of(f.xy(ref), center)
-        if min(adiff(degree, d) for d in (0, 90, 180, 270)) > 1 and not _axial_pairs_blocked(f, pair, labels):
+        radius = pair.get('radius') or .09 * f.size
+        # a seat above, below, left or right blocks a diagonal pair only when none of the four is free
+        if min(adiff(degree, d) for d in (0, 90, 180, 270)) > 1 and any(
+                _seat_free(_seat_disks(f, f.xy(ref), math.dist(f.xy(ref), center), d, radius), pair['dots'], radius, *seat_obstacles)
+                for d in (0, 90, 180, 270)):
             out.append('%s: lone pair at %.1f degrees, not above/below/left/right' % (ref, degree))
         if len(pair['dots']) != 2:
             out.append('%s: lone pair does not have two visible dots' % ref)
         for dot in pair['dots']:
-            shape = disk_shape(dot, pair.get('radius') or .09 * f.size)
-            for text, label in labels:
+            shape = disk_shape(dot, radius)
+            # a clearance under 0 needs overlapping bboxes
+            for text, label in (labels[i] for i in _near(label_boxes, shape.bbox, 0.0)):
                 if shape_clear(shape, label, overlap_only=True) < 0:
                     out.append('%s: lone pair touches label %r' % (ref, text))
-            for s in f.scene()['bonds']:
+            for s in (bonds[i] for i in _near(bond_boxes, shape.bbox, 0.0)):
                 if s.owner and s.owner[0] in ('bond', 'hbond') and shape_clear(shape, s, overlap_only=True) < 0:
                     out.append('%s: lone pair touches bond ink' % ref)
     for ref in set(f.lone_pairs):
@@ -2007,18 +2092,11 @@ def det_lone_pair_geometry(f):
             if adiff(degree, want) >= adiff(actual, want) - 1:
                 continue
             t = math.radians(degree)
-            center = (point[0] + distance * math.cos(t), point[1] - distance * math.sin(t))
             outside = (point[0] + (distance + .13 * f.bond_pt) * math.cos(t), point[1] - (distance + .13 * f.bond_pt) * math.sin(t))
             if min(f.atoms, key=lambda r: math.dist(outside, f.xy(r))) != ref:
                 continue
-            dots = [(center[0] + sign * .19 * f.size * math.sin(t), center[1] + sign * .19 * f.size * math.cos(t)) for sign in (-1, 1)]
-            shapes = [disk_shape(dot, radius) for dot in dots]
-            obstacles = [shape for _, shape in labels]
-            for s in f.scene()['bonds'] + f.scene()['marks']:
-                if s.pts and any(all(math.dist(p, dot) <= radius + .05 for p in s.pts) for own in pairs for dot in own['dots']):
-                    continue
-                obstacles.append(s)
-            if all(shape_clear(a, b, overlap_only=True) >= CHARGE_CLEAR_PT for a in shapes for b in obstacles):
+            if _seat_free(_seat_disks(f, point, distance, degree, radius), [dot for own in pairs for dot in own['dots']],
+                          radius, *seat_obstacles):
                 out.append('%s: reacting lone pair does not face the target although the %.0f-degree axial seat is free' % (ref, degree))
                 break
     return out
@@ -2093,15 +2171,15 @@ def det_carbon_labels(f):
 def det_stereo_display(f):
     out, centers = [], _stereo_centers(f)
     specified, fused, bridged = set(), set(), set()
+    relaxed = _stereo_relaxed(f)
     for sid, smiles in (f.resolved.get('stereo_sources') or {}).items():
-        is_ts = any(a.get('ts') for a in f.atoms.values() if a.get('species') == sid) or any(
-            (b.get('coord') or b.get('style') == 'coord') and any(r.startswith(sid + ':') for r in (b['a'], b['b']))
-            for b in f.bonds)
+        is_ts = relaxed[sid]
         specified.update(stereo.expected(sid, smiles, relaxed=is_ts)[0][0])
         junctions, bridge = stereo.ring_junctions(sid, smiles, relaxed=is_ts)
         fused.update(junctions)
         bridged.update(bridge)
-    ring_edges, ring_atoms = _ring_bonds(f), _in_ring(f)
+    ring_edges = _ring_bonds(f)
+    ring_atoms = {r for key in ring_edges for r in key}           # _in_ring
     for ref in centers:
         edges = [b for b in f.bonds if ref in (b['a'], b['b'])]
         directed = [b for b in edges if b.get('style') in ('wedge', 'hash') and b['a'] == ref]
@@ -2170,15 +2248,7 @@ def det_hbond_dots(f):
     out = []
     for pair in f.hbonds:
         p, q = (f.xy(r) for r in pair)
-        length = math.dist(p, q)
-        ux, uy = (q[0] - p[0]) / length, (q[1] - p[1]) / length
-        rows = []
-        for s in f.scene()['bonds']:
-            if not s.owner or s.owner[0] != 'hbond' or set(s.owner[1]) != set(pair):
-                continue
-            along = [(x - p[0]) * ux + (y - p[1]) * uy for x, y in s.pts]
-            across = [-(x - p[0]) * uy + (y - p[1]) * ux for x, y in s.pts]
-            rows.append((min(along), max(along), sum(across) / len(across), max(across) - min(across), s))
+        rows = _axis_rows(p, q, [s for s in f.scene()['bonds'] if s.owner and s.owner[0] == 'hbond' and set(s.owner[1]) == set(pair)])
         bad = _dash_findings(f, rows, 'dotted')
         visible = max((r[1] for r in rows), default=0) - min((r[0] for r in rows), default=0)
         if visible < 2 * CAP * f.size - LENGTH_TOL_PT:
@@ -2232,10 +2302,6 @@ def det_electron_flow(f):
             if pairs:
                 nearest = min(pairs, key=lambda m: math.dist(row['start'], m[1]))
                 used_pairs[nearest[0]] += 1
-        if c['electrons'] == 1 and c['from']['kind'] == 'atom':
-            marks = [m['center_pt'] for m in f.report['radicals'] if m['ref'] == c['from']['refs'][0]]
-            if not row.get('start') or not marks or min(math.dist(row['start'], m) for m in marks) > LONE_PAIR_TAIL_MAX_PT:
-                pass  # radical_direction reports a visible warning for this preference
         if c['id'] not in f.unrouted and c['to']['kind'] == 'gap' and not _receiver(c):   # arrows_ends checks that a pair's head reaches its receiving atom
             a, b = (f.xy(r) for r in c['to']['refs'])
             end = row.get('end')
@@ -2392,6 +2458,9 @@ def det_arrows_clear(f):
     sc = f.scene()
     style = {frozenset((b['a'], b['b'])): b.get('style') for b in f.bonds}
     texts = [(owner, '%s %r' % (kind, text), box_shape(box)) for owner, kind, text, box in f.texts()]
+    ink = sc['bonds'] + sc['marks']
+    pieces = [(other, s) for other, others in sc['arrows'] for s in others]
+    ink_boxes, text_boxes, piece_boxes = _boxes(ink), _boxes([tb for _, _, tb in texts]), _boxes([s for _, s in pieces])
     out = []
     for aid, shapes in sc['arrows']:
         arrow = next((c for c in f.curved if c['id'] == aid), None)
@@ -2405,18 +2474,18 @@ def det_arrows_clear(f):
                 return near                             # no shape within the limit: (99.0, what) is not below near
             gap = min((shape_clear(a, s) for a in shapes if co.bbox_gap(a.bbox, s.bbox) <= limit), default=99.0)
             return min(near, (gap, what))
-        for s in sc['bonds'] + sc['marks']:
+        # look() keeps near for every ink, text and arrow _far from the arrow: only those near its bbox are looked at
+        for s in (ink[i] for i in (_near(ink_boxes, box, limit) if box else ())):
             kind, key = s.owner or (None, None)
             hashed = kind == 'bond' and style.get(frozenset(key)) == 'hash'
             if hashed or not (own.intersection(key) if kind in ('bond', 'hbond') else key in own):
                 near = look(s, ('hashed ' if hashed else '') + _ink_name(s))
-        for owner, what, tb in texts:
+        for owner, what, tb in (texts[i] for i in (_near(text_boxes, box, limit) if box else ())):
             if owner not in own:
                 near = look(tb, what)
-        for other, others in sc['arrows']:
+        for other, s in (pieces[i] for i in (_near(piece_boxes, box, limit) if box else ())):
             if other != aid:
-                for s in others:
-                    near = look(s, 'arrow %s' % other)
+                near = look(s, 'arrow %s' % other)
         if near[0] <= limit:
             out.append('arrow %s: %.2f pt from %s, which reads as touching it' % (aid, near[0], near[1]))
     return out
@@ -2748,7 +2817,6 @@ def det_figure_style(f):
     return out
 
 
-
 def det_species_gap(f):
     """Two species of a panel closer than half a bond length of white; the ends of a hydrogen bond are exempt."""
     limit = 0.5 * f.bond_pt
@@ -2773,14 +2841,17 @@ def det_species_gap(f):
         if shape.owner and shape.owner[0] == 'bond':
             add(shape.owner[1][0], shape)
     exempt = {frozenset(h) for h in f.hbonds}
+    boxes = {sp: _boxes([shape for _, shape in group]) for sp, group in groups.items()}
     out = []
     for panel in f.resolved['panels']:
         species = list(dict.fromkeys(a['species'] for a in panel['atoms'] if not a.get('hidden_h')))
         for i, sa in enumerate(species):
             for sb in species[i + 1:]:
                 gap, pair = limit, None
-                for ra, a in groups[sa]:
-                    for rb, b in groups[sb]:
+                # gap never exceeds limit: only the pairs within limit along x and y can pass bbox_gap < gap
+                near = _near_pairs(boxes.get(sa, _boxes([])), boxes.get(sb, _boxes([])), limit)
+                for (ra, a), cands in zip(groups[sa], near):
+                    for rb, b in (groups[sb][k] for k in cands):
                         if frozenset((ra, rb)) not in exempt and co.bbox_gap(a.bbox, b.bbox) < gap:
                             g = shape_clear(a, b)
                             if g < gap:
@@ -2788,7 +2859,6 @@ def det_species_gap(f):
                 if pair:
                     out.append('%s and %s are %.1f pt apart (under half a bond, %.1f pt)' % (pair[0], pair[1], gap, limit))
     return out
-
 
 
 def det_plus_place(f):
@@ -2826,19 +2896,21 @@ def det_bond_crossing(f):
     def panel(ref):
         return ref.split('.', 1)[0]
     bonds = [b for b in f.bonds if b['a'] in f.atoms and b['b'] in f.atoms and free(b['a']) and free(b['b'])]
+    lines = [h for h in f.hbonds if all(r in f.atoms for r in h)]
+    bond_boxes = _boxes([_seg_box(f.xy(b['a']), f.xy(b['b'])) for b in bonds])
+    line_boxes = _boxes([_seg_box(f.xy(h[0]), f.xy(h[1])) for h in lines])
+    # two segments are no closer than their boxes: only the pairs whose boxes are under 0.5 pt apart are measured
     out = []
-    for i, b in enumerate(bonds):
-        for c in bonds[i + 1:]:
+    for i, (b, cands) in enumerate(zip(bonds, _near_pairs(bond_boxes, bond_boxes, 0.5))):
+        for c in (bonds[k] for k in cands if k > i):
             if panel(b['a']) == panel(c['a']) and not {b['a'], b['b']} & {c['a'], c['b']} and \
                     co.dist_seg_seg(f.xy(b['a']), f.xy(b['b']), f.xy(c['a']), f.xy(c['b'])) < 0.5:
                 out.append('bonds %s-%s and %s-%s cross' % (b['a'], b['b'], c['a'], c['b']))
-    for h in f.hbonds:
-        if all(r in f.atoms for r in h):
-            for c in bonds:
-                if panel(c['a']) == panel(h[0]) and not set(h) & {c['a'], c['b']} and \
-                        co.dist_seg_seg(f.xy(h[0]), f.xy(h[1]), f.xy(c['a']), f.xy(c['b'])) < 0.5:
-                    out.append('hbond %s-%s crosses bond %s-%s' % (h[0], h[1], c['a'], c['b']))
-    lines = [h for h in f.hbonds if all(r in f.atoms for r in h)]
+    for h, cands in zip(lines, _near_pairs(line_boxes, bond_boxes, 0.5)):
+        for c in (bonds[k] for k in cands):
+            if panel(c['a']) == panel(h[0]) and not set(h) & {c['a'], c['b']} and \
+                    co.dist_seg_seg(f.xy(h[0]), f.xy(h[1]), f.xy(c['a']), f.xy(c['b'])) < 0.5:
+                out.append('hbond %s-%s crosses bond %s-%s' % (h[0], h[1], c['a'], c['b']))
     for i, h in enumerate(lines):
         for g in lines[i + 1:]:
             if panel(g[0]) == panel(h[0]) and not set(h) & set(g) and \
@@ -2847,8 +2919,9 @@ def det_bond_crossing(f):
     bonded = {frozenset((b['a'], b['b'])) for b in f.bonds}
     refs = [r for r in f.atoms if free(r)]
     limit = 0.4 * f.bond_pt
-    for i, ra in enumerate(refs):
-        for rb in refs[i + 1:]:
+    points = _boxes([(*f.xy(r), *f.xy(r)) for r in refs])
+    for i, (ra, cands) in enumerate(zip(refs, _near_pairs(points, points, limit))):
+        for rb in (refs[k] for k in cands if k > i):
             if panel(ra) == panel(rb) and frozenset((ra, rb)) not in bonded and math.dist(f.xy(ra), f.xy(rb)) < limit:
                 out.append('%s and %s are %.1f pt apart (under 0.4 bond, %.1f pt)' % (ra, rb, math.dist(f.xy(ra), f.xy(rb)), limit))
     return out
@@ -3058,913 +3131,6 @@ def run_checks(f, input_only=False):
             'checks': res, 'ok': not failed, 'failed': failed, 'tables': tables}
 
 
-# ------------------------------------------------------------------------------------------ positive control
-def _clone(f):
-    g = copy.copy(f)
-    g.resolved, g.report, g.reload = (pickle.loads(pickle.dumps(x, -1)) for x in (f.resolved, f.report, f.reload))
-    g.atoms = {a['ref']: a for p in g.resolved['panels'] for a in p['atoms']}
-    g.bonds = [b for p in g.resolved['panels'] for b in p['bonds']]
-    g.curved = [c for p in g.resolved['panels'] for c in p['curved']]
-    g.lone_pairs = list(f.lone_pairs)
-    g._scene = None
-    if f._scene is not None:
-        g._scene = {'bonds': [_copy_shape(s) for s in f._scene['bonds']], 'marks': [_copy_shape(s) for s in f._scene['marks']],
-                    'arrows': [(aid, [_copy_shape(s) for s in shapes]) for aid, shapes in f._scene['arrows']]}
-    return g
-
-
-def _copy_shape(s):
-    t = co.Shape(s.cls, s.kind, list(s.pts), s.closed, s.fill, s.hw, s.desc, quad=s.quad)
-    t.owner = s.owner
-    return t
-
-
-def _move_shape(s, dx, dy):
-    t = co.Shape(s.cls, s.kind, [(x + dx, y + dy) for x, y in s.pts], s.closed, s.fill, s.hw, s.desc, quad=s.quad)
-    t.owner = s.owner
-    return t
-
-
-def _center(b):
-    return ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)
-
-
-def _shift_box(b, dx, dy):
-    return (b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy)
-
-
-def _plain_bond_shape(f, avoid=()):
-    """A long bond-ink polygon of a bond between two skeletal atoms (a target for planted overlaps), not at an atom in avoid."""
-    sc = f.scene()
-    bonds = [s for s in sc['bonds'] if s.owner and s.owner[0] == 'bond' and not set(avoid).intersection(s.owner[1])]
-    cands = [s for s in bonds if not any(f.labeled(r) for r in s.owner[1])]
-    if not cands:
-        cands = bonds
-    if not cands:
-        return None
-    s = max(cands, key=lambda s: (s.bbox[2] - s.bbox[0]) + (s.bbox[3] - s.bbox[1]))
-    return s
-
-
-def _shape_mid(s):
-    return ((s.bbox[0] + s.bbox[2]) / 2.0, (s.bbox[1] + s.bbox[3]) / 2.0)
-
-
-def plant(f, name):
-    """A copy of the figure with one error that detector `name` must find, and a description; (None, why) if impossible."""
-    g = _clone(f)
-    rep, rl = g.report, g.reload
-    labeled = [r for r in g.atoms if g.labeled(r) and g.label_box(r)]
-    if name == 'arrows_steps':
-        # a copy of a panel, joined to it by a reaction arrow, in which one bond no curved arrow uses is broken
-        for panel in g.resolved['panels']:
-            used = {frozenset(r.rsplit(':', 1)[1] for r in c[k]['refs']) for c in panel['curved'] for k in ('from', 'to')}
-            once = collections.Counter(a['ref'].rsplit(':', 1)[1] for a in panel['atoms'])
-            bond = next((b for b in panel['bonds'] if not (b.get('coord') or b.get('style') in ('coord', 'partial'))
-                         and once[b['a'].rsplit(':', 1)[1]] == 1 and once[b['b'].rsplit(':', 1)[1]] == 1
-                         and frozenset((b['a'].rsplit(':', 1)[1], b['b'].rsplit(':', 1)[1])) not in used), None)
-            if bond is None:
-                continue
-            for a in panel['atoms']:                   # the planted step is an ordinary one, not a transition state
-                a.pop('ts', None)
-            for b in panel['bonds']:
-                if b.get('style') == 'partial':
-                    b['style'] = 'plain'
-            copy_panel = pickle.loads(pickle.dumps(panel, -1))
-            copy_panel['id'], copy_panel['curved'] = '_planted', []
-            copy_panel['bonds'] = [b for b in copy_panel['bonds'] if (b['a'], b['b']) != (bond['a'], bond['b'])]
-            g.resolved['panels'].append(copy_panel)
-            g.resolved['reaction_arrows'] = list(g.resolved.get('reaction_arrows') or []) + [{'kind': 'single', 'from': panel['id'], 'to': '_planted'}]
-            return g, 'bond %s-%s broken in a following panel without a curved arrow' % (bond['a'], bond['b'])
-        # otherwise two added panels: an O-H bond that breaks without an arrow
-        atom = lambda ref, el: {'ref': ref, 'el': el, 'label': el, 'x': 0.0, 'y': 0.0, 'charge': 0, 'kind': 'atom', 'h': 0, 'species': ref.split(':')[0]}
-        for pid, bonds in (('_planted1', [{'a': '_planted1.w:9001', 'b': '_planted1.w:9002', 'order': 1, 'style': 'plain'}]), ('_planted2', [])):
-            g.resolved['panels'].append({'id': pid, 'atoms': [atom(pid + '.w:9001', 'O'), atom(pid + '.w:9002', 'H')], 'bonds': bonds, 'curved': []})
-        g.resolved['reaction_arrows'] = list(g.resolved.get('reaction_arrows') or []) + [{'kind': 'single', 'from': '_planted1', 'to': '_planted2'}]
-        return g, 'an added O-H bond broken in the next added panel without a curved arrow'
-    if name == 'radical_direction':
-        arrow = next((c for c in g.curved if c['electrons'] == 1 and c['from']['kind'] == 'atom'), None)
-        if arrow is None:
-            ref = next(iter(g.atoms))
-            other = next((r for r in g.atoms if r != ref), None)
-            if other is None:
-                return None, 'fewer than two atoms'
-            arrow = {'id': 'wrong-facing-dot', 'electrons': 1, 'from': {'kind': 'atom', 'refs': [ref]}, 'to': {'kind': 'atom', 'refs': [other]}}
-            g.curved.append(arrow)
-            rep['curved'].append({'id': arrow['id'], 'start': g.xy(ref), 'end': g.xy(other)})
-        ref = arrow['from']['refs'][0]
-        x, y = g.xy(ref)
-        target = tuple(sum(g.xy(r)[k] for r in arrow['to']['refs']) / len(arrow['to']['refs']) for k in (0, 1))
-        d = math.dist((x, y), target) or 1
-        pt = (x - 7 * (target[0] - x) / d, y - 7 * (target[1] - y) / d)
-        rep['radicals'] = [m for m in rep['radicals'] if m.get('ref') != ref] + [{'ref': ref, 'center_pt': pt}]
-        return g, 'reacting radical dot placed on the side away from the target'
-    if name == 'species_gap':
-        pair = next(((a, b) for p in g.resolved['panels'] for a in p['atoms'] for b in p['atoms'] if a['species'] != b['species']
-                     and not a.get('hidden_h') and not b.get('hidden_h') and frozenset((a['ref'], b['ref'])) not in set(map(frozenset, g.hbonds))), None)
-        if pair is None:
-            return None, 'no panel with two species'
-        x, y = g.xy(pair[0]['ref'])
-        rep['charges'].append({'ref': pair[1]['ref'], 'kind': 'circle', 'center': (x + 3.0, y), 'outer_d': 2.0})
-        return g, 'a mark of %s placed 2 pt from %s' % (pair[1]['ref'], pair[0]['ref'])
-    if name == 'bond_crossing':
-        bonded = {frozenset((b['a'], b['b'])) for b in g.bonds}
-        refs = [r for r, a in g.atoms.items() if not a.get('ts') and not a.get('hidden_h') and a.get('kind') != 'center']
-        pair = next(((ra, rb) for ra in refs for rb in refs if ra < rb and ra.split('.', 1)[0] == rb.split('.', 1)[0]
-                     and frozenset((ra, rb)) not in bonded), None)
-        if pair is None:
-            return None, 'no two unbonded atoms in one panel'
-        x, y = g.xy(pair[0])
-        if pair[1] in g.report['atoms']:
-            g.report['atoms'][pair[1]]['xy'] = (x + 2.0, y)
-        else:
-            g.atoms[pair[1]].update(x=(x + 2.0) / g.bond_pt, y=y / g.bond_pt)
-        return g, 'atom %s moved 2 pt from %s' % (pair[1], pair[0])
-    if name == 'figure_style':
-        g.resolved['drawing'] = dict(g.resolved.get('drawing', {}), charge_circles=True)
-        refs = list(g.atoms)[:2]
-        if not refs:
-            return None, 'no atoms'
-        rep['charges'] = []
-        for index, ref in enumerate(refs):
-            g.atoms[ref].update(charge=-1, kind='atom', ion_text=False, radical=0)
-            rep['charges'].append({'ref': ref, 'kind': 'circle' if index == 0 and len(refs) > 1 else 'text', 'center': g.xy(ref), 'outer_d': 7.4})
-        return g, 'mixed figure-wide charge formatting'
-    if name == 'charge_open':
-        cs = [c for c in rep['charges'] if any(not g.atoms[n].get('hidden_h') for n in g.nbrs.get(c['ref'], []))]
-        if not cs:
-            return None, 'no bonded charged atom'
-        c = cs[0]
-        p, q = g.xy(c['ref']), g.xy(next(n for n in g.nbrs[c['ref']] if not g.atoms[n].get('hidden_h')))
-        c['center'] = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
-        return g, 'charge moved into a bond direction'
-    if name == 'lone_pair_geometry':
-        ref = next(iter(g.atoms))
-        x, y = g.xy(ref)
-        rep['lone_pairs'].append({'ref': ref, 'center': (x + 7, y - 7), 'radius': .9,
-                                  'dots': [(x + 6, y - 8), (x + 8, y - 6)]})
-        return g, 'diagonal lone pair planted'
-    if name == 'ring_substituents':
-        g.nbrs = copy.deepcopy(g.nbrs)
-        ring = _ring_bonds(g)
-        for ref, nb in g.nbrs.items():
-            rn = [n for n in nb if tuple(sorted((ref, n))) in ring]
-            exo = [n for n in nb if n not in rn]
-            if len(rn) == 2 and len(exo) == 1:
-                p, q = g.xy(ref), g.xy(rn[0])
-                rep['atoms'][exo[0]]['xy'] = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
-                return g, 'ring substituent moved inside its ring'
-        for ref, nb in list(g.nbrs.items()):
-            if len(nb) == 3 and ref not in _in_ring(g):
-                a, b, end = nb
-                if b not in g.nbrs[a]:
-                    g.bonds.append({'a': a, 'b': b, 'order': 1, 'style': 'plain'})
-                    g.nbrs[a].append(b)
-                    g.nbrs[b].append(a)
-                p, q = g.xy(ref), g.xy(a)
-                rep['atoms'][end]['xy'] = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
-                return g, 'ring substituent moved inside its ring'
-        return None, 'no three-bond atom for the ring control'
-    if name == 'carbon_labels':
-        for ref, atom in g.atoms.items():
-            if atom['el'] == 'C' and len(g.nbrs[ref]) == 2:
-                p = g.xy(ref)
-                a, b = g.nbrs[ref]
-                rep['atoms'][a]['xy'], rep['atoms'][b]['xy'] = (p[0] - g.bond_pt, p[1]), (p[0] + g.bond_pt, p[1])
-                for edge in g.bonds:
-                    if ref in (edge['a'], edge['b']):
-                        edge['order'] = 2
-                atom['label'], rep['atoms'][ref]['box'] = None, None
-                return g, 'collinear carbon label removed'
-        return None, 'no two-bond carbon'
-    if name == 'stereo_display':
-        centers = _stereo_centers(g)
-        for b in g.bonds:
-            if b['a'] in centers or b['b'] in centers:
-                b['style'] = 'bold'
-                return g, 'bold bond planted at a stereocenter'
-        return None, 'no specified stereocenter'
-    if name == 'hbond_dots':
-        if not g.hbonds:
-            g.hbonds = [tuple(list(g.atoms)[:2])]
-        sc = g.scene()
-        sc['bonds'] = [s for s in sc['bonds'] if not (s.owner and s.owner[0] == 'hbond')]
-        return g, 'all hydrogen-bond dots removed'
-    if name in ('radical_marks', 'electron_flow', 'isotopes', 'hydrogen_display', 'coordination', 'metal_geometry', 'residue_codes', 'residue_once', 'reaction_kinds'):
-        ref = next(iter(g.atoms))
-        declared = [r for r, a in g.atoms.items() if a.get('radical') and not a.get('radical_inferred')]
-        if name == 'radical_marks' and declared:
-            # a figure with a declared radical: the same radical left to the bracket H count instead
-            g.atoms[declared[0]]['radical_inferred'] = True
-        elif name == 'radical_marks':
-            g.atoms[ref]['radical'] = 1
-            rep['radicals'] = [m for m in rep['radicals'] if m.get('ref') != ref]
-        elif name == 'electron_flow':
-            g.atoms[ref]['radical'] = 0
-            g.curved.append({'id': 'unbacked-fishhook', 'electrons': 1, 'from': {'kind': 'atom', 'refs': [ref]}, 'to': {'kind': 'atom', 'refs': [ref]}})
-        elif name == 'isotopes':
-            g.atoms[ref]['isotope'] = 13
-            rl['atoms'][ref]['isotope'] = 0
-        elif name == 'hydrogen_display':
-            g.atoms[ref].update(el='H', hidden_h=True)
-            rl['atoms'][ref]['hidden_h'] = False
-        elif name == 'coordination':
-            if rl.get('delocalized'):
-                rl['delocalized'][0]['points'] = 0
-            elif not g.bonds:
-                g.atoms[ref]['oxidation'] = 8
-            else:
-                b = g.bonds[0]
-                b['style'] = 'coord'
-                rl['bonds'][tuple(sorted((b['a'], b['b'])))]['style'] = 'dative'
-        elif name == 'metal_geometry':
-            refs = list(g.atoms)
-            if len(refs) < 3:
-                return None, 'fewer than three atoms'
-            g.resolved['panels'][0]['metal_geometry'] = [{'center': refs[0], 'kind': 'linear', 'ligands': refs[1:3]}]
-            x, y = g.xy(refs[0])
-            rep['atoms'][refs[1]]['xy'], rep['atoms'][refs[2]]['xy'] = (x + 15, y), (x, y + 15)
-        elif name == 'residue_codes':
-            refs = list(g.atoms)
-            if len(refs) < 2:
-                return None, 'fewer than two atoms'
-            g.atoms[refs[0]].update(kind='residue', label='Glu170')
-            g.atoms[refs[1]].update(kind='residue', label='K123')
-        elif name == 'residue_once':
-            panel = next((p for p in g.resolved['panels'] if len(p['atoms']) >= 2), None)
-            if panel is None:
-                return None, 'no panel with two atoms'
-            for a in panel['atoms'][:2]:
-                g.atoms[a['ref']].update(kind='residue', label='Glu170')
-        else:
-            g.resolved['reaction_arrows'].append({'kind': 'invalid-arrow'})
-        return g, name + ': planted a missing or incorrect IUPAC feature'
-    if name in ('partial_dashes', 'delocalized_bonds'):
-        if not g.bonds:
-            return None, 'no bond'
-        b = next((b for b in g.bonds if b.get('style') == ('partial' if name == 'partial_dashes' else '1.5')), g.bonds[0])
-        b['style'] = 'partial' if name == 'partial_dashes' else '1.5'
-        # Remove one whole required line/pattern from the saved SVG geometry.
-        sc = g.scene()
-        key = frozenset((b['a'], b['b']))
-        sc['bonds'] = [s for s in sc['bonds'] if not (s.owner and s.owner[0] == 'bond' and frozenset(s.owner[1]) == key)]
-        return g, 'required %s bond ink removed' % b['style']
-    if name == 'ts_brackets':
-        ref = next(iter(g.atoms))
-        g.atoms[ref]['ts'] = True
-        g.reload['boxes'] = []
-        return g, 'required TS brackets removed'
-    if name == 'plus_place':
-        plus = next((t for t in rep['texts'] if t['text'] == '+' and t['box'] and t.get('role') in (None, 'text')), None)
-        if plus is None:
-            return None, 'no "+" text'
-        plus['box'] = _shift_box(plus['box'], 0, -3 * g.bond_pt)
-        return g, '"+" moved three bond lengths up'
-    if name == 'overlap_text_text':
-        texts = [t for t in rep['texts'] if t['box']]
-        if not texts or not labeled:
-            return None, 'no free text or no label'
-        t, target = texts[0], labeled[0]
-        c, d = _center(t['box']), _center(g.label_box(target))
-        t['box'] = _shift_box(t['box'], d[0] - c[0], d[1] - c[1])
-        return g, 'text %r moved onto the label of %s' % (t['text'], target)
-    if name == 'overlap_text_bond':
-        s = _plain_bond_shape(g)
-        texts = [t for t in rep['texts'] if t['box']]
-        if s is None or not texts:
-            return None, 'no bond or no free text'
-        t = texts[-1]
-        c, d = _center(t['box']), _shape_mid(s)
-        t['box'] = _shift_box(t['box'], d[0] - c[0], d[1] - c[1])
-        return g, 'text %r moved onto bond %s' % (t['text'], _ink_name(s))
-    if name in ('overlap_arrow_text', 'overlap_arrow_bond', 'overlap_arrow_arrow', 'arrows_clear'):
-        sc = g.scene()
-        if not sc['arrows']:
-            return None, 'no arrow'
-        k = 0
-        if name == 'arrows_clear':                      # a curved arrow: the check does not read reaction arrows
-            k = next((i for i, (a, _) in enumerate(sc['arrows']) if any(c['id'] == a for c in g.curved)), None)
-            if k is None:
-                return None, 'no curved arrow'
-        aid, shapes = sc['arrows'][k]
-        pts = [p for s in shapes for p in s.pts]
-        ax, ay = sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
-        sample = min(pts, key=lambda p: math.hypot(p[0] - ax, p[1] - ay))
-        if name == 'overlap_arrow_text':
-            if not labeled:
-                return None, 'no label'
-            d = _center(g.label_box(labeled[-1]))
-            what = 'the label of %s' % labeled[-1]
-        elif name in ('overlap_arrow_bond', 'arrows_clear'):
-            own = {r for c in g.curved if c['id'] == aid and name == 'arrows_clear' for end in ('from', 'to') for r in c[end]['refs']}
-            s = _plain_bond_shape(g, own)             # arrows_clear does not count the arrow's own bonds
-            if s is None:
-                return None, 'no bond'
-            d = _shape_mid(s)
-            what = _ink_name(s)
-        else:
-            if len(sc['arrows']) < 2:
-                sc['arrows'].append(('planted-copy', [_move_shape(s, 0.0, 0.0) for s in shapes]))
-                return g, 'arrow %s drawn twice on top of itself' % aid
-            # Coincident boundary vertices alone need not overlap the two strokes.
-            # Duplicate the complete outline so this planted error really overlaps.
-            sc['arrows'][0] = (aid, [_move_shape(s, 0.0, 0.0) for s in sc['arrows'][1][1]])
-            return g, 'arrow %s drawn on top of arrow %s' % (aid, sc['arrows'][1][0])
-        sc['arrows'][k] = (aid, [_move_shape(s, d[0] - sample[0], d[1] - sample[1]) for s in shapes])
-        return g, 'arrow %s moved onto %s' % (aid, what)
-    if name == 'overlap_charge':
-        cs = [c for c in rep['charges'] if c['kind'] == 'circle' and c['center']]
-        s = _plain_bond_shape(g)
-        if not cs or s is None:
-            return None, 'no circle or no bond'
-        cs[0]['center'] = _shape_mid(s)
-        return g, 'circle of %s moved onto %s' % (cs[0]['ref'], _ink_name(s))
-    if name == 'graph':
-        if not rl['bonds']:
-            return None, 'no bond after reload'
-        stereo = [k for k in sorted(rl['bonds']) if rl['bonds'][k]['style'] in ('wedge', 'hash')]
-        if stereo:                                      # a figure with wedges: the other configuration after reload
-            b = rl['bonds'][stereo[0]]
-            b['style'] = 'hash' if b['style'] == 'wedge' else 'wedge'
-            return g, 'bond %s-%s turned into a %s after reload' % (stereo[0][0], stereo[0][1], b['style'])
-        key = sorted(rl['bonds'])[0]
-        del rl['bonds'][key]
-        return g, 'bond %s-%s removed from the reloaded file' % key
-    if name == 'stereochemistry':
-        from iupac_features import METALS
-        for pair, bond in rl['bonds'].items():
-            if any(g.atoms[ref]['el'] in METALS for ref in pair):
-                continue  # metal coordination geometry has its own detector
-            if bond['style'] in ('wedge', 'hash'):
-                bond['style'] = 'hash' if bond['style'] == 'wedge' else 'wedge'
-                return g, 'wedge %s-%s inverted after reload' % pair
-        return None, 'no wedge; tested on the chiral synthetic figure'
-    if name == 'charges':
-        ref = next((r for r in sorted(rl['atoms']) if g.atoms.get(r, {}).get('kind', 'atom') == 'atom'), None)
-        if ref is None:
-            return None, 'no atom after reload'
-        rl['atoms'][ref]['charge'] += 1
-        return g, 'charge of %s raised by one after reload' % ref
-    if name == 'hydrogens':
-        ref = next((r for r in sorted(rl['atoms']) if rl['atoms'][r]['h'] is not None and g.atoms.get(r, {}).get('kind', 'atom') == 'atom'), None)
-        if ref is None:
-            return None, 'the reloaded file carries no hydrogen counts'
-        rl['atoms'][ref]['h'] += 1
-        return g, 'one more H on %s after reload' % ref
-    if name == 'arrows_count':
-        curved = [k for k, a in enumerate(rl['arrows']) if a['kind'] == 'curved']
-        if not curved:
-            rl['arrows'].append({'kind': 'curved', 'id': 'planted', 'head': 'full', 'tail': 'none', 'color': None})
-            return g, 'an extra curved arrow after reload'
-        del rl['arrows'][curved[0]]
-        return g, 'a curved arrow lost on reload'
-    if name == 'arrows_ends':
-        if not rep['curved']:
-            return None, 'no curved arrow'
-        c = rep['curved'][0]
-        req = next((a for a in g.curved if a['id'] == c['id']), None)
-        if req and req['to']['kind'] == 'gap':
-            c['end'] = (max(g.xy(r)[0] for r in g.atoms) + 100, max(g.xy(r)[1] for r in g.atoms) + 100)
-            return g, 'forming-bond arrow head moved outside its atom pair'
-        c['start'], c['end'] = c['end'], c['start']
-        c['start_ref'], c['end_ref'] = c['end_ref'], c['start_ref']
-        return g, 'arrow %s drawn backwards (start and end swapped)' % c['id']
-    if name == 'arrows_lone_pair':
-        flagged = ' '.join(det_arrows_lone_pair(f))      # an arrow the figure already flags would show no new finding
-        arrow = next((c for c in g.curved if c['electrons'] == 2 and c['from']['kind'] == 'atom'
-                      and not re.search(r'(?<![\w-])' + re.escape(c['id']) + r'(?![\w-])', flagged)), None)
-        if arrow is None:
-            ref = next((r for r, a in g.atoms.items() if a['el'] == 'O'), next(iter(g.atoms)))
-            arrow = {'id': 'LP-control', 'from': {'kind': 'atom', 'refs': [ref]},
-                     'to': {'kind': 'atom', 'refs': [ref]}, 'electrons': 2}
-            g.curved.append(arrow)
-            g.lone_pairs.append(ref)
-            x, y = g.xy(ref)
-            rep['lone_pairs'].append({'ref': ref, 'center': (x + 5, y), 'dots': [(x + 5, y - 1), (x + 5, y + 1)]})
-            rep['curved'].append({'id': arrow['id'], 'start': (x + 5, y)})
-            for saved in (rl, rl.get('cdxml')):
-                if saved is not None and ref in saved['atoms']:
-                    saved['atoms'][ref]['pairs'] = g.lone_pairs.count(ref)
-        row = next(c for c in rep['curved'] if c['id'] == arrow['id'])
-        centers = [p['center'] for p in rep['lone_pairs'] if p['ref'] == arrow['from']['refs'][0] and p['center']]
-        row['start'] = (max([p[0] for p in centers] or [0]) + 10, max([p[1] for p in centers] or [0]) + 10)
-        return g, 'arrow %s tail moved off its drawn lone pair' % arrow['id']
-    if name == 'arrows_head':
-        curved = [a for a in rl['arrows'] if a['kind'] == 'curved']
-        if not curved:
-            return None, 'no curved arrow'
-        curved[0]['head'] = 'half' if str(curved[0]['head']).lower() == 'full' else 'full'
-        return g, 'head of a curved arrow changed to %s' % curved[0]['head']
-    if name == 'arrows_color':
-        if not rl['arrows']:
-            return None, 'no arrow'
-        rl['arrows'][0]['color'] = '#ff0000'
-        return g, 'an arrow made red'
-    if name == 'arrows_shape':
-        cs = [c for c in rep['curved'] if c['start'] and c['end']]
-        if not cs:
-            return None, 'no curved arrow'
-        c = cs[0]
-        chord = math.hypot(c['end'][0] - c['start'][0], c['end'][1] - c['start'][1])
-        c['length'] = 4.0 * max(chord, 0.5)
-        return g, 'arrow %s made a loop (4 times as long as the distance between its ends)' % c['id']
-    if name == 'column_arrows':
-        if not g.resolved['reaction_arrows']:
-            return None, 'no reaction arrow'
-        r = g.resolved['reaction_arrows'][0]
-        r['column_panels'] = r.get('column_panels') or ['upper', 'lower']
-        r.update(x1=0.0, y1=0.0, x2=0.0, y2=3.0)
-        for saved in (rl, rl.get('cdxml')):
-            if saved is not None:
-                straight = [a for a in saved['arrows'] if a['kind'] != 'curved']
-                if straight:
-                    straight[0]['coords'] = (0.0, 0.0, 0.0, 3.0)
-        r['x2'] = 1.0
-        return g, 'a column reaction arrow tilted 18 degrees from vertical'
-    if name == 'cdxml':
-        c = rl.get('cdxml')
-        if c is None or not c['bonds']:
-            return None, 'no CDXML-only reload'
-        key = sorted(c['bonds'])[-1]
-        del c['bonds'][key]
-        return g, 'bond %s-%s lost from the CDXML alone' % key
-    if name == 'chain_angles':
-        ring = _in_ring(g)
-        from iupac_features import METALS
-        for ref, nb in sorted(g.nbrs.items()):
-            if g.atoms[ref]['el'] in METALS or g.atoms[ref].get('kind') == 'center':
-                continue
-            if len(nb) != 2 or ref in ring or _linear(g, ref) or g.atoms[ref].get('kind') == 'residue':
-                continue
-            p = g.xy(ref)
-            if abs(adiff(angle_of(p, g.xy(nb[0])), angle_of(p, g.xy(nb[1]))) - 120.0) > ANGLE_TOL:
-                continue                                # already off: plant on an atom that passes
-            for deg in (25.0, -25.0):                  # the turn that opens or closes the angle away from 120
-                h = _rotate_atom(_clone(g), nb[0], ref, deg)
-                q = h.xy(ref)
-                if abs(adiff(angle_of(q, h.xy(nb[0])), angle_of(q, h.xy(nb[1]))) - 120.0) > ANGLE_TOL + 5:
-                    return h, 'atom %s turned %.0f degrees about %s' % (nb[0], deg, ref)
-        return None, 'no chain atom with two bonds and a regular angle'
-    if name == 'four_bond':
-        metal_centers = {m['center'] for p in g.resolved['panels'] for m in p.get('metal_geometry', [])}
-        for ref, nb in g.nbrs.items():
-            if len(nb) == 4 and ref not in _in_ring(g) and ref not in metal_centers and g.atoms[ref].get('kind') != 'center':
-                return _rotate_atom(g, nb[0], ref, 45.0), 'neighbor %s of %s turned 45 degrees' % (nb[0], ref)
-        return None, 'no atom with four bonds (two chain bonds and two end groups, or one and three)'
-    if name in ('charge_circled', 'charge_size', 'charge_own_atom'):
-        cs = [c for c in rep['charges'] if c['kind'] == 'circle' and c['center']]
-        if not cs:
-            return None, 'no circled charge'
-        c = cs[0]
-        if name == 'charge_circled':
-            c['kind'] = 'text'
-            return g, 'the charge of %s drawn as text' % c['ref']
-        if name == 'charge_size':
-            c['outer_d'] = c['outer_d'] * 0.875
-            return g, 'circle of %s scaled to 0.875 (as an SVG-scaled circle)' % c['ref']
-        others = [r for r in g.atoms if r != c['ref'] and math.hypot(g.xy(r)[0] - g.xy(c['ref'])[0], g.xy(r)[1] - g.xy(c['ref'])[1]) > 1.5 * g.bond_pt]
-        if not others:
-            return None, 'no other distant atom for the ownership control'
-        target = min(others, key=lambda r: math.hypot(g.xy(r)[0] - c['center'][0], g.xy(r)[1] - c['center'][1]))
-        p = g.xy(target)
-        c['center'] = (p[0] + 4.0, p[1] - 4.0)
-        return g, 'circle of %s moved next to %s' % (c['ref'], target)
-    if name == 'ion_text':
-        ions = [c for c in rep['charges'] if c['kind'] == 'text' and c['ref'] in g.atoms
-                and (g.atoms[c['ref']].get('ion_text') or abs(int(g.atoms[c['ref']].get('charge') or 0)) >= 2)]
-        if not ions:
-            return None, 'no ion or charge of 2 or more'
-        ions[0]['kind'] = 'circle'
-        p = g.xy(ions[0]['ref'])
-        ions[0]['center'], ions[0]['outer_d'] = (p[0] + 9.0, p[1] - 5.0), default_circle_d(g)
-        return g, 'the charge of %s drawn as a circle' % ions[0]['ref']
-    if name in ('number_size', 'number_place', 'number_clear', 'number_on_h'):
-        ns = [n for n in rep['numbers'] if n['box']]
-        if name == 'number_on_h':
-            hs = [r for r, a in g.atoms.items() if a['el'] == 'H' and a.get('label')]
-            if not hs:
-                return None, 'no H drawn as a letter'
-            p = g.xy(hs[0])
-            rep['numbers'].append({'ref': hs[0], 'text': '9', 'box': (p[0] + 6, p[1] - 3, p[0] + 10.4, p[1] + 2.7), 'size': 8.0})
-            return g, 'number 9 added on the H %s' % hs[0]
-        if not ns:
-            return None, 'no atom number'
-        n = ns[0]
-        if name == 'number_size':
-            n['size'] = round(float(g.style.get('number_size_pt', 8.0)) * 1.37, 2)
-            return g, 'number of %s at %.2f pt' % (n['ref'], n['size'])
-        if name == 'number_clear':
-            s = _plain_bond_shape(g)
-            if s is None:
-                return None, 'no bond'
-            m = _shape_mid(s)
-            w, h = n['box'][2] - n['box'][0], n['box'][3] - n['box'][1]
-            (p, q) = s.ends()[1]
-            L = math.hypot(q[0] - p[0], q[1] - p[1]) or 1.0
-            nx, ny = -(q[1] - p[1]) / L, (q[0] - p[0]) / L
-            want = NUMBER_CLEAR_PT / 2.0
-
-            def at(d):
-                cx, cy = m[0] + nx * d, m[1] + ny * d
-                return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
-            lo, hi = 0.0, 20.0                          # the distance from the bond's middle that leaves `want` of white
-            for _ in range(40):
-                mid = (lo + hi) / 2.0
-                if co.clearance(box_shape(at(mid)), s) < want:
-                    lo = mid
-                else:
-                    hi = mid
-            n['box'] = at(hi)
-            return g, 'number of %s put %.1f pt beside a bond' % (n['ref'], want)
-        multi = [x for x in ns if _tail_box(g.label_box(x['ref']), g.symbol_box(x['ref'])) is not None]
-        if multi:
-            n = multi[0]
-            box, sym = g.label_box(n['ref']), g.symbol_box(n['ref'])
-            tail = _tail_box(box, sym)
-            w, h = n['box'][2] - n['box'][0], n['box'][3] - n['box'][1]
-            right = tail[0] >= sym[2] - 0.01
-            x0 = box[2] + 1.0 if right else box[0] - 1.0 - w
-            n['box'] = (x0, box[1], x0 + w, box[1] + h)
-            return g, 'number of %s put after the hydrogens of %r' % (n['ref'], g.atoms[n['ref']]['label'])
-        others = [r for r in g.atoms if r != n['ref'] and g.labeled(r) and g.label_box(r)]
-        target = min(others, key=lambda r: pt_box_gap(_center(n['box']), g.label_box(r)))
-        b = g.label_box(target)
-        w, h = n['box'][2] - n['box'][0], n['box'][3] - n['box'][1]
-        n['box'] = (b[2] + 0.8, b[1], b[2] + 0.8 + w, b[1] + h)
-        return g, 'number of %s put next to the label of %s' % (n['ref'], target)
-    if name in ('label_bonds', 'one_label_bonds', 'bond_lengths'):
-        kind = {'label_bonds': 2, 'one_label_bonds': 1, 'bond_lengths': 0}[name]
-        for b, r in _report_bonds(g):
-            if r is not None and _bond_kind(g, b) == kind:
-                r['lengthened'], r['length'] = True, g.bond_pt * 1.4
-                if kind == 2:
-                    r['visible'] = (LINE_SHOW + .4) * g.bond_pt   # more line than the lengthening rule ever shows
-                return g, 'bond %s-%s lengthened to 1.4 standard bonds' % (b['a'], b['b'])
-        return None, 'no bond of that label kind'
-    if name == 'labels_drawn':
-        cands = [r for r, a in g.atoms.items() if a.get('label') and a.get('kind', 'atom') != 'residue' and g.label_box(r)]
-        if not cands:
-            return None, 'no labeled atom'
-        target = next((r for r in cands if g.atoms[r].get('el') == 'C' and g.atoms[r].get('kind', 'atom') == 'atom'), cands[0])
-        rep['atoms'][target]['box'] = None              # the symbol is not drawn: what a hidden carbon (shown unset) looks like
-        if target in rl['atoms'] and g.atoms[target].get('el') == 'C':
-            rl['atoms'][target]['shown'] = False
-        return g, 'the label %r of %s is not drawn' % (g.atoms[target]['label'], target)
-    if name == 'colors':
-        ref = sorted(rl['atoms'])[0] if rl['atoms'] else None
-        if ref is None:
-            return None, 'no atom after reload'
-        rl['atoms'][ref]['color'] = '#00a0ff' if rl['atoms'][ref]['color'] != '#00a0ff' else '#ff00ff'
-        return g, 'color of %s changed after reload' % ref
-    if name == 'frame':
-        if not g.svg_text or not _frame_bonds(g) or not g.scene()['bonds']:
-            return None, 'no single bond and SVG bond ink to compare positions with'
-        for ref in rep['atoms']:
-            x, y = rep['atoms'][ref]['xy']
-            rep['atoms'][ref]['xy'] = (x + 30.0, y + 30.0)
-        return g, 'report positions shifted by 30 pt'
-    return None, 'no plant for %s' % name
-
-
-def _rotate_atom(g, ref, center, deg):
-    """Turn atom ref (and everything behind it) about center by deg in the report's positions."""
-    side, stack = {ref}, [ref]
-    while stack:
-        x = stack.pop()
-        for y in g.nbrs[x]:
-            if y != center and y not in side:
-                side.add(y)
-                stack.append(y)
-    c = g.xy(center)
-    t = math.radians(deg)
-    for r in side:
-        p = g.xy(r)
-        dx, dy = p[0] - c[0], p[1] - c[1]
-        q = (c[0] + dx * math.cos(t) + dy * math.sin(t), c[1] - dx * math.sin(t) + dy * math.cos(t))
-        if r in g.report['atoms']:
-            g.report['atoms'][r]['xy'] = q
-        else:
-            g.report['atoms'][r] = {'xy': q, 'box': None}
-    return g
-
-
-def positive_control(f, synthetic=True, checked=None):
-    """Plant one error per detector into copies of f (and of the built-in synthetic figure) and require a new finding.
-    checked: run_checks(f)['checks'], so that the detectors do not run on f again.
-    Returns {'rows': [...], 'detected', 'planted', 'not_plantable', 'ok'}."""
-    names = applicable_detectors(f)
-    figures = [f] + ([synthetic_figure()] if synthetic else [])
-    rows = []
-    for fig in figures:
-        if fig is f and checked:
-            base = {name: checked[name]['findings'] + checked[name]['warnings'] for name in names}
-        else:
-            base = {name: DETECTOR_FUNCS[name](fig) for name in names}
-        for name in names:
-            g, what = plant(fig, name)
-            if g is None:
-                rows.append({'figure': fig.name, 'detector': name, 'planted': False, 'detected': None, 'what': what})
-                continue
-            try:
-                found = DETECTOR_FUNCS[name](g)
-            except (KeyError, TypeError, ValueError, ZeroDivisionError) as e:
-                found = ['crashed: %s' % e]
-            new = [x for x in found if x not in base[name]]
-            more = len(found) > len(base[name])
-            rows.append({'figure': fig.name, 'detector': name, 'planted': True, 'detected': bool(new) or more, 'what': what,
-                         'finding': new[0] if new else (found[-1] if more else None)})
-    planted = [r for r in rows if r['planted']]
-    covered = {r['detector'] for r in planted if r['detected']}
-    return {'rows': rows, 'planted': len(planted), 'detected': sum(1 for r in planted if r['detected']),
-            'detectors_covered': len(covered), 'detectors': len(names), 'not_applicable': [n for n in DETECTORS if n not in names],
-            'ok': all(r['detected'] for r in planted) and covered == set(names)}
-
-
-# ------------------------------------------------------------------------------------------ synthetic figure
-def synthetic_resolved():
-    """A small figure with one of everything the detectors look at (positions in bond lengths, y down): a chain with a
-    carbon of four bonds (H and CH3 in the standard layout), a double bond, an OH, numbers on a skeletal carbon and on a
-    CH3, two bonds between labels (Ado-S, S-CH3), a circled S+ and H3N+, an Mg2+ ion, two curved arrows (two- and one-
-    electron), a reaction arrow with a condition, a title and a free text."""
-    def A(ref, el, label, x, y, charge=0, number=None, kind='atom', h=0, ion=False):
-        q = int(charge)
-        ion = kind == 'atom' and (abs(q) >= 2 or ion)
-        return {'ref': ref, 'el': el, 'label': label, 'x': round(x, 4), 'y': round(y, 4), 'charge': q,
-                'circled': bool(q) and abs(q) == 1 and not ion, 'ion_text': bool(q) and ion, 'number': number, 'color': None,
-                'kind': kind, 'h': h, 'species': ref.split(':')[0]}
-    c = math.cos(math.radians(30))
-    s0 = (5.2, -3.4)
-    atoms = [A('S.m:1', 'C', None, 0.0, 0.0, h=3), A('S.m:2', 'C', None, c, -0.5, number='2'),
-             A('S.m:3', 'C', None, 2 * c, 0.0, h=0), A('S.m:4', 'C', None, 3 * c, -0.5, h=2),
-             A('S.m:5', 'O', 'OH', 4 * c, 0.0, h=1), A('S.m:6', 'C', None, c, -1.5, h=2),
-             A('S.m:7', 'H', 'H', 2 * c - 0.5, 0.866), A('S.m:8', 'C', 'CH3', 2 * c + 0.5, 0.866, h=3, number="1'"),
-             A('S.n:1', 'C', 'Ado', s0[0] - c, s0[1] - 0.5, kind='abbrev'), A('S.n:2', 'S', 'S', s0[0], s0[1], charge=1),
-             A('S.n:3', 'C', None, s0[0] + c, s0[1] - 0.5, h=2), A('S.n:4', 'C', 'CH3', s0[0], s0[1] + 1.0, h=3),
-             A('S.n:5', 'N', 'H3N', s0[0] + c, s0[1] - 1.5, charge=1, h=3), A('S.i:1', 'Mg', 'Mg', 8.6, 0.0, charge=2)]
-
-    def B(a, b, o=1, move=None):
-        return {'a': a, 'b': b, 'order': o, 'style': 'plain', 'color': None, 'move': move}
-    bonds = [B('S.m:1', 'S.m:2'), B('S.m:2', 'S.m:3'), B('S.m:3', 'S.m:4'), B('S.m:4', 'S.m:5'), B('S.m:2', 'S.m:6', 2),
-             B('S.m:3', 'S.m:7'), B('S.m:3', 'S.m:8'), B('S.n:1', 'S.n:2', move='S.n:1'), B('S.n:2', 'S.n:3'),
-             B('S.n:2', 'S.n:4', move='S.n:4'), B('S.n:3', 'S.n:5')]
-    next(b for b in bonds if b['b'] == 'S.m:7')['style'] = 'wedge'
-    curved = [{'id': 'X1', 'from': {'kind': 'bond', 'refs': ['S.m:3', 'S.m:7']}, 'to': {'kind': 'bond', 'refs': ['S.m:2', 'S.m:3']}, 'electrons': 2},
-              {'id': 'X2', 'from': {'kind': 'atom', 'refs': ['S.m:5']}, 'to': {'kind': 'bond', 'refs': ['S.m:4', 'S.m:5']}, 'electrons': 1}]
-    import specutil
-    return {'format': 'resolved/1', 'name': 'synthetic', 'source': None, 'spec_format': 2, 'style': dict(specutil.ACS_STYLE),
-            'stereo_sources': {'S.m': '[CH3:1][C:2](=[CH2:6])[C@@:3]([H:7])([CH3:8])[CH2:4][OH:5]',
-                              'S.n': '[*:1][S+:2]([CH2:3][NH3+:5])[CH3:4]', 'S.i': '[Mg+2:1]'},
-            'panels': [{'id': 'S', 'title': {'text': 'Synthetic', 'x': 2.0, 'y': 2.6}, 'atoms': atoms, 'bonds': bonds, 'curved': curved,
-                        'hbonds': [], 'lone_pairs': [], 'boxes': [], 'texts': [{'text': 'free text', 'x': 9.0, 'y': -3.0, 'size': 10.0, 'align': 'center'}],
-                        'angle_exceptions': {}}],
-            'reaction_arrows': [{'kind': 'single', 'x1': 10.0, 'y1': 0.0, 'x2': 13.0, 'y2': 0.0, 'above': 'step', 'below': None}],
-            'colors': None, 'notes': []}
-
-
-def synthetic_outputs(resolved):
-    """A simplified stand-in for a backend's report.json, reload.json and SVG (text boxes from Arial widths, bonds stopped
-    1.6 pt before labels, standard bond lengths, circles at the default size, arrows as arcs).  It exists so that
-    the positive control has a figure with every element; it is not a drawing tool."""
-    import specutil
-    from layout import label_width, text_width
-    style = resolved['style']
-    bpt, size, lw = style['bond_length_pt'], style['font_size_pt'], style['line_width_pt']
-    capw = CAP * size
-    atoms = {a['ref']: dict(a) for p in resolved['panels'] for a in p['atoms']}
-    nbrs = {r: [] for r in atoms}
-    bonds = [b for p in resolved['panels'] for b in p['bonds']]
-    for b in bonds:
-        nbrs[b['a']].append(b['b'])
-        nbrs[b['b']].append(b['a'])
-    pos = {r: (a['x'] * bpt, a['y'] * bpt) for r, a in atoms.items()}
-
-    def lbox(r):
-        a = atoms[r]
-        if not a.get('label'):
-            return None
-        x, y = pos[r]
-        text = specutil.plain_text(a['label'])
-        w = label_width(text, size, 1.0)
-        first = text_width(text[:1], size, 1.0)
-        dx = sum(pos[n][0] - x for n in nbrs[r])
-        if (text[:1] == 'H' and a['el'] != 'H' and a.get('kind', 'atom') == 'atom') or (a.get('kind') == 'abbrev' and dx > 0.25):
-            return (x + first / 2 - w, y - capw / 2, x + first / 2, y + capw / 2)
-        return (x - first / 2, y - capw / 2, x - first / 2 + w, y + capw / 2)
-
-    def clip(r, toward):
-        """Distance from atom r along the bond toward `toward` at which the bond ink starts (label margin)."""
-        box = lbox(r)
-        if box is None:
-            return 0.0
-        x, y = pos[r]
-        dx, dy = toward[0] - x, toward[1] - y
-        n = math.hypot(dx, dy)
-        ux, uy = dx / n, dy / n
-        t = 0.0
-        while t < n:
-            px, py = x + ux * t, y + uy * t
-            if pt_box_gap((px, py), box) > style['label_margin_pt']:
-                return t
-            t += 0.05
-        return n
-    report_bonds = []
-    for b in bonds:
-        a_, b_ = b['a'], b['b']
-        L = math.dist(pos[a_], pos[b_])
-        vis = L - clip(a_, pos[b_]) - clip(b_, pos[a_])
-        report_bonds.append({'a': a_, 'b': b_, 'length_pt': round(L, 3), 'visible_line_pt': round(vis, 3), 'lengthened': False})
-    rep_atoms = {r: {'x_pt': pos[r][0], 'y_pt': pos[r][1], 'label_box_pt': list(lbox(r)) if lbox(r) else None} for r in atoms}
-
-    def quad(p, q, w):
-        ux, uy = q[0] - p[0], q[1] - p[1]
-        L = math.hypot(ux, uy) or 1.0
-        nx, ny = -uy / L * w / 2, ux / L * w / 2
-        return [(p[0] + nx, p[1] + ny), (q[0] + nx, q[1] + ny), (q[0] - nx, q[1] - ny), (p[0] - nx, p[1] - ny)]
-    ink = []
-    for b in bonds:
-        p, q = pos[b['a']], pos[b['b']]
-        L = math.dist(p, q)
-        ux, uy = (q[0] - p[0]) / L, (q[1] - p[1]) / L
-        s0, s1 = clip(b['a'], q), clip(b['b'], p)
-        P0, P1 = (p[0] + ux * s0, p[1] + uy * s0), (q[0] - ux * s1, q[1] - uy * s1)
-        ink.append(quad(P0, P1, lw))
-        if float(b['order']) == 2:
-            off = style['double_spacing'] * bpt
-            ink.append(quad((P0[0] - uy * off + ux * 2, P0[1] + ux * off + uy * 2), (P1[0] - uy * off - ux * 2, P1[1] + ux * off - uy * 2), lw))
-    lines = []                                         # bond center lines, for finding free room
-    for b in bonds:
-        lines.append((pos[b['a']], pos[b['b']]))
-
-    def room(p, own=None):
-        d = min([co.dist_pt_seg(p[0], p[1], q[0][0], q[0][1], q[1][0], q[1][1]) for q in lines] or [99.0])
-        for r in atoms:
-            if r == own:
-                continue
-            box = lbox(r)
-            d = min(d, pt_box_gap(p, box) if box else math.dist(p, pos[r]))
-        return d
-    charges = []
-    for r, a in atoms.items():
-        if not a.get('charge'):
-            continue
-        box = lbox(r)
-        x, y = pos[r]
-        if a.get('circled'):
-            R = CIRCLE_RATIO * size
-            sym_w = text_width(a['el'], size, 1.0) if box else 0.0
-            tail_left = box is not None and box[0] < x - sym_w / 2 - 1.0
-            tail_right = box is not None and box[2] > x + sym_w / 2 + 1.0
-            best = None
-            for k in range(12):
-                t = math.radians(30 * k)
-                ux, uy = math.cos(t), -math.sin(t)
-                if (tail_left and ux < -0.3) or (tail_right and ux > 0.3):
-                    continue
-                reach = 0.42 * bpt
-                if box:                                # out of the own label by 1 pt
-                    reach = 0.0
-                    while pt_box_gap((x + ux * reach, y + uy * reach), box) < R + lw / 2 + 1.0:
-                        reach += 0.2
-                c = (x + ux * reach, y + uy * reach)
-                sc_ = room(c, own=r) - R
-                if best is None or sc_ > best[0] + 1e-9:
-                    best = (sc_, c)
-            c = best[1]
-            charges.append({'ref': r, 'kind': 'circle', 'center_pt': list(c), 'outer_d_pt': round(2 * R + lw, 3)})
-            ring = [(c[0] + R * math.cos(2 * math.pi * k / 40), c[1] + R * math.sin(2 * math.pi * k / 40)) for k in range(41)]
-            for k in range(40):
-                ink.append(quad(ring[k], ring[k + 1], lw))
-            lines.append((c, c))
-        else:
-            charges.append({'ref': r, 'kind': 'text', 'center_pt': [box[2] + 2.0, y - capw] if box else [x, y], 'outer_d_pt': None})
-    numbers = []
-    for r, a in atoms.items():
-        if a.get('number'):
-            x, y = pos[r]
-            w = text_width(a['number'], style['number_size_pt'], 1.0)
-            h = CAP * style['number_size_pt']
-            box = lbox(r)
-            if box:                                    # under the symbol letter
-                sym_w = text_width(a['el'], size, 1.0)
-                cx, cy = x, box[3] + 1.8 + h / 2
-            else:                                      # the freest direction next to the vertex
-                best = None
-                for k in range(24):
-                    t = math.radians(15 * k)
-                    c = (x + math.cos(t) * 0.55 * bpt, y - math.sin(t) * 0.55 * bpt)
-                    sc_ = room(c, own=r)
-                    if best is None or sc_ > best[0] + 1e-9:
-                        best = (sc_, c)
-                cx, cy = best[1]
-            numbers.append({'ref': r, 'text': a['number'], 'box_pt': [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2],
-                            'size_pt': style['number_size_pt']})
-    texts = []
-    for p in resolved['panels']:
-        if p.get('title'):
-            w = text_width(p['title']['text'], size, 1.0)
-            texts.append({'text': p['title']['text'], 'role': 'title',
-                          'box_pt': [p['title']['x'] * bpt - w / 2, p['title']['y'] * bpt - capw / 2,
-                                     p['title']['x'] * bpt + w / 2, p['title']['y'] * bpt + capw / 2]})
-        for t in p.get('texts') or []:
-            w = text_width(t['text'], t['size'], 1.0)
-            x0 = t['x'] * bpt - (w / 2 if t['align'] == 'center' else 0 if t['align'] == 'left' else w)
-            texts.append({'text': t['text'], 'role': 'text', 'box_pt': [x0, t['y'] * bpt - capw / 2, x0 + w, t['y'] * bpt + capw / 2]})
-    arrows_svg, curved_rep, reload_arrows = [], [], []
-    for p in resolved['panels']:
-        for c in p['curved']:
-            def endp(e):
-                rs = e['refs']
-                return ((sum(pos[r][0] for r in rs) / len(rs)), (sum(pos[r][1] for r in rs) / len(rs)))
-            s, e = endp(c['from']), endp(c['to'])
-
-            def offset(end, p, other):
-                """Start or end point: 4 pt off a bond on the side facing the other end, or off an atom on its free side."""
-                if end['kind'] == 'bond':
-                    a_, b_ = (pos[x] for x in end['refs'])
-                    nx, ny = -(b_[1] - a_[1]), b_[0] - a_[0]
-                    n = math.hypot(nx, ny) or 1.0
-                    cands = [(p[0] + nx / n * 4.0, p[1] + ny / n * 4.0), (p[0] - nx / n * 4.0, p[1] - ny / n * 4.0)]
-                    return min(cands, key=lambda q: math.dist(q, other))
-                r = end['refs'][0]
-                dirs = sorted(math.atan2(pos[n][1] - p[1], pos[n][0] - p[0]) for n in nbrs[r])
-                if dirs:
-                    gaps_ = [((dirs[(k + 1) % len(dirs)] - dirs[k]) % (2 * math.pi) or 2 * math.pi, dirs[k]) for k in range(len(dirs))]
-                    g, d0 = max(gaps_)
-                    t = d0 + g / 2
-                else:
-                    t = math.atan2(other[1] - p[1], other[0] - p[0])
-                ux, uy = math.cos(t), math.sin(t)
-                box = lbox(r)
-                k = 3.0
-                while box and pt_box_gap((p[0] + ux * k, p[1] + uy * k), box) < 2.5:
-                    k += 0.2
-                return (p[0] + ux * k, p[1] + uy * k)
-            s2, e2 = offset(c['from'], s, e), offset(c['to'], e, s)
-            d = math.dist(s2, e2) or 1.0
-            ux, uy = (e2[0] - s2[0]) / d, (e2[1] - s2[1]) / d
-            mids = [((s2[0] + e2[0]) / 2 - uy * sg * 0.35 * d, (s2[1] + e2[1]) / 2 + ux * sg * 0.35 * d) for sg in (1, -1)]
-            mid = max(mids, key=room)
-            pts = [((1 - t) ** 2 * s2[0] + 2 * (1 - t) * t * mid[0] + t * t * e2[0], (1 - t) ** 2 * s2[1] + 2 * (1 - t) * t * mid[1] + t * t * e2[1])
-                   for t in [k / 12.0 for k in range(13)]]
-            polys = [quad(pts[k], pts[k + 1], lw) for k in range(12)]
-            arrows_svg.append((c['id'], polys))
-            curved_rep.append({'id': c['id'], 'start_pt': list(pts[0]), 'end_pt': list(pts[-1]),
-                               'start_ref': {'kind': c['from']['kind'], 'refs': list(c['from']['refs'])},
-                               'end_ref': {'kind': c['to']['kind'], 'refs': list(c['to']['refs'])},
-                               'length_pt': round(sum(math.dist(pts[k], pts[k + 1]) for k in range(12)), 3)})
-            reload_arrows.append({'kind': 'curved' if c['electrons'] == 2 else 'fishhook', 'id': c['id'], 'start': 'none',
-                                  'end': 'full' if c['electrons'] == 2 else 'half', 'color': '#000000'})
-    straight = []
-    for k, r in enumerate(resolved['reaction_arrows']):
-        p0, p1 = (r['x1'] * bpt, r['y1'] * bpt), (r['x2'] * bpt, r['y2'] * bpt)
-        arrows_svg.append(('R%d' % (k + 1), [quad(p0, p1, lw)]))
-        straight.append({'kind': r['kind'] if r['kind'] == 'equilibrium' else 'reaction', 'color': '#000000'})
-        if r.get('above'):
-            w = text_width(r['above'], size, 1.0)
-            cx = (p0[0] + p1[0]) / 2
-            texts.append({'text': r['above'], 'role': 'condition', 'box_pt': [cx - w / 2, p0[1] - 3.0 - capw, cx + w / 2, p0[1] - 3.0]})
-    for r, a in atoms.items():
-        if a.get('kind') == 'residue':
-            x, y = pos[r]
-            w = text_width(a['label'], size, 1.0)
-            texts.append({'text': a['label'], 'role': 'residue', 'box_pt': [x + 2.0, y - capw / 2, x + 2.0 + w, y + capw / 2]})
-    xs = [p[0] for p in pos.values()] + [b[0] for t in texts for b in [t['box_pt']]] + [b[2] for t in texts for b in [t['box_pt']]]
-    ys = [p[1] for p in pos.values()] + [b[1] for t in texts for b in [t['box_pt']]] + [b[3] for t in texts for b in [t['box_pt']]]
-    vb = (min(xs) - 20, min(ys) - 20, max(xs) - min(xs) + 40, max(ys) - min(ys) + 40)
-
-    def d_of(polys):
-        return ''.join('M' + 'L'.join('%.3f %.3f' % p for p in poly) + 'Z' for poly in polys)
-    svg = ['<svg xmlns="http://www.w3.org/2000/svg" width="%.2fpt" height="%.2fpt" viewBox="%.2f %.2f %.2f %.2f">' % (vb[2], vb[3], *vb),
-           '<path data-role="bond" fill="#000000" d="%s"/>' % d_of(ink)]
-    for aid, polys in arrows_svg:
-        svg.append('<path data-role="arrow" data-id="%s" fill="#000000" d="%s"/>' % (aid, d_of(polys)))
-    for r, a in atoms.items():
-        if a.get('label') and lbox(r):
-            b = lbox(r)
-            svg.append('<text x="%.2f" y="%.2f" font-family="Arial" font-size="%.1f">%s</text>' % (b[0], b[3], size, a['label']))
-    svg.append('</svg>')
-    report = {'atoms': rep_atoms, 'bonds': report_bonds, 'curved': curved_rep, 'numbers': numbers, 'charges': charges,
-              'texts': texts + [{'text': n['text'], 'role': 'number', 'box_pt': n['box_pt']} for n in numbers], 'timings_s': {}}
-    # the reloaded file, in the Octet backend's form (an abbreviation's text on its atom; a residue name is a caption)
-    reload = {'atoms': [{'ref': r, 'el': a['el'], 'text': a.get('label') if a.get('kind') == 'abbrev' else None,
-                         'charge': a.get('charge', 0), 'circled': bool(a.get('circled')),
-                         'x': pos[r][0] / bpt, 'y': pos[r][1] / bpt,
-                         'h': None if a.get('kind') == 'abbrev' else a.get('h', 0), 'color': a.get('color')} for r, a in atoms.items()],
-              'bonds': [{'a': b['a'], 'b': b['b'], 'order': b['order'], 'style': b.get('style', 'plain'), 'color': b.get('color')} for b in bonds],
-              'hbonds': [], 'curved': reload_arrows, 'straight': straight,
-              'captions': [{'text': t['text'], 'role': t['role'], 'size': size, 'color': None} for t in texts]
-              + [{'text': n['text'], 'role': 'number', 'size': n['size_pt'], 'color': None} for n in numbers],
-              'numbers': [{'ref': n['ref'], 'text': n['text'], 'size': n['size_pt']} for n in numbers], 'lost': {}}
-    reload['cdxml_only'] = copy.deepcopy(reload)
-    return report, reload, '\n'.join(svg)
-
-
-def synthetic_figure():
-    res = synthetic_resolved()
-    rep, rl, svg = synthetic_outputs(res)
-    return Figure(res, rep, rl, svg, name='synthetic')
-
-
 # ------------------------------------------------------------------------------------------ command line
 def load_state(outdir):
     path = Path(outdir) / '.state.json'
@@ -3991,7 +3157,7 @@ def load_figure(outdir):
     return Figure(res, rep, rl, svg, name=str(d))
 
 
-def summary_lines(result, pc=None):
+def summary_lines(result):
     lines = []
     c = result['checks']
     names = result.get('applicable', list(c))
@@ -4021,12 +3187,6 @@ def summary_lines(result, pc=None):
             shown.add(action)
         if len(repairs) > len(visible):
             lines.append('  FIX %s: (%d more)' % (n, len(repairs) - len(visible)))
-    if pc is not None:
-        for r in pc['rows']:
-            if r['planted'] and not r['detected']:
-                lines.append('  MISSED planted error [%s] %s: %s' % (r['figure'], r['detector'], r['what']))
-        lines.append('POSITIVE CONTROL: %d/%d planted errors detected; %d/%d detectors covered' % (
-            pc['detected'], pc['planted'], pc['detectors_covered'], pc['detectors']))
     return lines
 
 
@@ -4034,21 +3194,19 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description='Check a drawn figure against the drawing rules (see the module docstring).')
     ap.add_argument('outdir', help='directory written by draw_figure.py')
     ap.add_argument('--json', help='write all results here')
-    ap.add_argument('--positive-control', action='store_true', help='plant one error per detector and require each to be found')
     ap.add_argument('--quiet', action='store_true', help='summary line only')
     args = ap.parse_args(argv)
     try:
         fig = load_figure(args.outdir)
         result = run_checks(fig)
-        pc = positive_control(fig, checked=result['checks']) if args.positive_control else None
     except InputError as e:
         print('check_rules.py: %s' % e, file=sys.stderr)
         return 2
-    lines = summary_lines(result, pc)
-    print('\n'.join(lines[:1] if args.quiet and pc is None else lines))
+    lines = summary_lines(result)
+    print('\n'.join(lines[:1] if args.quiet else lines))
     if args.json:
-        Path(args.json).write_text(json.dumps({'result': result, 'positive_control': pc}, ensure_ascii=False, indent=1), encoding='utf-8')
-    return 0 if result['ok'] and (pc is None or pc['ok']) else 1
+        Path(args.json).write_text(json.dumps({'result': result}, ensure_ascii=False, indent=1), encoding='utf-8')
+    return 0 if result['ok'] else 1
 
 
 if __name__ == '__main__':

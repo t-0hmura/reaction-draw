@@ -37,8 +37,21 @@ def group_scale(transform):
     return float(m.group(1))
 
 
+# What the backend writes: subpaths "Mx yLx y...Lx y" with an optional Z, one space inside each point
+_PLAIN_NUM = r'-?\d+(?:\.\d+)?'
+_PLAIN_PATH = re.compile(r'(?:M{0} {0}(?:L{0} {0})*Z?)*'.format(_PLAIN_NUM))
+
+
 def parse_path(d):
     """Path data of absolute M, L and Z commands, all that the export holds -> [(points, closed)]."""
+    if _PLAIN_PATH.fullmatch(d or ''):
+        # the same points, read with str.split instead of one regular expression per command (the scene of a large
+        # figure holds about 10^5 commands)
+        out = []
+        for sub in (d or '').split('M')[1:]:
+            v = list(map(float, sub.rstrip('Z').replace('L', ' ').split()))
+            out.append((list(zip(v[0::2], v[1::2])), sub.endswith('Z')))
+        return out
     subs, pts = [], []
     for cmd, body in re.findall(r'([A-Za-z])([^A-Za-z]*)', d or ''):
         if cmd not in 'MLZ':

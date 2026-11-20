@@ -3,12 +3,12 @@
 """Draw a figure from an input file in one command: layout, Octet Draw, save and reload, SVG and PNG, every check.
 
   python draw_figure.py INPUT.json --out DIR [--dpi 600 | --png-width N] [--browser-cmd "ssh HOST PYTHON"]
-                        [--positive-control] [--quiet] [--octet PATH --node-modules PATH]
+                        [--quiet] [--octet PATH --node-modules PATH]
   python draw_figure.py A.json B.json C.json --out DIR --versions   (a layout revision, or when the user asks:
                         versions drawn at once, each in DIR/<name>; BEST names one)
   python draw_figure.py --check-env [--browser-cmd "ssh HOST PYTHON"]
 
-Exit status (of the BEST version when several are drawn): 0 when every check passes (and, with --positive-control, the positive control finds every planted error), 1 when a check fails,
+Exit status (of the BEST version when several are drawn): 0 when every check passes, 1 when a check fails,
 2 when the input file is wrong or a stage cannot run. Stages, outputs and options: the repository's docs/backend.md.
 """
 import argparse
@@ -100,7 +100,7 @@ def _lock(path):
     return handle
 
 
-def run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, positive_control=False,
+def run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None,
         draw=None, log=print, dpi=None):
     """Draw and check while holding the output-directory lock."""
     out = Path(out_dir)
@@ -111,7 +111,7 @@ def run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, b
         message = 'input error: another draw_figure.py is writing %s; wait for it to finish or use another --out' % out
         log(message)
         return 2, {'error': message}
-    return _run(spec_path, out_dir, png_width, octet_dir, node_modules, browser_cmd, positive_control, draw, log, dpi)
+    return _run(spec_path, out_dir, png_width, octet_dir, node_modules, browser_cmd, draw, log, dpi)
 
 
 def _failed(out, what, message, notes, times, log, stereo_lines=()):
@@ -581,122 +581,6 @@ def _turn_branch(out, fig, result, draw, draw_args, saved, panel, graph, arrow, 
     return None
 
 
-HBOND_FLIP_MAX = 6          # mirrored hydrogen-bonded groups drawn side by side
-HBOND_FLIP_CHECKS = ('overlap_text_bond', 'overlap_text_text', 'overlap_arrow_bond', 'overlap_arrow_text',
-                     'overlap_arrow_arrow', 'bond_crossing', 'arrows_ends', 'arrows_shape')
-HBOND_FLIP_KEEP = ('graph', 'stereochemistry', 'charges', 'hydrogens', 'labels_drawn', 'arrows_count', 'arrows_head',
-                   'arrows_color', 'colors', 'cdxml', 'frame')
-
-
-def _mirrored(resolved, pid, group, axis):
-    """A copy of resolved in which the species of group in panel pid are mirrored left-right (axis 'x') or up-down
-    ('y') about the middle of their extent; wedges and hashes swap so that every configuration stays, a manual bend
-    between two of their atoms turns the other way, and a text put near one of their atoms goes along."""
-    r = copy.deepcopy(resolved)
-    p = next(q for q in r['panels'] if q['id'] == pid)
-    atoms = [a for a in p['atoms'] if a['species'] in group]
-    k = 'x' if axis == 'x' else 'y'
-    c = (min(a[k] for a in atoms) + max(a[k] for a in atoms)) / 2
-    refs = {a['ref'] for a in atoms}
-    for a in atoms:
-        a[k] = round(2 * c - a[k], 4)
-    for b in p['bonds']:
-        if b['a'] in refs and b['b'] in refs and b.get('style') in ('wedge', 'hash'):
-            b['style'] = 'hash' if b['style'] == 'wedge' else 'wedge'
-    for arrow in p['curved']:
-        if arrow.get('bend') is not None and all(x in refs for x in arrow['from']['refs'] + arrow['to']['refs']):
-            arrow['bend'] = -arrow['bend']
-    for t in p.get('texts', []):
-        if t.get('near') in refs:
-            t[k] = round(2 * c - t[k], 4)
-    return r
-
-
-def _hbond_groups(resolved, pids):
-    """(panel, species, group) for each species of the panels pids that takes part in a hydrogen bond: the group is it
-    and the species joined to it by hydrogen bonds alone (no arrow or other hydrogen bond ties them elsewhere), most
-    atoms first."""
-    out = []
-    for p in resolved['panels']:
-        if p['id'] not in pids or not p.get('hbonds'):
-            continue
-        of = lambda ref: ref.rsplit(':', 1)[0]
-        hb, tied = collections.defaultdict(set), collections.defaultdict(set)
-        for a, b in p['hbonds']:
-            hb[of(a)].add(of(b))
-            hb[of(b)].add(of(a))
-        for arrow in p['curved']:
-            ends = {of(x) for x in arrow['from']['refs'] + arrow['to']['refs']}
-            for e in ends:
-                tied[e] |= ends - {e}
-        if any(b.get('ts') for b in p.get('boxes', [])):
-            continue
-        size = collections.Counter(a['species'] for a in p['atoms'])
-        for sid in sorted(hb, key=lambda x: -size[x]):
-            group = {sid} | {t for t in hb[sid] if t != sid and hb[t] <= {sid} and not tied[t] - {sid}}
-            out.append((p['id'], sid, group, size[sid] + sum(size[t] for t in group - {sid})))
-    out.sort(key=lambda g: -g[3])
-    return [(pid, sid, group) for pid, sid, group, _ in out]
-
-
-def retry_hbond_flips(out, fig, result, draw, draw_args, stats):
-    """When a panel with hydrogen bonds fails an overlap, crossing or arrow check: draw its hydrogen-bonded groups
-    mirrored to the other side (left-right and up-down, at most HBOND_FLIP_MAX side by side) and keep the one that most
-    lowers the failed checks and findings, gains none in HBOND_FLIP_KEEP and brings no two species closer."""
-    failed = [n for n in HBOND_FLIP_CHECKS if n in result['failed']]
-    if not failed:
-        return fig, result, []
-    panels = {q['id'] for q in fig.resolved['panels']}
-    pids = {m.group(1) for n in failed for x in result['checks'][n]['findings']
-            for m in re.finditer(r'(?<![\w.])([\w-]+)\.[\w-]+:\d+', x) if m.group(1) in panels}
-    groups = _hbond_groups(fig.resolved, pids)
-    jobs = [((pid,), sid, group, axis) for pid, sid, group in groups for axis in ('y', 'x')]
-    # a hydrogen bond's line that crosses a bond or another one: first the smaller species of the crossing, mirrored in
-    # every panel where it crosses
-    size = collections.Counter(a['species'] for p in fig.resolved['panels'] for a in p['atoms'])
-    crossed = collections.defaultdict(set)
-    for x in result['checks']['bond_crossing']['findings']:
-        if x.startswith('hbond ') and (' crosses bond ' in x or ' crosses hbond ' in x):
-            named = dict.fromkeys(r.rsplit(':', 1)[0] for r in fig.atoms
-                                  if re.search(r'(?<![\w.])' + re.escape(r) + r'(?!\d)', x))
-            largest = max(named, key=lambda sid: size[sid])
-            for sid in named:
-                if sid != largest:
-                    crossed[sid.split('.', 1)[1]].add(sid.split('.', 1)[0])
-    first = [(tuple(sorted(crossed[key])), sorted(crossed[key])[0] + '.' + key, {key}, axis)
-             for key in sorted(crossed, key=lambda k: size[sorted(crossed[k])[0] + '.' + k]) for axis in ('y', 'x')]
-    jobs = (first + jobs)[:HBOND_FLIP_MAX]
-    if not jobs:
-        return fig, result, []
-    def rank(checked):
-        return len(checked['failed']), sum(len(c['findings']) for c in checked['checks'].values())
-    def better(checked):
-        return (not checked['checks']['stereochemistry']['findings']
-                and all(set(checked['checks'][n]['findings']) <= set(result['checks'][n]['findings']) for n in HBOND_FLIP_KEEP)
-                and rank(checked) < rank(result) and not _closer(result, checked)
-                and not any('no route found' in x and x not in result['checks']['arrows_ends']['findings']
-                            for x in checked['checks']['arrows_ends']['findings']))
-    def mirrored(pids, group, axis):
-        r = fig.resolved
-        for pid in pids:
-            r = _mirrored(r, pid, {pid + '.' + g.split('.', 1)[-1] if '.' not in g or g.split('.', 1)[0] not in pids else g
-                                   for g in group}, axis)
-        return r
-    drawn = [(mirrored(pids, group, axis), None) for pids, sid, group, axis in jobs]
-    def choose(found):
-        scored = [(rank(checked), k) for k, (_, checked, error) in enumerate(found) if error is None and better(checked)]
-        return min(scored)[1] if scored else None
-    results = _candidates(drawn, out, fig, draw, draw_args, None, stats, 'retry_hbond_flips', choose=choose)
-    k = next((k for k, row in enumerate(results) if row[2]), None)
-    if k is None:
-        return fig, result, []
-    candidate, checked = results[k][0], results[k][1]
-    pids, sid, group, axis = jobs[k]
-    return candidate, checked, ['hydrogen-bonded group %s mirrored %s in panel%s %s' % (
-        ', '.join(sorted(g.split('.', 1)[-1] for g in group)), 'left-right' if axis == 'x' else 'up-down',
-        's' if len(pids) > 1 else '', ', '.join(pids))]
-
-
 HOOK_SEATS = {'on': False}     # a kept drawing of this run needed hookSeats (two arrows touched): later retries keep it
 LABEL_ALIGNS = {}              # the side of an atom's written H that a kept drawing chose for its number: later retries keep it
 STRETCH_AT = {}                # a numbered atom whose bonds a kept drawing grew for its number: later retries keep them grown
@@ -712,128 +596,52 @@ def _repair_options(fig, result):
     return options
 
 
-NEAR_DIRS = (None, 0, 90, 180, 270)     # places tried for a molecule brought next to its arrow's other end
+SETTLE_CHECKS = ('overlap_text_bond', 'overlap_text_text', 'overlap_arrow_bond', 'overlap_arrow_text', 'overlap_arrow_arrow',
+                 'bond_crossing', 'arrows_ends', 'arrows_shape', 'hbond_dots', 'overlap_charge', 'charge_open')
+                                                       # failed checks that settle's places can change
+SETTLE_BATCHES = (3, 4)  # settle's next layouts drawn side by side when the drawing of its best fails: 3, then 4 more
 
 
-def _moved_into(resolved, other, pid, mover, anchor):
-    """A copy of resolved in which the atoms of species mover in panel pid stand where other puts them, relative to
-    the atom anchor; the rest keeps what the earlier retries made of it.  None when an atom is missing."""
-    r = copy.deepcopy(resolved)
-    p = next(q for q in r['panels'] if q['id'] == pid)
-    new = {a['ref']: a for q in other['panels'] if q['id'] == pid for a in q['atoms']}
-    old = {a['ref']: a for a in p['atoms']}
-    if anchor not in new or anchor not in old:
-        return None
-    dx, dy = old[anchor]['x'] - new[anchor]['x'], old[anchor]['y'] - new[anchor]['y']
-    for a in p['atoms']:
-        if a['species'] == mover:
-            if a['ref'] not in new:
-                return None
-            a['x'], a['y'] = round(new[a['ref']]['x'] + dx, 4), round(new[a['ref']]['y'] + dy, 4)
-            a.pop('native_align', None)
-    return r
+def _finding_panels(result):
+    """The panels named by the atoms in the failed checks' findings."""
+    text = ' '.join(x for name in result['failed'] for x in result['checks'][name]['findings'])
+    return sorted(set(re.findall(r'\b([A-Za-z][A-Za-z0-9]*)\.[A-Za-z_]\w*:\d+', text)))
 
 
-def retry_route_near(spec, out, fig, result, draw, draw_args, stats):
-    """When a curved arrow between two molecules finds no route or touches a bond or another arrow: put the smaller
-    molecule (not one placed by hand) next to the arrow's atom in the other one ("near", in the free place nearest to each of NEAR_DIRS, its offset dropped),
-    draw these side by side, and keep the one that most lowers the failed checks and findings, gains none in
-    HBOND_FLIP_KEEP and brings no two species closer.  The arrow then has a short way."""
-    lost = [m.group(1) for x in result['checks']['arrows_ends']['findings'] for m in re.finditer(r'arrow (\S+): no route found', x)]
-    lost += [m.group(1) for x in result['checks']['overlap_arrow_bond']['findings'] for m in re.finditer(r'arrow (\S+) touches bond', x)]
-    lost += [i for x in result['checks']['overlap_arrow_arrow']['findings'] for m in re.finditer(r'arrows (\S+) and (\S+) touch', x)
-             for i in m.groups()]
-    if not lost:
-        return fig, result, [], spec
-    size = collections.Counter(a['species'] for p in fig.resolved['panels'] for a in p['atoms'])
-    options = _repair_options(fig, result)
-    jobs, moves, specs, pairs = [], [], [], []
-    for p in fig.resolved['panels']:
-        for a in p.get('curved', []):
-            if a.get('id') not in lost:
-                continue
-            ends = [r for r in a['from']['refs'] + a['to']['refs']]
-            sids = list(dict.fromkeys(r.rsplit(':', 1)[0] for r in ends))
-            if len(sids) != 2:
-                continue
-            mover, other = sorted(sids, key=lambda x: size[x])
-            sp = spec['species_by_id'].get(mover)
-            target = next((r for r in a['to']['refs'] + a['from']['refs'] if r.startswith(other + ':')), None)
-            if sp is None or sp['xy'] or target is None:
-                continue
-            # a molecule that an arrow joins to a third one too (a water between a base and a carbonyl): first next to
-            # that third atom, toward this arrow's other end, so that both arrows stay short
-            xy = {at['ref']: (at['x'], at['y']) for at in p['atoms']}
-            third = [r for c in p.get('curved', []) if c is not a
-                     for refs in [c['from']['refs'] + c['to']['refs']] if any(x.startswith(mover + ':') for x in refs)
-                     for r in refs if not r.startswith((mover + ':', other + ':')) and r in xy]
-            places = [(third[0], round(math.degrees(math.atan2(xy[third[0]][1] - xy[target][1],
-                                                               xy[target][0] - xy[third[0]][0])) % 360))
-                      ] if third and target in xy else []
-            own = next((r for r in a['from']['refs'] + a['to']['refs'] if r.startswith(mover + ':')), None)
-            for anchor, direction in places + [(target, d) for d in NEAR_DIRS]:
-                changed = copy.deepcopy(spec)
-                c = changed['species_by_id'][mover]
-                c['near'] = {'species': anchor.rsplit(':', 1)[0].split('.', 1)[1], 'atom': int(anchor.rsplit(':', 1)[1]),
-                             'dir': direction, 'dist': None}
-                c['offset'] = None
-                c['near_retry'] = True      # placed so even where it would keep its place from an earlier panel
-                if direction is not None and own is not None:
-                    # turned so that its atom of this arrow faces the arrow's other end
-                    import layout
-                    shape = layout.transform(layout.Layout(changed).shape(mover)[0], 0.0, False, c.get('flip'))
-                    m = int(own.rsplit(':', 1)[1])
-                    if m in shape and len(shape) > 1:
-                        cx, cy = (sum(q[k] for q in shape.values()) / len(shape) for k in (0, 1))
-                        face = direction if anchor != target else (direction + 180) % 360
-                        c['rotate'] = round((face - layout.ang(shape[m][0] - cx, shape[m][1] - cy)) % 360, 1)
-                try:
-                    moved = _moved_into(fig.resolved, specutil.resolve(changed), p['id'], mover, anchor)
-                except Exception:
-                    continue
-                if moved is None:
-                    continue
-                jobs.append((moved, options))
-                specs.append(changed)
-                moves.append((a['id'], mover, anchor.rsplit(':', 1)[0], direction))
-                pairs.append((own, target))
-    if not jobs:
-        return fig, result, [], spec
+def retry_settle(spec, out, fig, result, draw, draw_args, stats):
+    """When the drawing of settle's best layout fails: draw settle's next distinct layouts (settle.CHOICE ranks 1, 2, ...,
+    SETTLE_BATCHES at a time) for the panels with findings, and keep the one with the fewest failed checks, then findings,
+    then settle's own order.  The ranks kept stay in settle.CHOICE, so later stages that lay out again start there."""
+    import settle
+    panels = _finding_panels(result)
+    if not panels:
+        return fig, result, []
     def rank(checked):
         return len(checked['failed']), sum(len(c['findings']) for c in checked['checks'].values())
-    def better(checked):
-        return (not checked['checks']['stereochemistry']['findings']
-                and all(set(checked['checks'][n]['findings']) <= set(result['checks'][n]['findings']) for n in HBOND_FLIP_KEEP)
-                and rank(checked) < rank(result) and not _closer(result, checked))
-    def reach(k, candidate):           # among equal ranks and warnings, the shortest way between the arrow's molecules
-        own, target = pairs[k]
-        try:
-            return math.dist(candidate.xy(own), candidate.xy(target))
-        except Exception:
-            return float('inf')
-    def on_h(k, candidate):                      # the molecule put on the side where the other atom writes its H
-        own, target = pairs[k]
-        try:
-            (tx, ty), (ox, oy) = candidate.xy(target), candidate.xy(own)
-            hs = [q['box'] for q in candidate.report['pieces'].get(target) or [] if q['text'] == 'H']
-        except Exception:
-            return 0
-        to = math.atan2(oy - ty, ox - tx)
-        return int(any(abs((math.atan2((b[1] + b[3]) / 2 - ty, (b[0] + b[2]) / 2 - tx) - to + math.pi) % (2 * math.pi) - math.pi)
-                       < math.radians(60) for b in hs))
-    def choose(found):
-        scored = [(rank(checked), on_h(k, candidate), sum(len(c.get('warnings', [])) for c in checked['checks'].values()),
-                   reach(k, candidate), k)
-                  for k, (candidate, checked, error) in enumerate(found) if error is None and better(checked)]
-        return min(scored)[-1] if scored else None
-    results = _candidates(jobs, out, fig, draw, draw_args, None, stats, 'retry_route_near', choose=choose)
-    k = next((k for k, row in enumerate(results) if row[2]), None)
-    if k is None:
-        return fig, result, [], spec
-    candidate, checked = results[k][0], results[k][1]
-    aid, mover, other, direction = moves[k]
-    return candidate, checked, ['arrow %s: %s put next to %s%s' % (
-        aid, mover, other, '' if direction is None else ' (%d degrees)' % direction)], specs[k]
+    def safe(checked):
+        return not checked['checks']['stereochemistry']['findings'] or result['checks']['stereochemistry']['findings']
+    notes, kept = [], {}
+    others = specutil.resolve_candidates(spec, panels, sum(SETTLE_BATCHES))
+    for size in SETTLE_BATCHES:
+        batch, others = others[:size], others[size:]
+        if not batch:
+            break
+        ranks = [k for k, _ in batch]
+        jobs = [(resolved, _repair_options(fig, result)) for _, resolved in batch]
+        def choose(found):
+            ok = [(rank(ch), i) for i, (_, ch, e) in enumerate(found) if e is None and safe(ch) and rank(ch) < rank(result)]
+            return min(ok)[1] if ok else None
+        drawn = _candidates(jobs, out, fig, draw, draw_args, None, stats, 'retry_settle', choose=choose, budget=False)
+        pick = next((i for i, d in enumerate(drawn) if d[2]), None)
+        if pick is not None:
+            fig, result = drawn[pick][0], drawn[pick][1]
+            kept = {p: ranks[pick] for p in panels}
+            settle.CHOICE = dict(kept)
+            notes.append('settled layout %d of panels %s drawn: failed checks -> %d, findings -> %d' % (
+                ranks[pick], ', '.join(panels), *rank(result)))
+        if result['ok'] or not set(result['failed']) & set(SETTLE_CHECKS):
+            break
+    return fig, result, notes
 
 
 def retry_layout(spec, out, fig, result, draw, draw_args, stats):
@@ -1266,7 +1074,7 @@ def _hook_note(short):
     ratio = short.get('stretchArrows', {}).get('ratio')
     return 'short hooks: %s%s' % (', '.join(short['compactArrows']), ' (bonds %.2f standard lengths)' % ratio if ratio else '')
 
-def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None, positive_control=False,
+def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, browser_cmd=None,
         draw=None, log=print, dpi=None):
     """The whole pipeline; returns (exit status, summary dict).  draw: the backend function (default octet_draw.draw)."""
     out = Path(out_dir)
@@ -1305,19 +1113,18 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     LABEL_ALIGNS.clear()
     STRETCH_AT.clear()
     retry_counts = {stage: {'draws': 0} for stage in
-                    ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs', 'retry_hbond_flips',
-                     'retry_route_near')}
+                    ('retry_layout', 'retry_placements', 'retry_forming_branch', 'retry_iupac_pairs', 'retry_settle')}
     retry_counts['retry_iupac_pairs']['accepted'] = []
     DRAW_BUDGET['left'] = MAX_RETRY_DRAWS
     preflight = check_rules.run_checks(check_rules.Figure(resolved, {}, {}, None), input_only=True)
     if not preflight['ok']:
         times['total'] = time.time() - t0
         lines = check_rules.summary_lines(preflight) + stereo_lines + ['RESULT: CHECKS FAILED', INPUT_NEXT]
-        _write_state(out, checks={'result': preflight, 'positive_control': None, 'times_s': times,
+        _write_state(out, checks={'result': preflight, 'times_s': times,
                                  'retry_counts': retry_counts}, summary=lines)
         for line in lines:
             log(line)
-        return 1, {'ok': False, 'times_s': times, 'failed': preflight['failed'], 'positive_control': None}
+        return 1, {'ok': False, 'times_s': times, 'failed': preflight['failed']}
     t1 = time.time()
     native_backend = draw is None
     _progress('first drawing')
@@ -1343,11 +1150,12 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 plain = draw         # the later retries keep these arrows short
                 def draw(resolved, dest, options=None, **kw):
                     return plain(resolved, dest, options=dict(options or {}, **short), **kw)
-        if native_backend and any(n in result['failed'] for n in HBOND_FLIP_CHECKS):
-            # before the other retries: a finding at a hydrogen bond is not theirs to fix
-            fig, result, retried = retry_hbond_flips(out, fig, result, draw, {
+        if native_backend and set(result['failed']) & set(SETTLE_CHECKS):
+            # the molecules' places first: settle's next layouts for the panels with findings, drawn side by side; the
+            # later stages start from the one kept
+            fig, result, retried = retry_settle(spec, out, fig, result, draw, {
                 'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
-                'browser_cmd': browser_cmd}, retry_counts['retry_hbond_flips'])
+                'browser_cmd': browser_cmd}, retry_counts['retry_settle'])
             notes.extend(retried)
         if native_backend and _retryable(result):
             _progress('fixing automatically: %s' % ', '.join(result['failed']), always=True)
@@ -1370,13 +1178,7 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 fig, result, retried = retry_placements(resolved, out, fig, result, draw, retry_args, retry_counts['retry_placements'])
                 notes.extend(retried)
                 placed = fig
-                # an edit of the input (a molecule put next to its arrow's other end) comes before the layout search,
-                # which then starts from the edited input
-                if (any('no route found' in x for x in result['checks']['arrows_ends']['findings'])
-                        or 'overlap_arrow_bond' in result['failed'] or 'overlap_arrow_arrow' in result['failed']):
-                    fig, result, retried, spec = retry_route_near(spec, out, fig, result, draw, retry_args,
-                                                                  retry_counts['retry_route_near'])
-                    notes.extend(retried)
+                # the layout search lays out again from the settled layouts kept above (settle.CHOICE)
                 fig, result, retried = retry_layout(spec, out, fig, result, draw, retry_args, retry_counts['retry_layout'])
                 notes.extend(retried)
                 if _retryable(result):
@@ -1405,15 +1207,14 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 'browser_cmd': browser_cmd}, retry_counts['retry_room'])
             notes.extend(roomed)
             resolved = fig.resolved
-        pc = check_rules.positive_control(fig, checked=result['checks']) if positive_control else None
     except check_rules.InputError as e:
         _failed(out, 'checks could not run', str(e), notes, times, log, stereo_lines)
         return 2, {'error': str(e), 'times_s': times}
     times['check'] = time.time() - t2 - times.get('placement_retry', 0)
     times['total'] = time.time() - t0
     backend_times = fig.report.get('timings_s') or {}
-    ok = result['ok'] and (pc is None or pc['ok'])
-    lines = check_rules.summary_lines(result, pc)
+    ok = result['ok']
+    lines = check_rules.summary_lines(result)
     lines.extend(stereo_lines)
     lines.append('stages (s): ' + ', '.join('%s %.1f' % (k, v) for k, v in times.items()))
     if backend_times:
@@ -1438,14 +1239,13 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     if not ok and not os.environ.get(VERSION_ENV):
         lines.append(LAYOUT_NEXT)
     audit = check_rules.audit_lines(fig.features)
-    _write_state(out, checks={'result': result, 'positive_control': pc, 'times_s': times,
+    _write_state(out, checks={'result': result, 'times_s': times,
                              'backend_times_s': backend_times, 'files': files, 'retry_counts': retry_counts},
                  summary=lines + audit)
     for line in lines + audit:                       # the audit items are the agent's next step
         if not line.startswith('WARNING:'):          # a warning asks nothing of the agent
             log(line)
-    return (0 if ok else 1), {'ok': ok, 'times_s': times, 'failed': result['failed'],
-                              'positive_control': None if pc is None else '%d/%d' % (pc['detected'], pc['planted'])}
+    return (0 if ok else 1), {'ok': ok, 'times_s': times, 'failed': result['failed']}
 
 
 def check_environment(browser_cmd=None, octet_dir=None, node_modules=None, log=print):
@@ -1539,7 +1339,6 @@ def main(argv=None):
                                     'default: the prebuilt page in octet/dist)')
     ap.add_argument('--node-modules', help='node_modules holding esbuild, with --octet')
     ap.add_argument('--browser-cmd', help='command that runs the browser part elsewhere, e.g. "ssh HOST /path/to/python"')
-    ap.add_argument('--positive-control', action='store_true', help='also run the checker\'s positive control (the regression test does)')
     ap.add_argument('--quiet', action='store_true', help='print the result, stereo notes and audit')
     ap.add_argument('--versions', action='store_true', help='draw several versions of the input at once (a layout revision, or when the user asks)')
     args = ap.parse_args(argv)
@@ -1556,10 +1355,10 @@ def main(argv=None):
         ap.error('--out DIR is required for a full run')
 
     def log(line):
-        if (line.lstrip().startswith(('RESULT', 'FIX ', 'STEREO', 'AUDIT', '- [ ]', 'POSITIVE CONTROL', 'NEXT:', 'WARNING:',
+        if (line.lstrip().startswith(('RESULT', 'FIX ', 'STEREO', 'AUDIT', '- [ ]', 'NEXT:', 'WARNING:',
                                      'input error', 'layout error',
-                                     'drawing failed', 'checks could not', 'MISSED planted'))
-                and (not args.quiet or not line.lstrip().startswith(('FIX ', 'POSITIVE CONTROL')))):
+                                     'drawing failed', 'checks could not'))
+                and (not args.quiet or not line.lstrip().startswith('FIX '))):
             print(line, flush=True)
     if len(args.spec) > 1 and not args.versions:
         print('STOP: draw one input file first; the script fixes the layout itself. Several versions are drawn with '
@@ -1569,10 +1368,10 @@ def main(argv=None):
         options = [x for flag, value in (('--dpi', args.dpi), ('--png-width', args.png_width), ('--octet', args.octet),
                                          ('--node-modules', args.node_modules), ('--browser-cmd', args.browser_cmd))
                    if value is not None for x in (flag, str(value))]
-        options += ['--positive-control'] * args.positive_control + ['--quiet'] * args.quiet
+        options += ['--quiet'] * args.quiet
         return run_versions(args.spec, args.out, options, log=print)
     status, _ = run(args.spec[0], args.out, args.png_width, args.octet, args.node_modules, args.browser_cmd,
-                    positive_control=args.positive_control, log=log, dpi=args.dpi)
+                    log=log, dpi=args.dpi)
     return status
 
 

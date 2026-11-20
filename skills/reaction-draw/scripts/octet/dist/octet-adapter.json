@@ -1,7 +1,7 @@
 {
  "page": "octet-adapter.html",
- "page_bytes": 593407,
- "page_sha256": "8abf8687c70d355237740ec90a2b2299eec0c3b2749c9458e869f79987b79603",
+ "page_bytes": 593451,
+ "page_sha256": "ade39b71f0be8f8a892ecf6198295c0e03355cba95937d658d92af5f619e40ba",
  "octet_draw": {
   "repository": "https://github.com/SamChemMan/Octet-Draw",
   "commit": "934719abf213e0a8c9725256338bcbc0f305cab6",
@@ -9,7 +9,7 @@
   "pinned": "934719abf213e0a8c9725256338bcbc0f305cab6"
  },
  "esbuild": "0.28.2",
- "adapter_sha256": "83968e5fc952a5d6c50cc9d0138df9f14c9ae6543a262d10d3f6f0a85189c59a",
+ "adapter_sha256": "f07a95163223eaa95467b434bc78e1cfe69ee86ae4846979c9f07a563dd3ee45",
  "stand_ins": [
   "indigo-ketcher",
   "@tauri-apps/api/core"
@@ -17,7 +17,7 @@
  "inputs": [
   {
    "file": "adapter.ts",
-   "bytes_in_page": 112740
+   "bytes_in_page": 112784
   },
   {
    "file": "Octet-Draw/package.json",

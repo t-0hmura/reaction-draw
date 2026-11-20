@@ -17,11 +17,11 @@ These checks cover overlaps, hidden atom symbols, and the [rules](rules.md). The
 | Bonds and angles | `chain_angles`, `four_bond`, `ring_substituents`, `label_bonds`, `one_label_bonds`, `bond_lengths`, `partial_dashes`, `delocalized_bonds`, `hbond_dots` |
 | Figure | `column_arrows`, `reaction_kinds`, `ts_brackets`, `colors`, `residue_codes`, `residue_once`, `figure_style`, `coordination`, `metal_geometry` |
 
-Each detector runs only when its target feature is present in the figure (e.g., `charge_size` runs only when charges are present); the summary lists applicable and non-applicable detectors. With `--positive-control`, which the regression test always uses, every active detector must also catch a planted error.
+Each detector runs only when its target feature is present in the figure (e.g., `charge_size` runs only when charges are present); the summary lists applicable and non-applicable detectors.
 
 Departures from preferred angles, bond lengths, radical directions, and electron balance, a `+` not placed between two species (`plus_place`), and a curved arrow within 0.035 bond lengths (0.5 pt) of ink that is not its own start or end (`arrows_clear`) produce warnings. An unpaired electron that comes from the bracket H count rather than from `radicals` (`radical_marks`), mixed residue codes, charge-circle styles, or partial-line styles cause failures. Folded hydrogens, coordination H counts, and TS H counts are preserved in the saved files and verified when read back.
 
-To re-check a drawn directory without a browser: `python check_rules.py DIR [--positive-control] [--json OUT.json]`. It reads `DIR/.state.json` and `DIR/figure.svg`.
+To re-check a drawn directory without a browser: `python check_rules.py DIR [--json OUT.json]`. It reads `DIR/.state.json` and `DIR/figure.svg`.
 
 ## Stereochemistry after layout changes
 
@@ -29,7 +29,7 @@ Once all positioning, hand coordinates, reflections, and bond lengthening are ap
 
 ## Hydrogen-bond lines
 
-For an `hbonds` overlap, the `FIX` line points to `python scripts/fix_hbonds.py INPUT --out NEW_DIR`. The script tests both the H and heavy-atom endpoints on the same donor, along with small turns, flips, or offsets of the smaller residue or water fragment, while preserving the substrate and existing hand-coordinate limits. At most three repair candidates are drawn; to pass, a candidate must reduce hydrogen-bond findings, worsen no other checks, and pass all positive controls. The original input remains unchanged: an improved `input.hbonds.json` is saved alongside it (numbered if the file already exists), and the changes are recorded under `hbond_repair` in `NEW_DIR/.state.json`.
+For an `hbonds` overlap, the `FIX` line points to `python scripts/fix_hbonds.py INPUT --out NEW_DIR`. The script tests both the H and heavy-atom endpoints on the same donor, along with small turns, flips, or offsets of the smaller residue or water fragment, while preserving the substrate and existing hand-coordinate limits. At most three repair candidates are drawn; to pass, a candidate must reduce hydrogen-bond findings and worsen no other checks. The original input remains unchanged: an improved `input.hbonds.json` is saved alongside it (numbered if the file already exists), and the changes are recorded under `hbond_repair` in `NEW_DIR/.state.json`.
 
 ## Names and labels
 

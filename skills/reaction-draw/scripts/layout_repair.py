@@ -154,6 +154,14 @@ def _pt_box_gaps(x, y, boxes):
     return np.where((dx == 0) & (dy == 0), depth, np.hypot(dx, dy))
 
 
+def _pt_in_boxes(x, y, boxes):
+    """Whether one of the points (x, y) (rows, points) lies in each box (rows, boxes, 4), edges included: (rows, boxes).
+    The same as _pt_box_gaps(x, y, boxes).min(axis=2) <= 0, without measuring the distances."""
+    b0, b1, b2, b3 = (boxes[..., k, None] for k in range(4))
+    x, y = x[..., None, :], y[..., None, :]
+    return ((b0 <= x) & (x <= b2) & (b1 <= y) & (y <= b3)).any(axis=2)
+
+
 def _seg_gaps(a, b, p, q):
     """_seg_gap of segment a-b against each segment p[k]-q[k]."""
     def side(u, v, w):
@@ -924,6 +932,7 @@ SEAT_CANDIDATES = 400       # rigid seats tried per satellite
 SEAT_EXACT = 20             # of them, the cheapest whose crossings and contacts are counted exactly
 SEAT_FIT = 0.35             # a seat fitted to several hydrogen bonds misses each wanted end by at most this (bonds)
 SEAT_SWEEPS = 2             # sweeps over the satellites after the first
+SLACK = 1e-6                # rounding margin of the quick tests that rule out, before an exact one, what it would reject
 
 
 def _hb_length(lay, box_a, box_b, u):
@@ -986,6 +995,33 @@ def _fit(old, new):
     return go, max(layout.dist(go(old[k]), new[k]) for k in ks)
 
 
+def _fitting(parts, shape):
+    """The combinations of parts (itertools.product order; each part {my: target}) that _fit may carry within SEAT_FIT
+    of their targets.  The fit of every combination is measured at once in arrays (whose rounding differs from _fit's
+    in the last bits, hence SLACK) and _fit runs only on these, since few of the many combinations fit."""
+    if not all(parts):
+        return
+    combos = np.indices([len(ways) for ways in parts]).reshape(len(parts), -1).T
+    keys = [list(ways[0]) for ways in parts]           # the atoms of one option are the same in each of its parts
+    start = np.cumsum([0] + [len(k) for k in keys])
+    new = np.zeros((len(combos), start[-1], 2))
+    old = np.zeros((start[-1], 2))
+    for i, ways in enumerate(parts):
+        rows = np.array([[part[my] for my in keys[i]] for part in ways], dtype=float)
+        new[:, start[i]:start[i + 1]] = rows[combos[:, i]]
+        old[start[i]:start[i + 1]] = [shape[my] for my in keys[i]]
+    do = old - old.mean(axis=0)
+    dn = new - new.mean(axis=1)[:, None]
+    a = (do[:, 0] * dn[..., 0] + do[:, 1] * dn[..., 1]).sum(axis=1)
+    b = (do[:, 0] * dn[..., 1] - do[:, 1] * dn[..., 0]).sum(axis=1)
+    t = np.arctan2(b, a)
+    c, s = np.cos(t)[:, None], np.sin(t)[:, None]
+    miss = np.hypot(c * do[:, 0] - s * do[:, 1] - dn[..., 0], s * do[:, 0] + c * do[:, 1] - dn[..., 1]).max(axis=1)
+    # where the turn is barely defined, rounding may turn it far: those are fitted too
+    for k in np.nonzero((miss <= SEAT_FIT + SLACK) | (np.hypot(a, b) < SLACK))[0]:
+        yield tuple(ways[j] for ways, j in zip(parts, combos[k]))
+
+
 def _seat_candidates(lay, sid, links):
     """Rigid seats of satellite sid for its hydrogen bonds links [(my map, other sid, other map)]: [(places, family)]."""
     xy = lay.xy[sid]
@@ -1019,10 +1055,13 @@ def _seat_candidates(lay, sid, links):
                     options.append([[(my, pa, layout.vec(d), other_box[(o, om)])] for d in _top_dirs(lay, o, om, lay.xy[o])])
         for mirror in (False, True):
             shape = _turned(xy, 0.0, mirror)
+            boxes = {my: mine_box(my, shape) for my in per_atom}     # the same for every combination below
             for scale in (1.0, 1.15):
-                for combo in itertools.product(*options):
-                    targets = {my: layout.add(pa, u, scale * _hb_length(lay, mine_box(my, shape), box, u))
-                               for part in combo for my, pa, u, box in part}
+                # each part's targets once: a combination only puts them together
+                parts = [[{my: layout.add(pa, u, scale * _hb_length(lay, boxes[my], box, u)) for my, pa, u, box in part}
+                          for part in ways] for ways in options]
+                for combo in _fitting(parts, shape):
+                    targets = {my: t for part in combo for my, t in part.items()}
                     go, miss = _fit({my: shape[my] for my in targets}, targets)
                     if miss <= SEAT_FIT:
                         out.append(({m: go(p) for m, p in shape.items()}, 'fit'))
@@ -1059,31 +1098,37 @@ def _seat_candidates(lay, sid, links):
                         else:
                             out.append(({m: (x[0] + q[0], x[1] + q[1]) for m, q in rel.items()}, 'circles'))
     # 1. one hydrogen bond leading: the satellite's atom on a free direction of the partner's atom, pointing back at it
-    singles = []
-    for my, o, om in links:
-        pa = lay.xy[o][om]
+    ways = []                        # (link, delta, mirror, axis, direction), each seated at two lengths
+    for n, (my, o, om) in enumerate(links):
         bonds = _bond_dirs(lay, o, om, lay.xy[o])
         free = [d for d in range(0, 360, 15) if all(layout.adiff(d, b) >= 30 for b in bonds)]
         axes = _axes(lay, sid, my, xy)
         for delta in (0, 15, -15, 30, -30):
             for mirror in (False, True):
-                base = _turned({m: (p[0] - xy[my][0], p[1] - xy[my][1]) for m, p in xy.items()}, 0.0, mirror)
                 for a in axes:
-                    for d in free:
-                        want = (d + 180 + delta) % 360
-                        rot = 0.0 if a is None else want - (-a if mirror else a)
-                        rel = _turned(base, rot, False)
-                        u = layout.vec(d)
-                        length = _hb_length(lay, mine_box(my, rel), other_box[(o, om)], u)
-                        for scale in (1.0, 1.15):
-                            at = layout.add(pa, u, scale * length)
-                            singles.append(({m: (at[0] + q[0], at[1] + q[1]) for m, q in rel.items()}, 'single'))
+                    ways += [(n, delta, mirror, a, d) for d in free]
                     if a is None:
                         break
     room = max(0, SEAT_CANDIDATES - len(out))
-    if len(singles) > room:          # spread the cut over the whole list (it is ordered by turn, then mirror)
-        step = len(singles) / float(room) if room else 0
-        singles = [singles[int(k * step)] for k in range(room)] if room else []
+    picks = range(2 * len(ways))
+    if len(picks) > room:            # spread the cut over the whole list (it is ordered by turn, then mirror)
+        step = len(picks) / float(room) if room else 0
+        picks = [int(k * step) for k in range(room)] if room else []
+    singles, bases, made = [], {}, {}
+    for k in picks:                  # only the seats the cut keeps are built
+        n, delta, mirror, a, d = ways[k // 2]
+        my, o, om = links[n]
+        if k // 2 not in made:
+            if (n, mirror) not in bases:
+                bases[(n, mirror)] = _turned({m: (p[0] - xy[my][0], p[1] - xy[my][1]) for m, p in xy.items()}, 0.0, mirror)
+            want = (d + 180 + delta) % 360
+            rot = 0.0 if a is None else want - (-a if mirror else a)
+            rel = _turned(bases[(n, mirror)], rot, False)
+            u = layout.vec(d)
+            made[k // 2] = (rel, u, _hb_length(lay, mine_box(my, rel), other_box[(o, om)], u))
+        rel, u, length = made[k // 2]
+        at = layout.add(lay.xy[o][om], u, (1.0, 1.15)[k % 2] * length)
+        singles.append(({m: (at[0] + q[0], at[1] + q[1]) for m, q in rel.items()}, 'single'))
     return (out + singles)[:SEAT_CANDIDATES]
 
 
@@ -1173,8 +1218,12 @@ def _seat_terms(lay, sid, places, ctx):
     """Line length, direction, arrow seat (with the room each curved arrow bows into) and previous-panel terms of each
     seat."""
     out = []
+    # a chord farther than this from a line on either axis adds nothing to it
+    reach = [(min(a[0], b[0]) - .3 - SLACK, min(a[1], b[1]) - .3 - SLACK, max(a[0], b[0]) + .3 + SLACK,
+              max(a[1], b[1]) + .3 + SLACK) for a, b, _ in ctx['chords']]
     for xy in places:
         pen = 0.0
+        boxes = {}
         for r in ctx['rows']:
             p, q = xy[r['my']], r['q']
             got = layout.dist(p, q)
@@ -1182,7 +1231,9 @@ def _seat_terms(lay, sid, places, ctx):
                 pen += 1e4
                 continue
             u = ((p[0] - q[0]) / got, (p[1] - q[1]) / got)
-            want = _hb_length(lay, lay.label_box(sid, r['my'], xy), r['box'], u)
+            if r['my'] not in boxes:
+                boxes[r['my']] = lay.label_box(sid, r['my'], xy)
+            want = _hb_length(lay, boxes[r['my']], r['box'], u)
             pen += 2000.0 * max(0.0, want - got) ** 2 + 20.0 * max(0.0, got - 1.3 * want) ** 2
             out_dir = layout.ang(u[0], u[1])                  # from the partner to the satellite
             back = (out_dir + 180.0) % 360
@@ -1202,15 +1253,18 @@ def _seat_terms(lay, sid, places, ctx):
                 pen += 0.05 * max(0.0, 40.0 - min(layout.adiff(out_dir, b) for b in r['o_bonds'])) ** 2
             for a in r['arrow']:                              # the partner atom an arrow starts or ends at
                 pen += 0.05 * max(0.0, 60.0 - layout.adiff(out_dir, a)) ** 2
-            for a, b, refs in ctx['chords']:
-                if (sid, r['my']) not in refs and (r['o'], r['om']) not in refs:
+            for (a, b, refs), box in zip(ctx['chords'], reach):
+                if (sid, r['my']) not in refs and (r['o'], r['om']) not in refs and not (
+                        max(p[0], q[0]) < box[0] or min(p[0], q[0]) > box[2] or max(p[1], q[1]) < box[1] or min(p[1], q[1]) > box[3]):
                     pen += 400.0 * max(0.0, .3 - co.dist_seg_seg(p, q, a, b)) ** 2
+        ink = None
         for a, b, refs in ctx['chords']:                     # keep out of the room a curved arrow bows into
             c2 = (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2
             if c2 < .25:
                 continue
             c = math.sqrt(c2)
-            for x in _ink_points(lay, sid, xy):
+            ink = _ink_points(lay, sid, xy) if ink is None else ink
+            for x in ink:
                 t = ((x[0] - a[0]) * (b[0] - a[0]) + (x[1] - a[1]) * (b[1] - a[1])) / c2
                 if 0.0 < t < 1.0:
                     d = abs((x[0] - a[0]) * (b[1] - a[1]) - (x[1] - a[1]) * (b[0] - a[0])) / c
@@ -1245,10 +1299,30 @@ def _shortfalls(lay, sid, places, other):
         for a in (Pb, B):
             for b in (qb, c):
                 if a.shape[1] and len(b):
-                    d = _box_gaps(a[:, :, None, :], b[None, None, :, :])
-                    s += (np.maximum(0.0, g - d) ** 2).sum(axis=(1, 2))
+                    s += _near_gaps(a, b, g).sum(axis=(1, 2))
         out += list(s)
     return out
+
+
+def _near_gaps(a, b, g):
+    """max(0, g - box gap) ** 2 of each box of a (rows, n, 4) with each box of b (m, 4): (rows, n, m).  The gap is
+    measured only for the pairs that come within g (and SLACK) along both axes, few of them; the others add 0."""
+    dx = np.maximum(a[:, :, None, 0] - b[:, 2], b[:, 0] - a[:, :, None, 2])
+    dy = np.maximum(a[:, :, None, 1] - b[:, 3], b[:, 1] - a[:, :, None, 3])
+    out = np.zeros(dx.shape)
+    near = (dx < g + SLACK) & (dy < g + SLACK)
+    dx, dy = dx[near], dy[near]
+    d = np.where((dx >= 0) | (dy >= 0), np.hypot(np.maximum(dx, 0.0), np.maximum(dy, 0.0)), np.maximum(dx, dy))
+    out[near] = np.maximum(0.0, g - d) ** 2
+    return out
+
+
+def _apart(p, q, box, gap):
+    """Whether segment p-q stays farther than gap (and SLACK) from box (x1, y1, x2, y2) along x or y: then neither
+    _seg_box nor dist_seg_seg finds them within gap."""
+    g = gap + SLACK
+    return (max(p[0], q[0]) < box[0] - g or min(p[0], q[0]) > box[2] + g
+            or max(p[1], q[1]) < box[1] - g or min(p[1], q[1]) > box[3] + g)
 
 
 def _sat_count(lay, pid, sid, xy, links):
@@ -1282,7 +1356,8 @@ def _sat_count(lay, pid, sid, xy, links):
         if layout.dist(u, v) < 1e-9:
             continue
         for r, b in (labels if own else mine_l):
-            if r not in (ra, rb) and b[2] >= lo[0] and b[0] <= hi[0] and b[3] >= lo[1] and b[1] <= hi[1] and _seg_box(u, v, b) <= HB_LABEL:
+            if r not in (ra, rb) and b[2] >= lo[0] and b[0] <= hi[0] and b[3] >= lo[1] and b[1] <= hi[1] \
+                    and not _apart(u, v, b, HB_LABEL) and _seg_box(u, v, b) <= HB_LABEL:
                 hb += 1
     if mine_b or mine_l:
         xs = [pts[r][0] for r in pts if r[0] == sid]
@@ -1291,16 +1366,18 @@ def _sat_count(lay, pid, sid, xy, links):
         inside = lambda p: lo[0] <= p[0] <= hi[0] and lo[1] <= p[1] <= hi[1]
         ob = [(c, d) for c, d in other_b if inside(pts[c]) or inside(pts[d])]
         ol = [(r, b) for r, b in other_l if inside(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2))]
+        spans = [(min(pts[c][0], pts[d][0]), min(pts[c][1], pts[d][1]), max(pts[c][0], pts[d][0]), max(pts[c][1], pts[d][1]))
+                 for c, d in ob]
         for a, b in mine_b:
-            for c, d in ob:
-                if co.dist_seg_seg(pts[a], pts[b], pts[c], pts[d]) < HB_CROSS:
+            for (c, d), span in zip(ob, spans):
+                if not _apart(pts[a], pts[b], span, HB_CROSS) and co.dist_seg_seg(pts[a], pts[b], pts[c], pts[d]) < HB_CROSS:
                     body += 1
             for r, bx in ol:
-                if _seg_box(pts[a], pts[b], bx) <= 0.0:
+                if not _apart(pts[a], pts[b], bx, 0.0) and _seg_box(pts[a], pts[b], bx) <= 0.0:
                     body += 1
         for r, bx in mine_l:
             for c, d in ob:
-                if _seg_box(pts[c], pts[d], bx) <= 0.0:
+                if not _apart(pts[c], pts[d], bx, 0.0) and _seg_box(pts[c], pts[d], bx) <= 0.0:
                     body += 1
             for r2, b2 in ol:
                 if layout._box_gap(bx, b2) < 0.0:
@@ -1342,14 +1419,12 @@ def _line_estimate(lay, pid, sid, places):
         sy = p[:, 1, None] + t * (q[1] - p[:, 1, None])
         boxes = np.array([b for r, b in labels if r != (o, m)], dtype=float).reshape(-1, 4)
         if len(boxes):
-            g = _pt_box_gaps(sx, sy, np.broadcast_to(boxes, (len(places),) + boxes.shape))
-            count += (g.min(axis=2) <= 0).sum(axis=1)
+            count += _pt_in_boxes(sx, sy, np.broadcast_to(boxes, (len(places),) + boxes.shape)).sum(axis=1)
         near = [col[k] for k in labeled if k != my]
         if near:
             c = X[:, near]
             mbox = np.concatenate((c - (.3, .25), c + (.3, .25)), axis=2)
-            g = _pt_box_gaps(sx, sy, mbox)
-            count += (g.min(axis=2) <= 0).sum(axis=1)
+            count += _pt_in_boxes(sx, sy, mbox).sum(axis=1)
         rows = [b for b in obonds if (o, m) not in b] + [l for l in others if (o, m) not in l]
         if rows:
             P = np.array([lay.xy[a[0]][a[1]] for a, _ in rows], dtype=float)
@@ -1380,6 +1455,11 @@ SEAT_PRICED = 60            # of them, the seats priced with the whole panel's c
 def _seat_best(lay, pid, sid, links):
     """The best rigid seat of satellite sid: (key, places, index) with key (intersections, cost); index 0 is the
     current seat."""
+    return _seat_options(lay, pid, sid, links)[0]
+
+
+def _seat_options(lay, pid, sid, links):
+    """The rigid seats of satellite sid whose crossings are counted exactly, best first: [(key, places, index)]."""
     cur = lay.xy[sid]
     places = [cur] + [c for c, _ in _seat_candidates(lay, sid, links)]
     ctx = _seat_context(lay, pid, sid, links)
@@ -1392,13 +1472,11 @@ def _seat_best(lay, pid, sid, links):
     base = dict(zip(first, _shifted_costs(lay, pid, .14, sid, [places[k] for k in first])))
     cost = {k: base[k] + terms[k] + 300.0 * short[k] for k in first}
     picks = [0] + sorted(first[1:], key=lambda k: cost[k] + 300.0 * rough[k])[:SEAT_EXACT]
-    best = None
+    out = []
     for k in picks:
         hb, body = _sat_count(lay, pid, sid, places[k], links)
-        key = (hb + body + (1 if short[k] > .01 else 0), round(cost[k], 6))
-        if best is None or key < best[0]:
-            best = (key, places[k], k)
-    return best
+        out.append(((hb + body + (1 if short[k] > .01 else 0), round(cost[k], 6)), places[k], k))
+    return sorted(out, key=lambda o: o[0])
 
 
 _SEATS = collections.OrderedDict()       # the seat step's result per panel input: retries lay out the same panels again

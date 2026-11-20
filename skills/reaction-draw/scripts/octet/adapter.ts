@@ -722,9 +722,10 @@ function labelClash(mol: any, ctx: Ctx, i: number): number {
   if (d.label[i] && pcs[i].length) {
     // in a label that writes H, the atom's own bonds meet its symbol by design (their visible length is counted
     // above) and are left out for the symbol, or they would push the H onto the bond side; its written H and every
-    // other piece stay off all bonds
-    const owners = polygonOwners(mol, d, cls), bonds = d.polygons.filter((_: any, k: number) => cls[k] === 'bond');
-    const others = d.polygons.filter((_: any, k: number) => cls[k] === 'bond' && !(owners[k] >= 0 && mol.bonds[owners[k]].atoms.includes(i)));
+    // other piece stay off all bonds and off the dots of hydrogen bonds
+    const owners = polygonOwners(mol, d, cls), ink = (k: number) => cls[k] === 'bond' || cls[k] === 'hbond';
+    const bonds = d.polygons.filter((_: any, k: number) => ink(k));
+    const others = d.polygons.filter((_: any, k: number) => ink(k) && !(owners[k] >= 0 && mol.bonds[owners[k]].atoms.includes(i)));
     const all = new Field(pad(d.label[i], 8), {polys: bonds}), foreign = new Field(pad(d.label[i], 8), {polys: others});
     const writesH = pcs[i].some((p) => !p.sign && p.text !== mol.atoms[i].label);
     for (const part of pcs[i]) {

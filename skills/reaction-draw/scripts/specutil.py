@@ -980,6 +980,36 @@ def resolve(spec):
     return _assemble(spec, lay)
 
 
+def resolve_candidates(spec, panels, count):
+    """settle's other layouts of the panels (ranks 1 .. count, each panel at the same rank or its last one), resolved like
+    resolve: the layout is computed once and only assembled again with each rank's places.  [(rank, resolved)]."""
+    import copy
+    import layout
+    import settle
+    import iupac_features
+    if not isinstance(spec, dict):
+        spec = load_spec(spec)
+    iupac_features.resolve_new_bond_heads(spec)
+    iupac_features.prepare_hydrogens(spec)
+    keep = dict(settle.CHOICE)
+    settle.CHOICE = dict(keep, **{p: keep.get(p, 0) for p in panels})
+    try:
+        lay = layout.Layout(spec)
+        lay.run()
+    finally:
+        settle.CHOICE = keep
+    found = {p: f for p, f in getattr(lay, 'settle_found', {}).items() if p in panels}
+    base, notes, out = copy.deepcopy(lay.xy), list(lay.notes), []
+    for k in range(1, count + 1):
+        if not any(k < len(f) for f in found.values()):
+            break
+        lay.xy, lay.notes = copy.deepcopy(base), list(notes)
+        for p, f in found.items():
+            lay.xy.update(copy.deepcopy(f[min(k, len(f) - 1)][1]))
+        out.append((k, _assemble(spec, lay.arrange())))
+    return out
+
+
 def auto_pair_notes(spec):
     added = ['%s.%s' % (p['id'], ref) for p in spec['panels'] for ref in p.get('auto_pairs', [])]
     return ['added reacting lone pair automatically: ' + ', '.join(added)] if added else []

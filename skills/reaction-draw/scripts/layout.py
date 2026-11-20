@@ -7,8 +7,10 @@ Units are bond lengths (1.0 = 14.4 pt in ACS style); x grows to the right and y 
 degrees counterclockwise from the right (90 = up).  The rules applied are listed under "Layout" in the repository's docs/backend.md.
 """
 import collections
+import functools
 import itertools
 import math
+import re
 
 CONTACT_BASE = 1.3          # distance between the two atoms of a contact (bond lengths), +0.2 per labeled atom
 FISHHOOK_ROOM = 0.5         # more between two species a fishhook joins: its tail sits on a dot and the half head needs room
@@ -28,6 +30,7 @@ TEXT_APART = 0.8            # white space kept between two names of different mo
 FORM_FOLD = 2.5             # a bond formed inside one molecule whose atoms stand farther apart (bond lengths) is folded
 FORM_NEAR = 2.0             # to bring them this near (fold_forming)
 CAP = 0.716                 # cap height of Arial per em
+SUBSCRIPT_DROP = 0.1        # how far a label's subscript digits hang below its box of capitals (bonds)
 
 # Arial (= Helvetica, Liberation Sans) advance widths per 1000 em, ASCII
 _ARIAL = dict(zip(' !"#$%&\'()*+,-./', (278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278)))
@@ -127,6 +130,16 @@ def label_width(text, size_pt=10.0, bond_pt=14.4):
         small = ch.isdigit() and k > 0 and text[k - 1].isalpha() or (ch.isdigit() and k > 0 and text[k - 1].isdigit())
         w += _ARIAL.get(ch, 556) / 1000.0 * size_pt * (0.75 if small else 1.0)
     return w / bond_pt
+
+
+@functools.lru_cache(maxsize=4096)
+def _label_metrics(text, size_pt, bond_pt):
+    """(plain text, width, width of its first letter, whether a subscript digit follows a letter) of a label text, for
+    label_box: they depend on the text alone, and the layout asks for the boxes of the same labels at many places."""
+    import specutil
+    plain = specutil.plain_text(text)
+    return (plain, label_width(plain, size_pt, bond_pt), text_width(plain[:1], size_pt, bond_pt),
+            re.search(r'[A-Za-z)]\d', plain) is not None)
 
 
 # ------------------------------------------------------------------------------------------ one molecule
@@ -903,11 +916,12 @@ class Layout(object):
         ex = self.expanded(sid, xy)
         src = self.pair_sources(sid) if pads else set()
         grow = lambda b: (b[0] - PAIR_PAD, b[1] - PAIR_PAD, b[2] + PAIR_PAD, b[3] + PAIR_PAD)
+        labeled = [mol.labeled(i) for i in range(mol.n)]
         boxes = [grow(self.label_box(sid, mol.map[i], ex)) if mol.map[i] in src else self.label_box(sid, mol.map[i], ex)
-                 for i in range(mol.n) if mol.labeled(i) and mol.map[i] not in skip]
+                 for i in range(mol.n) if labeled[i] and mol.map[i] not in skip]
         boxes += [grow(self.label_box(sid, mol.map[i], ex)) for i in range(mol.n)
-                  if not mol.labeled(i) and mol.map[i] in src and mol.map[i] not in skip]
-        pts = [ex[mol.map[i]] for i in range(mol.n) if not mol.labeled(i) and mol.map[i] not in skip]
+                  if not labeled[i] and mol.map[i] in src and mol.map[i] not in skip]
+        pts = [ex[mol.map[i]] for i in range(mol.n) if not labeled[i] and mol.map[i] not in skip]
         for e in mol.order:
             a, b = (mol.map[i] for i in e)
             pts += [(ex[a][0] + t * (ex[b][0] - ex[a][0]), ex[a][1] + t * (ex[b][1] - ex[a][1])) for t in (0.25, 0.5, 0.75)]
@@ -1014,10 +1028,10 @@ class Layout(object):
             return (x - 0.12, y - 0.12, x + 0.12, y + 0.12)
         size = self.style['font_size_pt']
         h = CAP * size / self.style['bond_length_pt']
-        plain = specutil.plain_text(text)
-        w = label_width(plain, size, self.style['bond_length_pt'])
-        first = text_width(plain[:1], size, self.style['bond_length_pt'])
+        plain, w, first, sub = _label_metrics(text, size, self.style['bond_length_pt'])
         kind = specutil.atom_kind(self.sp[sid], a)
+        # a subscript (the 3 of CH3, the 2 of NH2) hangs below the line by about a tenth of a bond
+        low = SUBSCRIPT_DROP if kind != 'residue' and sub else 0.0
         nbrs = [xy[mol.map[j]] for j in mol.adj[mol.idx[m]]]
         dx = sum(p[0] - x for p in nbrs)
         if kind == 'residue':                      # beside the root vertex, away from its bond (octet_draw.text_side)
@@ -1038,11 +1052,11 @@ class Layout(object):
                 sym = text_width(a['symbol'], size, self.style['bond_length_pt'])
                 hw = max(sym, label_width(plain.replace(a['symbol'], '', 1), size, self.style['bond_length_pt']))
                 if vy > 0:                         # bonds go down: the H on top
-                    return (x - hw / 2, y - h / 2 - 1.25 * h, x + hw / 2, y + h / 2 + 0.05)
-                return (x - hw / 2, y - h / 2 - 0.05, x + hw / 2, y + h / 2 + 1.25 * h)
+                    return (x - hw / 2, y - h / 2 - 1.25 * h, x + hw / 2, y + h / 2 + 0.05 + low)
+                return (x - hw / 2, y - h / 2 - 0.05, x + hw / 2, y + h / 2 + 1.25 * h + low)
         if plain[:1] == 'H' and a['symbol'] != 'H' and kind == 'atom' or (kind == 'abbrev' and dx > 0.25):
-            return (x + first / 2 - w, y - h / 2 - 0.05, x + first / 2, y + h / 2 + 0.05)
-        return (x - first / 2, y - h / 2 - 0.05, x - first / 2 + w, y + h / 2 + 0.05)
+            return (x + first / 2 - w, y - h / 2 - 0.05, x + first / 2, y + h / 2 + 0.05 + low)
+        return (x - first / 2, y - h / 2 - 0.05, x - first / 2 + w, y + h / 2 + 0.05 + low)
 
     def bbox(self, sids):
         xs, ys = [], []
@@ -1691,19 +1705,23 @@ class Layout(object):
             return {k: go(p) for k, p in xy.items()}
         return xy
 
+    def hbond_ends(self, sid):
+        """(own atoms, {other species: atoms}) at the two ends of sid's hydrogen bonds to other molecules."""
+        own, ends = set(), {}
+        for a, b in self.panels[self.pidx[self.sp[sid]['panel']]]['hbonds']:
+            for x, y in ((a, b), (b, a)):
+                if x['sid'] == sid and y['sid'] != sid:
+                    own.add(x['atom'])
+                    ends.setdefault(y['sid'], set()).add(y['atom'])
+        return own, ends
+
     def clear_of_panel(self, sid, xy, pads=False, hbond_ends=False):
         """A molecule kept where it stood in another panel (derive) moves only when it now stands closer than SPECIES_GAP
         to what is placed in this panel: the shortest shift (0.1 to 2 bonds, every 30 degrees) that clears it, else the
         one that leaves it least short.  pads: count the dots of reacting pairs (see ink).  hbond_ends: the two end atoms
         of a hydrogen bond to another molecule are left out, as check_rules.det_species_gap leaves them out."""
         pid = self.sp[sid]['panel']
-        own, ends = set(), {}
-        if hbond_ends:
-            for a, b in self.panels[self.pidx[pid]]['hbonds']:
-                for x, y in ((a, b), (b, a)):
-                    if x['sid'] == sid and y['sid'] != sid:
-                        own.add(x['atom'])
-                        ends.setdefault(y['sid'], set()).add(y['atom'])
+        own, ends = self.hbond_ends(sid) if hbond_ends else (set(), {})
         other = self.panel_ink(pid, skip=sid, pads=pads, ends=ends)
         if self.shortfall(sid, xy, other, pads, own) <= 1e-9:
             return xy
@@ -1841,26 +1859,8 @@ class Layout(object):
         self.iupac_hbond_spacing()
         from layout_repair import seat_satellites      # residues held only by hydrogen bonds, where a dotted line crosses
         seat_satellites(self)
-        # every molecule after the first of its panel keeps half a bond of white from the others (check_rules
-        # det_species_gap): the shortest shift that clears it, the two ends of a hydrogen bond left out; then the
-        # hydrogen bonds get their dotted span back.  A panel whose letters and bonds would crowd more stays as it was.
-        from layout_repair import panel_cost
-        for _ in range(2):
-            for pid in order:
-                sids = ['%s.%s' % (pid, key) for key in self.panels[self.pidx[pid]]['species'][1:]]
-                kept = {sid: self.xy[sid] for sid in sids if sid in self.xy}
-                before, moved = panel_cost(self, pid), []
-                for sid in kept:
-                    cleared = self.clear_of_panel(sid, self.xy[sid], hbond_ends=True)
-                    if cleared is not self.xy[sid]:
-                        self.xy[sid] = cleared
-                        moved.append(sid)
-                if moved and panel_cost(self, pid) > before + 1e-6:
-                    self.xy.update(kept)
-                    moved = []
-                for sid in moved:
-                    self.notes.append('%s: stood closer than half a bond to another molecule; moved it clear' % sid)
-            self.iupac_hbond_spacing()
+        from settle import settle      # one score for every panel decides the last places
+        settle(self)
         return self.arrange()
 
     def fit_intra_hbonds(self):

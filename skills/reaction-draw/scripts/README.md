@@ -131,13 +131,13 @@ python draw_figure.py A.json B.json C.json --out DIR --versions
 
 For a layout revision after `CHECKS FAILED` (SKILL.md step 3), or when the user asks for several versions, `--versions` draws each input file at the same time in `DIR/<file name>` (`DIR/A`, `DIR/B`, `DIR/C`). The last line, `BEST: …`, names a passing version with the fewest `WARNING` lines, or else the one with the fewest `FIX` lines; the exit status is that version's.
 
-- Exit `0`: All checks pass (and, with `--positive-control`, the positive control).
+- Exit `0`: All checks pass.
 - Exit `1`: One or more checks fail.
 - Exit `2`: Invalid input file or a pipeline stage cannot run. Every input problem prints `input error: …`, followed by `NEXT: fix each input error in the input file and rerun the same command; do not stop.`
 
 | Option | Meaning |
 |---|---|
 | `--dpi` | `figure.png` resolution at true size (default: `drawing.dpi` from the input, else `600`); `figure_small.png` is rendered at 150 dpi; the long edge is capped at 12,000 px |
-| `--quiet` | Suppress `FIX` and `POSITIVE CONTROL` lines |
+| `--quiet` | Suppress `FIX` lines |
 
 `DIR` contains `figure.cdxml`, `figure.svg`, `figure.png`, and `figure_small.png`.

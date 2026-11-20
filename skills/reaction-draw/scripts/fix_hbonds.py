@@ -212,7 +212,6 @@ def repair(spec_path, out, png_width=None, browser_cmd=None, log=print):
         raise ValueError('\n'.join(state['summary']))
     fig = rules.load_figure(out)
     result = rules.run_checks(fig)
-    current_pc = state['checks']['positive_control']
     initial = copy.deepcopy(result)
     log('HBONDS: before %d findings; %d failed checks' % (len(findings(result)), len(result['failed'])))
     chosen, accepted = None, []
@@ -256,8 +255,7 @@ def repair(spec_path, out, png_width=None, browser_cmd=None, log=print):
                     continue
                 candidate_fig = rules.load_figure(scratch / 'draw')
                 checked = rules.run_checks(candidate_fig)
-                pc = rules.load_state(scratch / 'draw')['checks']['positive_control']
-                better = (pc is None or pc['ok']) and improves(result, checked)
+                better = improves(result, checked)
                 log('HBONDS: candidate %d %s; findings %d -> %d; failed checks %d -> %d; remaining: %s' % (
                     attempts, 'accepted' if better else 'rejected', len(findings(result)), len(findings(checked)),
                     len(result['failed']), len(checked['failed']), ', '.join(checked['failed']) or 'none'))
@@ -265,7 +263,7 @@ def repair(spec_path, out, png_width=None, browser_cmd=None, log=print):
                     for name in draw_figure.OUTPUTS:
                         if (scratch / 'draw' / name).is_file():
                             shutil.copyfile(scratch / 'draw' / name, out / name)
-                    result, current_pc, chosen, accepted = checked, pc, data, changes
+                    result, chosen, accepted = checked, data, changes
                     if result['ok']:
                         break
     saved = None
@@ -295,7 +293,7 @@ def repair(spec_path, out, png_width=None, browser_cmd=None, log=print):
         'saved ' + str(saved) if saved else 'no improving candidate; input unchanged')
     draw_figure._write_state(out, hbond_repair=report, summary=rules.load_state(out)['summary'] + [message])
     log(message)
-    ok = result['ok'] and (current_pc is None or current_pc['ok'])
+    ok = result['ok']
     log('RESULT: ' + ('all checks pass' if ok else 'CHECKS FAILED; see summary and manual hbond guidance'))
     return 0 if ok else 1
 

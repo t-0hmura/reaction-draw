@@ -9665,13 +9665,14 @@ function labelClash(mol, ctx, i) {
   for (const part of pcs[i]) for (let j = 0; j < pcs.length; j++) if (j !== i)
     for (const other of pcs[j]) value += Math.max(0, 2 - boxGap(part.box, other.box)) * 1e5;
   if (d.label[i] && pcs[i].length) {
-    const owners = polygonOwners(mol, d, cls), bonds = d.polygons.filter((_, k) => cls[k] === "bond");
-    const others = d.polygons.filter((_, k) => cls[k] === "bond" && !(owners[k] >= 0 && mol.bonds[owners[k]].atoms.includes(i)));
+    const owners = polygonOwners(mol, d, cls), ink = (k) => cls[k] === "bond" || cls[k] === "hbond";
+    const bonds = d.polygons.filter((_, k) => ink(k));
+    const others = d.polygons.filter((_, k) => ink(k) && !(owners[k] >= 0 && mol.bonds[owners[k]].atoms.includes(i)));
     const all = new Field(pad(d.label[i], 8), { polys: bonds }), foreign = new Field(pad(d.label[i], 8), { polys: others });
     const writesH = pcs[i].some((p) => !p.sign && p.text !== mol.atoms[i].label);
     for (const part of pcs[i]) {
-      const ink = writesH && !part.sign && part.text === mol.atoms[i].label ? foreign : all;
-      value += Math.max(0, 2 - ink.overBox(part.box, 1)) * 1e5;
+      const ink2 = writesH && !part.sign && part.text === mol.atoms[i].label ? foreign : all;
+      value += Math.max(0, 2 - ink2.overBox(part.box, 1)) * 1e5;
     }
   }
   return value;
