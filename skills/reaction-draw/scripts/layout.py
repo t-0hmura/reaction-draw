@@ -21,6 +21,8 @@ PANEL_GAP = 2.0             # space between two panels that no arrow joins
 ROW_GAP = 1.2               # space between rows
 TITLE_GAP = 0.85            # from the lowest drawing of a row to the middle of its titles
 TITLE_SEP = 0.7             # least space between the titles of two neighboring panels of a row (about 10 pt)
+ROW_WIDTH_PT = 504.0        # the ACS double column (7 in, draw_figure.ACS_COLUMNS_PT): without "rows" in the input,
+                            # panels wrap into rows that fit it, two or more panels to a row
 SPECIES_GAP = 0.5           # white space kept between two species of a panel (bond lengths; check_rules.det_species_gap)
 PAIR_PAD = 0.27             # how far the dots of a reacting pair reach outside the label box (bond lengths; 3 pt and a margin for the label estimate)
 NEAR_DIST = 1.3             # default distance of a "near" placement of a species (atom to its middle)
@@ -2235,6 +2237,41 @@ class Layout(object):
                 if o != a and self.bbox([o])[0] >= bb[0] - 1e-9:
                     self.xy[o] = {m: (x + short, y) for m, (x, y) in self.xy[o].items()}
 
+    def wrap_rows(self, order, pboxes, need, title_gap):
+        """Rows for panels the input did not arrange: one row when it fits ROW_WIDTH_PT, else the fewest rows of two or
+        more panels each (reading order kept) whose widest row fits, balanced by width (the narrowest widest row; on a
+        tie, the earlier rows longer).  When no split fits, the split with the narrowest widest row.  Widths follow
+        arrange(): panel boxes, reaction arrows as long as the longest one ending in the row, an arrow coming into a
+        row from the row before it at the row's left."""
+        arrows = self.spec['reaction_arrows']
+        n, limit = len(order), ROW_WIDTH_PT / self.style['bond_length_pt']
+
+        def width(row, first):
+            inside = set(row)
+            L = max([max([need[(r['from'], r['to'])]] + [title_gap(a, b) - 2 * ARROW_GAP for a, b in zip(row, row[1:])
+                                                          if {a, b} == {r['from'], r['to']} and r.get('length') is None])
+                      for r in arrows if r['to'] in inside] or [ARROW_MIN])
+            x = 2 * ARROW_GAP + L if not first and any(r['to'] == row[0] and r['from'] not in inside for r in arrows) else 0.0
+            for prev, pid in zip(row, row[1:]):
+                joined = any({r['from'], r['to']} == {prev, pid} for r in arrows)
+                x += (pboxes[prev][2] - pboxes[prev][0]) + ((2 * ARROW_GAP + L) if joined else max(PANEL_GAP, title_gap(prev, pid)))
+            return x + pboxes[row[-1]][2] - pboxes[row[-1]][0]
+        if n < 4 or width(order, True) <= limit:
+            return [list(order)]
+        best = None
+        for k in range(2, n // 2 + 1):
+            for cuts in itertools.combinations(range(2, n - 1), k - 1):
+                bounds = (0,) + cuts + (n,)
+                if any(b - a < 2 for a, b in zip(bounds, bounds[1:])):
+                    continue
+                rows = [list(order[a:b]) for a, b in zip(bounds, bounds[1:])]
+                key = (round(max(width(r, i == 0) for i, r in enumerate(rows)), 6), [-len(r) for r in rows])
+                if best is None or key < best[0]:
+                    best = (key, rows)
+            if best[0][0] <= limit:
+                break
+        return best[1]
+
     def arrange(self):
         spec = self.spec
         bpt = self.style['bond_length_pt']
@@ -2262,11 +2299,6 @@ class Layout(object):
         for r in arrows:
             w = max([text_width(t, size, bpt) for t in (r.get('above'), r.get('below')) if t] or [0.0])
             need[(r['from'], r['to'])] = max(ARROW_MIN, w + 0.8) if r.get('length') is None else float(r['length'])
-        row_of = {pid: ri for ri, row in enumerate(spec['rows']) for pid in row}
-        col_of = {pid: ci for row in spec['rows'] for ci, pid in enumerate(row)}
-        column_arrows = {(r['from'], r['to']) for r in arrows
-                         if abs(row_of[r['from']] - row_of[r['to']]) == 1
-                         and col_of[r['from']] == col_of[r['to']]}
         # titles (centered under each panel's anchor, below) of two neighbors in a row keep TITLE_SEP between them:
         # the gap between the two panels' boxes this needs
         from specutil import plain_text
@@ -2283,7 +2315,13 @@ class Layout(object):
         def title_gap(prev, pid):
             a, b = title_span(prev), title_span(pid)
             return 0.0 if a is None or b is None else TITLE_SEP + (a[1] - pboxes[prev][2]) + (pboxes[pid][0] - b[0])
-        for row in spec['rows']:                       # an arrow without a given length grows to keep the titles apart
+        rows = spec['rows'] if (spec.get('raw') or {}).get('rows') else self.wrap_rows(spec['rows'][0], pboxes, need, title_gap)
+        row_of = {pid: ri for ri, row in enumerate(rows) for pid in row}
+        col_of = {pid: ci for row in rows for ci, pid in enumerate(row)}
+        column_arrows = {(r['from'], r['to']) for r in arrows
+                         if abs(row_of[r['from']] - row_of[r['to']]) == 1
+                         and col_of[r['from']] == col_of[r['to']]}
+        for row in rows:                               # an arrow without a given length grows to keep the titles apart
             for prev, pid in zip(row, row[1:]):
                 for r in arrows:
                     if {r['from'], r['to']} == {prev, pid} and r.get('length') is None:
@@ -2294,7 +2332,7 @@ class Layout(object):
         offsets = {}
         y_cursor = 0.0
         row_boxes = []
-        for ri, row in enumerate(spec['rows']):
+        for ri, row in enumerate(rows):
             x_cursor = 0.0
             top = min(pboxes[p][1] for p in row)
             bottom = max(pboxes[p][3] for p in row)
@@ -2322,7 +2360,7 @@ class Layout(object):
             y_cursor = bottom + dy + TITLE_GAP + 0.5 + row_gap
         # titles: one height per row, centered under each panel's anchor
         titles = {}
-        for ri, row in enumerate(spec['rows']):
+        for ri, row in enumerate(rows):
             ty = row_boxes[ri][1] + TITLE_GAP
             for pid in row:
                 p = self.panels[self.pidx[pid]]

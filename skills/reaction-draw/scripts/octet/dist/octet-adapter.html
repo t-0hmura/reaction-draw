@@ -9820,6 +9820,36 @@ function placeRadicals(mol, ctx, job) {
         if (theirs.length) angles.push(clear ?? sides2.reduce((x, y) => room(y) > room(x) ? y : x));
       }
     }
+    if (fixed === void 0 && angles.length) {
+      const pcs = drawn2(mol, ctx).pcs[i], own = pcs.find((p) => !p.sign && p.text === a.label);
+      const others = own ? pcs.filter((p) => !p.sign && p !== own && !p.text.includes("\u2022")) : [];
+      if (own && others.length) {
+        const o = px[i], c = 0.4 * (own.ink[3] - own.ink[1]);
+        const bonds = mol.bonds.filter((b) => b.atoms.includes(i) && !b.atoms.some((j) => mol.atoms[j].hidden)).map((b) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
+        const blocked = (deg2) => others.some((p) => {
+          const t = deg2 * Math.PI / 180, u = [Math.cos(t), -Math.sin(t)];
+          let lo = 0, hi = Infinity;
+          for (const k of [0, 1]) {
+            const s0 = p.ink[k] - c - o[k], s1 = p.ink[k + 2] + c - o[k];
+            if (Math.abs(u[k]) < 1e-9) {
+              if (s0 > 0 || s1 < 0) return false;
+              continue;
+            }
+            lo = Math.max(lo, Math.min(s0 / u[k], s1 / u[k]));
+            hi = Math.min(hi, Math.max(s0 / u[k], s1 / u[k]));
+          }
+          return lo <= hi;
+        });
+        angles.forEach((want, k) => {
+          if (!blocked(want)) return;
+          for (let step = 5; step <= 180; step += 5) for (const deg2 of [(want - step + 360) % 360, (want + step) % 360])
+            if (!blocked(deg2) && bonds.every((bd) => angDiff(bd, deg2) >= 25)) {
+              angles[k] = deg2;
+              return;
+            }
+        });
+      }
+    }
     a.angles = {
       ...a.angles ?? {},
       radical0: fixed ?? angles[0] ?? 30,

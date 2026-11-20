@@ -893,6 +893,33 @@ function placeRadicals(mol: any, ctx: Ctx, job: any) {
         if (theirs.length) angles.push(clear ?? sides.reduce((x, y) => (room(y) > room(x) ? y : x)));
       }
     }
+    if (fixed === undefined && angles.length) {
+      // the dot leaves the label beside the atom's own letter: a way out that passes a written H or another piece of
+      // the label (where the dot would read as on that piece) turns to the nearest way that clears them, off the bonds
+      const pcs = drawn(mol, ctx).pcs[i], own = pcs.find((p) => !p.sign && p.text === a.label);
+      const others = own ? pcs.filter((p) => !p.sign && p !== own && !p.text.includes('•')) : [];
+      if (own && others.length) {
+        const o = px[i], c = 0.4 * (own.ink[3] - own.ink[1]);
+        const bonds = mol.bonds.filter((b: any) => b.atoms.includes(i) && !b.atoms.some((j: number) => mol.atoms[j].hidden))
+          .map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
+        // the ray from the atom along deg, widened by the dot and its gap, meets the piece's glyph ink
+        const blocked = (deg: number) => others.some((p) => {
+          const t = (deg * Math.PI) / 180, u: Pt = [Math.cos(t), -Math.sin(t)];
+          let lo = 0, hi = Infinity;
+          for (const k of [0, 1]) {
+            const s0 = p.ink[k] - c - o[k], s1 = p.ink[k + 2] + c - o[k];
+            if (Math.abs(u[k]) < 1e-9) { if (s0 > 0 || s1 < 0) return false; continue; }
+            lo = Math.max(lo, Math.min(s0 / u[k], s1 / u[k])); hi = Math.min(hi, Math.max(s0 / u[k], s1 / u[k]));
+          }
+          return lo <= hi;
+        });
+        angles.forEach((want, k) => {
+          if (!blocked(want)) return;
+          for (let step = 5; step <= 180; step += 5) for (const deg of [(want - step + 360) % 360, (want + step) % 360])
+            if (!blocked(deg) && bonds.every((bd: number) => angDiff(bd, deg) >= 25)) { angles[k] = deg; return; }
+        });
+      }
+    }
     a.angles = {...(a.angles ?? {}), radical0: fixed ?? angles[0] ?? 30,
       ...(a.radical === 2 ? {radical1: angles[1] ?? ((fixed ?? angles[0] ?? 30) + 120) % 360} : {})};
     if (a.charge) a.circled = false;

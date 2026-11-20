@@ -2335,6 +2335,23 @@ def det_radical_marks(f):
             pt = mark.get('center_pt')
             if pt and box and box[0] + .5 < pt[0] < box[2] - .5 and box[1] + .5 < pt[1] < box[3] - .5:
                 out.append('%s: unpaired-electron dot is before or inside its label' % ref)
+        # a dot reads as on the nearest letter: it must be nearer its own atom's symbol (or point) than any other atom
+        # and than the other pieces of its own label (a written H, a count)
+        sym = f.symbol_box(ref)
+        for mark in marks:
+            pt = mark.get('center_pt')
+            if not pt:
+                continue
+            own = pt_box_gap(pt, sym) if sym else math.dist(pt, f.xy(ref))
+            near = [(pt_box_gap(pt, p['box']), 'its %s' % p['text']) for p in f.report['pieces'].get(ref, [])
+                    if sym and tuple(p['box']) != tuple(sym) and '•' not in p['text'] and not re.fullmatch(r'\d*[+–−-]', p['text'])]
+            for x in f.atoms:
+                if x != ref:
+                    parts = f.label_parts(x) if f.labeled(x) else []
+                    near.append((min(pt_box_gap(pt, b) for b in parts) if parts else math.dist(pt, f.xy(x)), x))
+            gap, who = min(near) if near else (math.inf, None)
+            if gap < own:
+                out.append('%s: unpaired-electron dot is nearer %s (%.1f pt) than its own atom (%.1f pt)' % (ref, who, gap, own))
         if len(marks) == 2 and math.dist(marks[0]['center_pt'], marks[1]['center_pt']) < .5 * f.size:
             out.append('%s: adjacent dots look like a lone pair' % ref)
         if n and a.get('charge'):

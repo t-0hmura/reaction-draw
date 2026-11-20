@@ -26,7 +26,7 @@ Run the scripts using this folder's path, and keep both the input JSON file ([fo
 - List in `show` every carbon whose symbol must be displayed (e.g., terminal methyls, carbons named in the text, or the C of CO₂); do not label every skeletal carbon.
 - Number only essential atoms (those referenced in the text or product names, or moving between molecules) using `numbers`, never free text.
 - Use the dedicated [input keys](references/input-more.md) for radicals, coordination bonds, η/π ligands, oxidation states, and isotopes; never simulate them with charges, extra bonds, or free text.
-- Omit `+` signs between species within a panel, as the panel title already identifies them. Use `plus` (never free text) only when the source explicitly shows a `+` or when a scheme lists separate reactants or products.
+- Omit `+` signs between species within a panel, as the panel title already identifies them. Use `plus` (never free text) only when the source explicitly shows a `+`.
 - Draw transition states only on request: use `"ts": true` with `partial` or `1.5` bonds ([template](templates/ts_diels_alder.json)).
 - Arrange the figure to flow left to right (wrapping into rows), with reactants oriented so electron pushing also proceeds left to right. Use another arrangement only when it reads better or is requested.
 - The scripts automatically enforce ACS dimensions and checkable IUPAC rules; consult [unautomated IUPAC rules](references/iupac-rules.md) when a drawing choice is not covered here or a `FIX` line is unclear.
