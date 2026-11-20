@@ -612,9 +612,7 @@ def _finding_panels(result):
 def retry_settle(spec, out, fig, result, draw, draw_args, stats):
     """When the drawing of settle's best layout fails: draw settle's next distinct layouts (settle.CHOICE ranks 1, 2, ...,
     SETTLE_BATCHES at a time) for the panels with findings, and keep the one with the fewest failed checks, then findings,
-    then settle's own order, if it fails fewer checks than the drawing before (one with only fewer findings would make
-    the later stages start from it and miss what they fix from the best layout).  The ranks kept stay in settle.CHOICE,
-    so later stages that lay out again start there."""
+    then settle's own order.  The ranks kept stay in settle.CHOICE, so later stages that lay out again start there."""
     import settle
     panels = _finding_panels(result)
     if not panels:
@@ -632,7 +630,7 @@ def retry_settle(spec, out, fig, result, draw, draw_args, stats):
         ranks = [k for k, _ in batch]
         jobs = [(resolved, _repair_options(fig, result)) for _, resolved in batch]
         def choose(found):
-            ok = [(rank(ch), i) for i, (_, ch, e) in enumerate(found) if e is None and safe(ch) and len(ch['failed']) < len(result['failed'])]
+            ok = [(rank(ch), i) for i, (_, ch, e) in enumerate(found) if e is None and safe(ch) and rank(ch) < rank(result)]
             return min(ok)[1] if ok else None
         drawn = _candidates(jobs, out, fig, draw, draw_args, None, stats, 'retry_settle', choose=choose, budget=False)
         pick = next((i for i, d in enumerate(drawn) if d[2]), None)
@@ -647,8 +645,26 @@ def retry_settle(spec, out, fig, result, draw, draw_args, stats):
     return fig, result, notes
 
 
-def retry_layout(spec, out, fig, result, draw, draw_args, stats):
-    """Try bounded structural alternatives on failure, accepting only independently checked drawings."""
+def _laid_out_with(choice, found):
+    """The items of the generator found, each computed with settle.CHOICE set to choice."""
+    import settle
+    found = iter(found)
+    while True:
+        keep, settle.CHOICE = settle.CHOICE, dict(choice)
+        try:
+            item = next(found)
+        except StopIteration:
+            return
+        finally:
+            settle.CHOICE = keep
+        yield item
+
+
+def retry_layout(spec, out, fig, result, draw, draw_args, stats, first=None):
+    """Try bounded structural alternatives on failure, accepting only independently checked drawings.  first: (figure,
+    checks, settle.CHOICE) of settle's best layout when the settle stage kept another layout that still fails; its
+    alternatives are drawn after these and judged the same way, since the next layout can leave a fix of the best one
+    out of reach (a branch turned with a molecule seated elsewhere comes too close to it)."""
     import layout_repair
     notes = []
     protected = ('graph', 'stereochemistry', 'charges', 'hydrogens', 'labels_drawn', 'arrows_count',
@@ -657,6 +673,9 @@ def retry_layout(spec, out, fig, result, draw, draw_args, stats):
         return len(checked['failed']), sum(len(c['findings']) for c in checked['checks'].values())
     alternatives = iter(layout_repair.candidates(spec, result, fig))
     rejected, limit = 0, layout_repair.draw_limit(result, fig)
+    if first is not None:
+        alternatives = itertools.chain(alternatives, _laid_out_with(first[2], layout_repair.candidates(spec, first[1], first[0])))
+        limit += layout_repair.draw_limit(first[1], first[0])
     # The attempts are judged one at a time as before, but drawn PAIR_WORKERS at once: the next candidates of the search
     # are drawn with the current options beside the one judged first, and those after an accepted one are drawn again.
     attempt, ahead, fault = 0, [], None
@@ -1153,13 +1172,18 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 plain = draw         # the later retries keep these arrows short
                 def draw(resolved, dest, options=None, **kw):
                     return plain(resolved, dest, options=dict(options or {}, **short), **kw)
+        first = None
         if native_backend and set(result['failed']) & set(SETTLE_CHECKS):
             # the molecules' places first: settle's next layouts for the panels with findings, drawn side by side; the
             # later stages start from the one kept
+            import settle
+            best = (fig, result, dict(settle.CHOICE))
             fig, result, retried = retry_settle(spec, out, fig, result, draw, {
                 'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
                 'browser_cmd': browser_cmd}, retry_counts['retry_settle'])
             notes.extend(retried)
+            if retried and result['failed']:
+                first = best            # the layout search also tries its alternatives of settle's best layout
         if native_backend and _retryable(result):
             _progress('fixing automatically: %s' % ', '.join(result['failed']), always=True)
             retry_started = time.time()
@@ -1182,7 +1206,8 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 notes.extend(retried)
                 placed = fig
                 # the layout search lays out again from the settled layouts kept above (settle.CHOICE)
-                fig, result, retried = retry_layout(spec, out, fig, result, draw, retry_args, retry_counts['retry_layout'])
+                fig, result, retried = retry_layout(spec, out, fig, result, draw, retry_args, retry_counts['retry_layout'],
+                                                    first=first)
                 notes.extend(retried)
                 if _retryable(result):
                     fig, result, retried = retry_forming_branch(out, fig, result, draw, retry_args, retry_counts['retry_forming_branch'])
