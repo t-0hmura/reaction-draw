@@ -228,11 +228,12 @@ def _names(aid, text):
 
 def _retryable(result):
     """Retry only if at least one finding can change with automatic placement (of the hydrogen-bond findings, a line
-    that crosses a bond or another hydrogen bond's line)."""
+    that crosses a bond or another hydrogen bond's line, and a charge circle near a dotted line, since the circle can
+    move)."""
     return any(not (name in ('arrows_steps', 'residue_codes', 'hbond_dots')
                     or name == 'radical_marks' and 'not from radicals' in finding
                     or name == 'arrows_ends' and finding.startswith('arrow ') and ': no route found from ' in finding
-                    or ('hbond ' in finding or 'hydrogen bond' in finding)
+                    or ('hbond ' in finding or 'hydrogen bond' in finding) and name != 'overlap_charge'
                     and not (name == 'bond_crossing' and finding.startswith('hbond ')
                              and (' crosses bond ' in finding or ' crosses hbond ' in finding)))
                for name in result['failed'] for finding in result['checks'][name]['findings'])
@@ -611,7 +612,9 @@ def _finding_panels(result):
 def retry_settle(spec, out, fig, result, draw, draw_args, stats):
     """When the drawing of settle's best layout fails: draw settle's next distinct layouts (settle.CHOICE ranks 1, 2, ...,
     SETTLE_BATCHES at a time) for the panels with findings, and keep the one with the fewest failed checks, then findings,
-    then settle's own order.  The ranks kept stay in settle.CHOICE, so later stages that lay out again start there."""
+    then settle's own order, if it fails fewer checks than the drawing before (one with only fewer findings would make
+    the later stages start from it and miss what they fix from the best layout).  The ranks kept stay in settle.CHOICE,
+    so later stages that lay out again start there."""
     import settle
     panels = _finding_panels(result)
     if not panels:
@@ -629,7 +632,7 @@ def retry_settle(spec, out, fig, result, draw, draw_args, stats):
         ranks = [k for k, _ in batch]
         jobs = [(resolved, _repair_options(fig, result)) for _, resolved in batch]
         def choose(found):
-            ok = [(rank(ch), i) for i, (_, ch, e) in enumerate(found) if e is None and safe(ch) and rank(ch) < rank(result)]
+            ok = [(rank(ch), i) for i, (_, ch, e) in enumerate(found) if e is None and safe(ch) and len(ch['failed']) < len(result['failed'])]
             return min(ok)[1] if ok else None
         drawn = _candidates(jobs, out, fig, draw, draw_args, None, stats, 'retry_settle', choose=choose, budget=False)
         pick = next((i for i, d in enumerate(drawn) if d[2]), None)
