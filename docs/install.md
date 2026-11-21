@@ -85,7 +85,7 @@ Requires Python 3.9+ with RDKit, and Playwright with Chromium or Google Chrome. 
 python scripts/draw_figure.py --check-env
 ```
 
-`ENVIRONMENT OK` means you're all set. Otherwise, install any missing dependencies it reports.
+`ENVIRONMENT OK` means the environment is ready. Otherwise, install any missing dependencies it reports.
 
 On Windows, a venv works. From the skill directory in PowerShell:
 

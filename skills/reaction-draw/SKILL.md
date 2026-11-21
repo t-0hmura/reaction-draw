@@ -38,6 +38,6 @@ Run the scripts using this folder's path, and keep both the input JSON file ([fo
 ## Amino-acid residue labels
 
 - Use three-letter codes with residue numbers (`Glu170`), or one-letter codes (`K123`) when requested or used consistently in the source. Maintain one style per figure.
-- Explicitly draw the reacting group's atoms, bonds, and charges, and attach arrows directly to them; the residue name serves only as a display label. Verify residue numbers and chain IDs against the source.
+- Explicitly draw the reacting group's atoms, bonds, and charges, and attach arrows directly to them; the residue name is only a display label. Verify residue numbers and chain IDs against the source.
 - Draw a residue whose atoms do not change (no arrow, bond, or charge change), such as a His ligand of a metal, as its name bonded directly to the atom it binds, without its side chain: `[Zn+2:1]([*:21])...` with `"residue": {"21": "His94"}`.
 - Show each residue once per panel. When a residue's backbone takes part (an oxyanion hole's N–H), draw it as one species with its side chain if that takes part too, end the backbone on both sides with dummy atoms listed in `cut` (wavy truncation marks), and name the residue with a `texts` entry `near` its α carbon. Draw consecutive residues shown with their backbone as one chain, each named by its own text. A residue whose side chain alone takes part keeps its `residue` label.

@@ -27,7 +27,7 @@ To re-check a drawn directory without a browser: `python check_rules.py DIR [--j
 
 ## Stereochemistry after layout changes
 
-Once all positioning, hand coordinates, reflections, and bond lengthening are applied, `stereochemistry` compares the R/S and E/Z configurations from the SMILES against the saved coordinates and wedges, both after reading back the saved Octet data and when reading the CDXML alone. Note that keeping the same wedge on a mirrored layout inverts the configuration. Atom maps are used only to match atoms and are cleared before `rdCIPLabeler` assigns priorities. `expected_stereo` and `STEREO` lines expand known abbreviations (such as Ph, Me, Ac, and OPP); a label that depends on a stub of unknown structure (e.g., a residue or Ado) raises an input error until that group is written in full. Missing or contradictory stereochemistry fails the check, whereas unspecified double-bond geometry is unconstrained.
+Once all positioning, hand coordinates, reflections, and bond lengthening are applied, `stereochemistry` compares the R/S and E/Z configurations from the SMILES against the saved coordinates and wedges, both after reading back the saved Octet data and when reading the CDXML alone. Keeping the same wedge on a mirrored layout inverts the configuration. Atom maps are used only to match atoms and are cleared before `rdCIPLabeler` assigns priorities. `expected_stereo` and `STEREO` lines expand known abbreviations (such as Ph, Me, Ac, and OPP); a label that depends on a stub of unknown structure (e.g., a residue or Ado) raises an input error until that group is written in full. Missing or contradictory stereochemistry fails the check, whereas unspecified double-bond geometry is unconstrained.
 
 ## Hydrogen-bond lines
 

@@ -4,7 +4,7 @@
 
 English | [日本語](README.ja.md)
 
-A **skill** plugin that lets **AI agents** draw **chemical structures and reaction mechanisms** with curved arrows. From a description of an organic reaction, a textbook reaction name, a hand-drawn image or a paper, the agent makes the figure as PNG, SVG and CDXML files.
+This **skill** plugin lets **AI agents** draw **chemical structures and reaction mechanisms** with curved arrows. From a description of an organic reaction, a textbook reaction name, a hand-drawn image or a paper, the agent makes the figure as PNG, SVG and CDXML files.
 
 The skill is built on the IUPAC rules for drawing reaction mechanisms and on the chemical drawing app [Octet Draw](https://github.com/SamChemMan/Octet-Draw).
 
