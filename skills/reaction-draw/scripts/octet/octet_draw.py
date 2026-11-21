@@ -132,22 +132,24 @@ def text_width(text, size_pt, bond_pt):
     return width(text, size_pt, bond_pt)
 
 
-def number_after_seat(me, nbrs, half, width, cap_h):
+def number_after_seat(me, bonds, half, width, cap_h):
     """How far below its symbol's middle (bond lengths, y down; negative: above) the number written after an atom's
     symbol (the 3 of O3) goes: level with the symbol unless a bond leaving the atom passes through that place, then the
-    smallest shift (in twentieths of a bond up to a fifth, down first) that keeps it clear, so that it takes as little
-    room as it can from the arrows round the atom; the clearest of them when none does."""
+    smallest shift (in twentieths of a bond, down first) that keeps it clear, so that it takes as little room as it can
+    from the arrows round the atom; the clearest of them when none does.  bonds: (other end, drawn order); the lines
+    of a double or triple bond stand up to about a fifth of a bond off its axis, on either side."""
     def gap(dy):
         box = (me[0] + half, me[1] + dy - cap_h / 2, me[0] + half + width, me[1] + dy + cap_h / 2)
         best = float('inf')
-        for q in nbrs:
+        for q, order in bonds:
+            band = 0.03 if order == 1 else 0.21
             for t in range(41):
                 px, py = me[0] + (q[0] - me[0]) * t / 40.0, me[1] + (q[1] - me[1]) * t / 40.0
                 ddx = max(box[0] - px, 0.0, px - box[2])
                 ddy = max(box[1] - py, 0.0, py - box[3])
-                best = min(best, math.hypot(ddx, ddy))
+                best = min(best, math.hypot(ddx, ddy) - band)
         return best
-    shifts = (0.0, 0.05, -0.05, 0.1, -0.1, 0.15, -0.15, 0.2, -0.2)
+    shifts = [0.0] + [s * k / 20.0 for k in range(1, 9) for s in (1, -1)]
     for dy in shifts:
         if gap(dy) >= 0.04:
             return dy
@@ -344,6 +346,7 @@ def build_job(resolved, options=None):
     # order 1.5: a Kekule structure where there is one, else a double bond with its second line dashed
     kek, kek_ok = kekule(bond_rows, {ref: atoms[k] for ref, k in index.items()})
     drawn_order = []
+    lines_at = {ref: [] for ref in index}      # each drawn bond at an atom: (the other end, its drawn order)
     for k, b in enumerate(bond_rows):
         order = b.get('order', 1)
         if order == 1.5:
@@ -353,6 +356,9 @@ def build_job(resolved, options=None):
         drawn_order.append(order)
         used[b['a']] += order          # as Octet counts it for hydrogens
         used[b['b']] += order
+        for me, other in ((b['a'], b['b']), (b['b'], b['a'])):
+            if not atoms[index[other]].get('hidden_h'):
+                lines_at[me].append((pos[other], order))
     n15 = sum(1 for b in bond_rows if b.get('order') == 1.5 and not b.get('haptic'))
     if n15:
         notes.append('%d bonds of order 1.5 drawn %s (give Kekule orders in the resolved figure)' % (
@@ -403,7 +409,7 @@ def build_job(resolved, options=None):
             if el == 'C':
                 e['shown'] = True
             text = numbered.group(2) + numbered.group(3).replace("'", '\u2032').replace('"', '\u2033')
-            dy = number_after_seat((x, y), shown[ref], text_width(el, label_pt, bond_pt) / 2.0,
+            dy = number_after_seat((x, y), lines_at[ref], text_width(el, label_pt, bond_pt) / 2.0,
                                    text_width(text, label_pt, bond_pt), cap_h)
             c = caption(text, x + text_width(el, label_pt, bond_pt) / 2.0, -(y + dy + cap_h / 2), 'left', color=color)
             attached.append({'caption': cap(c, 'label_number'), 'atom': k})
