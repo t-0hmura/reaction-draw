@@ -11,6 +11,7 @@ Outputs, steps and options: the repository's docs/backend.md.  ../check_rules.py
 what it drew and what it could not do ("problems").  Exit status: 0 drawn, 2 bad input or the browser step failed.
 """
 import argparse
+import collections
 import hashlib
 import json
 import math
@@ -197,6 +198,55 @@ def map_key(ref):
 
 
 # ------------------------------------------------------------------------------------------ resolved -> document
+def folded_h_off_pair_seats(panels, atoms, index, pos, shown, pairs):
+    """{ref: (x, y)} for folded (hidden) H atoms moved off the seat of their parent's reacting lone pair.  A folded H is
+    written in its parent's label on the side of the hidden atom; when that side is the seat the pair takes to reach
+    what it attacks (the axial seat facing it, 35 degrees off the drawn bonds, as adapter.ts pairSeat chooses), the pair
+    is drawn beside the written H and reads as its pair (and Octet's CDXML reader gives it to the H).  The H then takes
+    the axial side farthest from that seat that keeps 45 degrees off the drawn bonds."""
+    def deg(a, b):
+        return math.degrees(math.atan2(-(b[1] - a[1]), b[0] - a[0])) % 360
+    def diff(a, b):
+        d = abs(a - b) % 360
+        return min(d, 360 - d)
+    hidden_of = {}
+    for p in panels:
+        for b in p.get('bonds', []):
+            if b.get('hbond'):
+                continue
+            for me, other in ((b['a'], b['b']), (b['b'], b['a'])):
+                if atoms[index[other]].get('hidden_h'):
+                    hidden_of.setdefault(me, []).append(other)
+    moved = {}
+    for p in panels:
+        for c in p.get('curved', []):
+            src, snk = c.get('from') or {}, c.get('to') or {}
+            if int(c.get('electrons', 2)) != 2 or src.get('kind') != 'atom' or not snk.get('refs'):
+                continue
+            me = src['refs'][0]
+            if not pairs.get(me) or not hidden_of.get(me) or any(r not in pos for r in snk['refs']):
+                continue
+            tx = sum(pos[r][0] for r in snk['refs']) / len(snk['refs'])
+            ty = sum(pos[r][1] for r in snk['refs']) / len(snk['refs'])
+            want = deg(pos[me], (tx, ty))
+            bonds = [deg(pos[me], q) for q in shown[me]]
+            free = [d for d in (0, 90, 180, 270) if diff(d, want) <= 90 and all(diff(d, b) >= 35 for b in bonds)]
+            if not free:
+                continue
+            seat = min(free, key=lambda d: diff(d, want))
+            for h in hidden_of[me]:
+                hx, hy = moved.get(h, pos[h])
+                if diff(deg(pos[me], (hx, hy)), seat) >= 45:
+                    continue
+                sides = [d for d in (0, 90, 180, 270) if diff(d, seat) >= 90 and all(diff(d, b) >= 45 for b in bonds)]
+                if not sides:
+                    continue
+                side = max(sides, key=lambda d: (diff(d, seat), -diff(d, deg(pos[me], (hx, hy)))))
+                r = math.hypot(hx - pos[me][0], hy - pos[me][1])
+                moved[h] = (pos[me][0] + r * math.cos(math.radians(side)), pos[me][1] - r * math.sin(math.radians(side)))
+    return moved
+
+
 def build_job(resolved, options=None):
     """Resolved figure -> (page job for adapter.ts, notes).  Raises OctetError on bad input."""
     if not isinstance(resolved, dict) or resolved.get('format') != FORMAT:
@@ -285,11 +335,13 @@ def build_job(resolved, options=None):
                 raise OctetError('panel %s: lone pair on unknown atom %r' % (p.get('id'), ref))
             pairs[ref] = pairs.get(ref, 0) + 1
 
+    moved = folded_h_off_pair_seats(panels, atoms, index, pos, shown, pairs)
+
     doc_atoms = []
     for k, a in enumerate(atoms):
         ref, el, label = refs[k], a.get('el') or 'C', a.get('label')
         charge = int(a.get('charge') or 0)
-        x, y = float(a['x']), float(a['y'])
+        x, y = moved.get(ref, (float(a['x']), float(a['y'])))
         e = {'label': el if ELEMENT.match(el) else 'C', 'x': round(x, 4), 'y': round(-y, 4), 'hiddenNumber': str(k)}
         if a.get('isotope'):
             e['isotope'] = int(a['isotope'])
@@ -390,6 +442,39 @@ def build_job(resolved, options=None):
         doc_atoms.append(e)
 
     doc_bonds, move_ends = [], []
+    # Octet counts hydrogen-bond and other dotted lines as an atom's neighbours when it places a double bond's second line,
+    # so a C=O whose O takes hydrogen bonds is drawn off centre; for a double bond with such an end, the side is set here
+    # by Octet's own rule over the covalent bonds only
+    dotted = {r for p in panels for pair in p.get('hbonds', []) + p.get('pseudobonds', []) for r in pair}
+    cov = collections.defaultdict(list)
+    for edge in bond_rows:
+        cov[edge['a']].append(edge['b'])
+        cov[edge['b']].append(edge['a'])
+    shown_label = {refs[k]: (a.get('el') or 'C') != 'C' or bool(a.get('label')) for k, a in enumerate(atoms)}
+    def double_side(a, b):
+        seen, stack = {a}, [a]
+        while stack:                                        # a ring bond: Octet's ring rule needs no help
+            x = stack.pop()
+            for y in cov[x]:
+                if (x, y) != (a, b) and y not in seen:
+                    if y == b:
+                        return None
+                    seen.add(y)
+                    stack.append(y)
+        p0, p1 = pos[a], pos[b]
+        def cross(r):
+            return (p1[0] - p0[0]) * (pos[r][1] - p0[1]) - (p1[1] - p0[1]) * (pos[r][0] - p0[0])
+        if len(cov[a]) == 1 or len(cov[b]) == 1:
+            inner = b if len(cov[a]) == 1 else a
+            outer = a if inner == b else b
+            if len(cov[inner]) == 2 and not shown_label[inner]:
+                v = cross([r for r in cov[inner] if r != outer][0])
+                return 'left' if v < 0 else 'right'
+            return 'centre'
+        if shown_label[a] and shown_label[b]:
+            return 'centre'
+        v = sum(cross(r) for r in cov[a] + cov[b] if r not in (a, b)) or cross([r for r in cov[a] if r != b][0])
+        return 'left' if v < 0 else 'right'
     for k, b in enumerate(bond_rows):
         e = {'atoms': [index[b['a']], index[b['b']]], 'type': int(drawn_order[k])}
         if b.get('haptic'):
@@ -426,6 +511,10 @@ def build_job(resolved, options=None):
                 return min(t, 360 - t)
             value = ring_side(ring, styles, cross, angle) if ring else sum(cross(r) for r in adj[b['a']] + adj[b['b']])
             e['position'] = 'left' if value < 0 else 'right'
+        if drawn_order[k] == 2 and st == 'plain' and not b.get('haptic') and (b['a'] in dotted or b['b'] in dotted):
+            side = double_side(b['a'], b['b'])
+            if side:
+                e['position'] = side
         if b.get('color'):
             e['colour'] = b['color'].lower()
         doc_bonds.append(e)
@@ -456,7 +545,9 @@ def build_job(resolved, options=None):
         for t in p.get('texts', []):
             size = float(t.get('size') or label_pt)
             c = caption(t['text'], float(t['x']), baseline(t['y'], size), t.get('align', 'center'), size=t.get('size'), color=t.get('color'))
-            cap(c, 'text')
+            k = cap(c, 'text')
+            if t.get('near') in index:       # a text placed near an atom moves with it (a lengthened bond)
+                attached.append({'caption': k, 'atom': index[t['near']]})
         title = p.get('title')
         if title and title.get('text'):
             tx, ty = title.get('x'), title.get('y')

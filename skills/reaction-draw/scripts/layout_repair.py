@@ -177,11 +177,26 @@ def _seg_gaps(a, b, p, q):
     return np.where(cross, 0.0, d)
 
 
+def _crossed(figure):
+    """{arrow id: atoms of the bonds its body crosses}: crossings that check_rules.py accepts (D192) but that a better
+    layout may avoid; when another check fails, the layout search sees them as it sees a touched bond."""
+    out = {}
+    try:
+        for aid, shapes in figure.scene()['arrows']:
+            for (kind, atoms) in rules._arrow_crossings(figure, aid, shapes):
+                if kind == 'bond':
+                    out.setdefault(aid, set()).update(atoms)
+    except Exception:
+        return {}
+    return out
+
+
 def _arrow_chords(result, figure):
-    """{panel: [(from refs, to refs)]} of the curved arrows that the failed overlap_arrow_bond findings name, and of
+    """{panel: [(from refs, to refs)]} of the curved arrows that the failed overlap_arrow_bond or overlap_arrow_text
+    findings name (an arrow kept from its way by a bond, a dotted line or a letter), and of
     every curved arrow in a panel where a hydrogen bond crossed a bond (moves that uncross it keep the arrows' ways)."""
-    ids = {m.group(1) for x in result['checks'].get('overlap_arrow_bond', {}).get('findings', [])
-           for m in re.finditer(r'arrow (\S+) touches bond', x)}
+    ids = {m.group(1) for n in ('overlap_arrow_bond', 'overlap_arrow_text') for x in result['checks'].get(n, {}).get('findings', [])
+           for m in re.finditer(r'arrow (\S+) touches (?:h?bond|label)', x)} | set(_crossed(figure))
     out = {}
     for p in figure.resolved['panels']:
         for a in p.get('curved', []):
@@ -562,9 +577,10 @@ def _followers(lay, pid, sid, old, new):
 
 
 def _arrow_hs(result, figure):
-    """(arrow, H ref) for each H at an end of a curved arrow that touched a bond."""
-    ids = {m.group(1) for x in result['checks'].get('overlap_arrow_bond', {}).get('findings', [])
-           for m in re.finditer(r'arrow (\S+) touches bond', x)}
+    """(arrow, H ref) for each H at an end of a curved arrow that touched a bond, a dotted line or a letter, or that
+    crosses a bond (accepted, D192, but an H turned toward the arrow's other end may spare the crossing)."""
+    ids = {m.group(1) for n in ('overlap_arrow_bond', 'overlap_arrow_text') for x in result['checks'].get(n, {}).get('findings', [])
+           for m in re.finditer(r'arrow (\S+) touches (?:h?bond|label)', x)} | set(_crossed(figure))
     return [(a['id'], r) for p in figure.resolved['panels'] for a in p.get('curved', []) if a.get('id') in ids
             for r in dict.fromkeys(a['from']['refs'] + a['to']['refs'])
             if (figure.atoms.get(r) or {}).get('el') == 'H']
@@ -573,8 +589,9 @@ def _arrow_hs(result, figure):
 def _h_turns(lay, result, figure, original):
     """An H at an end of a curved arrow that touched a bond, turned about its atom into the open gap that faces the
     arrow's other end (an H a base takes), and the base's molecule moved next to it, 35 degrees off the line of the
-    bond (so that the arrow's head points at the H, not along its bond) and clear of the rest:
-    ({species: places}, notes), or None."""
+    bond (so that the arrow's head points at the H, not along its bond) and clear of the rest.  When the other end is
+    on the same molecule (a proton passed within it, as in a gem-diamine), the H alone turns, kept 0.75 bond from the
+    molecule's other atoms: ({species: places}, notes), or None."""
     moved, notes = {}, []
     arrows = {a['id']: a for p in figure.resolved['panels'] for a in p.get('curved', [])}
     for aid, ref in _arrow_hs(result, figure):
@@ -583,9 +600,28 @@ def _h_turns(lay, result, figure, original):
         if mol is None or m not in mol.idx or len(mol.adj[mol.idx[m]]) != 1:
             continue
         a = arrows[aid]
-        others = [r for r in dict.fromkeys(a['from']['refs'] + a['to']['refs'])
-                  if r.rsplit(':', 1)[0] != sid and r.rsplit(':', 1)[0] in lay.xy]
+        ends = list(dict.fromkeys(a['from']['refs'] + a['to']['refs']))
+        others = [r for r in ends if r.rsplit(':', 1)[0] != sid and r.rsplit(':', 1)[0] in lay.xy]
         if not others:
+            xy = dict(moved.get(sid, lay.xy[sid]))
+            root = mol.map[next(iter(mol.adj[mol.idx[m]]))]
+            inner = [int(r.rsplit(':', 1)[1]) for r in ends if r.rsplit(':', 1)[0] == sid
+                     and int(r.rsplit(':', 1)[1]) not in (m, root) and int(r.rsplit(':', 1)[1]) in xy]
+            c = xy[root]
+            dirs = [layout.ang(xy[q][0] - c[0], xy[q][1] - c[1]) for q in mol.nb_maps(root) if q != m]
+            mids = [(st + g / 2.0) % 360 for st, g in layout.gaps(dirs) if g >= 100] if len(dirs) >= 2 and inner else []
+            if not mids:
+                continue
+            t = xy[inner[0]]
+            best = min(mids, key=lambda d: layout.adiff(d, layout.ang(t[0] - c[0], t[1] - c[1])))
+            if layout.adiff(best, layout.ang(xy[m][0] - c[0], xy[m][1] - c[1])) < 30:
+                continue
+            u = layout.vec(best)
+            xy[m] = (c[0] + u[0], c[1] + u[1])
+            if min(layout.dist(xy[m], xy[q]) for q in xy if q not in (m, root)) < 0.75 or not _allowed(lay, sid, xy, original):
+                continue
+            moved[sid] = xy
+            notes.append('%s: H %d turned toward %s:%d for arrow %s' % (sid, m, sid, inner[0], aid))
             continue
         osid, om = others[0].rsplit(':', 1)[0], int(others[0].rsplit(':', 1)[1])
         if osid in moved or om not in lay.xy[osid]:
@@ -594,11 +630,13 @@ def _h_turns(lay, result, figure, original):
         root = mol.map[next(iter(mol.adj[mol.idx[m]]))]
         c = xy[root]
         dirs = [layout.ang(xy[q][0] - c[0], xy[q][1] - c[1]) for q in mol.nb_maps(root) if q != m]
-        if len(dirs) < 2:
+        if not dirs:
             continue
         target = lay.xy[osid][om]
         want = layout.ang(target[0] - c[0], target[1] - c[1])
-        mids = [(st + g / 2.0) % 360 for st, g in layout.gaps(dirs) if g >= 100]
+        # an atom with one other bond (the O of a phenol or an alcohol): either seat 120 degrees from that bond
+        mids = [(st + g / 2.0) % 360 for st, g in layout.gaps(dirs) if g >= 100] if len(dirs) > 1 else \
+            [(dirs[0] + 120) % 360, (dirs[0] - 120) % 360]
         if not mids:
             continue
         best = min(mids, key=lambda d: layout.adiff(d, want))
@@ -715,7 +753,7 @@ def candidates(spec, result, figure):
                 lay.number_sizes.setdefault(n['ref'].split('.')[0], []).append((n['ref'],(b[2]-b[0])/bpt,(b[3]-b[1])/bpt))
     original = copy.deepcopy(lay.xy)
     notes = _repair_lengths(lay, original)
-    affected = _refs(result, figure.atoms)
+    affected = _refs(result, figure.atoms) | {r for atoms in _crossed(figure).values() for r in atoms}
     roots = {}
     for sid, mol in lay.mol.items():
         ids = {mol.idx[int(r.rsplit(':',1)[1])] for r in affected if r.rsplit(':',1)[0] == sid}
@@ -730,15 +768,25 @@ def candidates(spec, result, figure):
     starts = [(start_xy, start_notes, c) for c in ([chords, {}] if chords else [{}])]
     # an H at an arrow's end turned toward the arrow's other end, as the first start of the search
     turned = _h_turns(lay, result, figure, original) if chords else None
+    kept = {}
     if turned:
         starts.insert(0, (dict(start_xy, **turned[0]), start_notes + turned[1], chords))
+        # the search from that start leaves the bonds of an atom whose H was turned as they are (re-seating them in
+        # standard slots turns the H back)
+        for sid, xy in turned[0].items():
+            mol = lay.mol[sid]
+            for m, p in xy.items():
+                i = mol.idx[m]
+                if mol.is_h[i] and len(mol.adj[i]) == 1 and layout.dist(p, start_xy[sid][m]) > 1e-6:
+                    kept.setdefault(sid, set()).add(mol.adj[i][0])
         # first drawn as it is, then searched further from it
         lay.xy = copy.deepcopy(starts[0][0])
         lay.notes = list(dict.fromkeys(lay_notes + ['automatic layout: ' + n for n in starts[0][1]]))
         emitted.add(tuple((s, m, round(x, 4), round(y, 4)) for s, xy in lay.xy.items() for m, (x, y) in xy.items()))
         yield specutil._assemble(spec, lay.arrange())
-    for start, first_notes, lay.arrow_chords in starts:
+    for k, (start, first_notes, lay.arrow_chords) in enumerate(starts):
         lay.xy, notes, lay.notes = copy.deepcopy(start), list(first_notes), list(lay_notes)
+        use = {s: [i for i in r if i not in kept.get(s, ())] for s, r in roots.items()} if turned and k == 0 else roots
         for attempt in range(MAX_DRAWS):
             changed = False
             gap = .14 + .06 * attempt
@@ -749,7 +797,7 @@ def candidates(spec, result, figure):
                 best = None
                 for pid in lay.pidx:
                     if pid not in found:
-                        found[pid] = _best_move(lay, pid, gap, roots, original)
+                        found[pid] = _best_move(lay, pid, gap, use, original)
                     if found[pid] is not None and (best is None or found[pid][0] < best[0]):
                         best = found[pid]
                 if best is None:

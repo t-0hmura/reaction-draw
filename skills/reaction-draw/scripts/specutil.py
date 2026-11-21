@@ -712,6 +712,11 @@ def load_spec_v2(data, path=None):
             members = [atom_ref(t, pid, where) for t in text]
             if any(r['atom2'] is not None or r['panel'] != pid for r in members) or members[0] == members[1]:
                 raise SpecError('%s: a forming bond needs two distinct atoms in this panel' % where)
+            a, b = members
+            if a['sid'] == b['sid']:
+                g = by_id[a['sid']]['graph']
+                if any({g['atoms'][e['a']]['map'], g['atoms'][e['b']]['map']} == {a['atom'], b['atom']} for e in g['bonds']):
+                    return dict(a, atom2=b['atom'])    # already bonded: the bond gains order, the head goes to the bond
             return dict(members[0], members=members)
         p, k, a, b = parse_ref(text, pid, where)
         sid = '%s.%s' % (p, k)

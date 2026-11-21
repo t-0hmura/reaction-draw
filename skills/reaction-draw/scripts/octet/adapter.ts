@@ -161,9 +161,10 @@ class Field {
     for (let i = 0; i < mask.length; i++) mask[i] = img[i * 4] > 127 ? 1 : 0;
     this.dt = edt(mask, this.w, this.h);
   }
-  at(p: Pt): number {
+  at(p: Pt): number { return this.atXY(p[0], p[1]); }
+  atXY(px: number, py: number): number {
     // the pixel that holds the point (pixel k covers k..k+1 of the canvas)
-    const x = Math.floor(p[0] - this.x0), y = Math.floor(p[1] - this.y0);
+    const x = Math.floor(px - this.x0), y = Math.floor(py - this.y0);
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return 1e3;
     return this.dt[y * this.w + x];
   }
@@ -174,6 +175,15 @@ class Field {
     for (const p of [[b[0], b[1]], [b[2], b[1]], [b[0], b[3]], [b[2], b[3]], [(b[0] + b[2]) / 2, b[1]], [(b[0] + b[2]) / 2, b[3]], [b[0], (b[1] + b[3]) / 2], [b[2], (b[1] + b[3]) / 2]] as Pt[]) m = Math.min(m, this.at(p));
     return m;
   }
+}
+
+// The smallest distance over several fields: one over the whole figure and small ones over single arrows (a field
+// returns 1000 outside its own box, which is at least 20 px from its ink).
+class FieldSet {
+  parts: Field[];
+  constructor(parts: Field[]) { this.parts = parts; }
+  at(p: Pt): number { return this.atXY(p[0], p[1]); }
+  atXY(x: number, y: number): number { let m = 1e3; for (const f of this.parts) { const v = f.atXY(x, y); if (v < m) m = v; } return m; }
 }
 
 // ---------------------------------------------------------------- shared context ---------
@@ -237,6 +247,57 @@ function classify(mol: any, d: any, ctx: Ctx): string[] {
   }
   return cls;
 }
+
+// ---------------------------------------------------------------- one model of the drawn ink ---------
+// Everything drawn at a point of the pipeline, each piece tagged with what it is and the atoms it belongs to: bond
+// strokes (wedges, hashes, partial-bond dots), hydrogen-bond dots, marks (lone pairs, radical dots, circled charges),
+// label pieces, captions other than the numbers and unplaced titles, straight arrows, shapes, and when given the routed
+// curved arrows and the placed numbers.  Every placement step measures its candidates against this one list, leaving
+// out only what it places and what that item is meant to meet, as check_rules.py measures the saved drawing against
+// all of it.
+type Ink = {kind: 'bond' | 'hbond' | 'mark' | 'label' | 'caption' | 'arrow' | 'shape' | 'curved' | 'number'; atoms: number[]; key?: string; poly?: number[][]; box?: Box};
+// the reach of a mark around its center in `electrons` (classify uses the same)
+const markReach = (mol: any, ctx: Ctx, e: any) => {
+  const z = ctx.f.size * ctx.ratio(mol.atoms[e.atom]), hw = ctx.f.line / 2;
+  return e.key === 'charge' ? (mol.atoms[e.atom].circled ? 0.34 * z + hw + 0.6 : 0) : e.key?.startsWith('pair') ? 0.28 * z + hw + 0.6 : e.key?.startsWith('radical') ? 0.1 * z + 0.6 : 0;
+};
+function inkOf(mol: any, ctx: Ctx, job: any, d: any, more: {curved?: number[][][]; numbers?: Box[]; owners?: boolean; fixed?: Ink[]} = {}): Ink[] {
+  // bond strokes name their bond's atoms only when asked (owners: true); `fixed` gives the captions, straight arrows and
+  // shapes when the caller has them already (they do not change while marks are seated)
+  const {f} = ctx, cls = classify(mol, d, ctx), owners = more.owners ? polygonOwners(mol, d, cls) : null, px = atomPxOf(mol), hw = f.line / 2;
+  const marks = d.electrons.filter((e: any) => e.key).map((e: any) => ({e, r: markReach(mol, ctx, e)})).filter((m: any) => m.r);
+  const hbonds = mol.bonds.filter((b: any) => b.type === HBOND);
+  const out: Ink[] = d.polygons.map((poly: number[][], k: number): Ink => {
+    if (cls[k] === 'mark') {
+      const m = marks.find(({e, r}: any) => poly.every(([x, y]) => Math.hypot(x - e.at[0], y - e.at[1]) <= r));
+      return {kind: 'mark', atoms: m ? [m.e.atom] : [], key: m?.e.key, poly};
+    }
+    if (cls[k] === 'hbond') {
+      const b = hbonds.find((h: any) => poly.every(([x, y]) => segDist([x, y], px[h.atoms[0]], px[h.atoms[1]]) <= hw + 0.5));
+      return {kind: 'hbond', atoms: b ? [...b.atoms] : [], poly};
+    }
+    return {kind: 'bond', atoms: owners && owners[k] >= 0 ? [...mol.bonds[owners[k]].atoms] : [], poly};
+  });
+  piecesOf(mol, d, ctx).forEach((list, i) => list.forEach((p) => out.push({kind: 'label', atoms: [i], key: p.text, box: p.box})));
+  if (more.fixed) out.push(...more.fixed);
+  else {
+    const straight = fittedArrows(mol, ctx);
+    for (const c of obstacleCaps(mol, placed(mol, d, ctx, straight), job)) out.push({kind: 'caption', atoms: [], box: c.box});
+    for (const a of straight) for (const poly of arrowShapes(a, f, L)) out.push({kind: 'arrow', atoms: [], poly});
+    for (const sh of mol.shapes ?? []) for (const poly of shapeInk(sh, f, L)) out.push({kind: 'shape', atoms: [], poly});
+  }
+  for (const poly of more.curved ?? []) out.push({kind: 'curved', atoms: [], poly});
+  for (const b of more.numbers ?? []) out.push({kind: 'number', atoms: [], box: b});
+  return out;
+}
+// the captions, straight arrows and shapes of the shared ink, from captions already placed and arrows already fitted
+const fixedInkOf = (mol: any, ctx: Ctx, job: any, caps: any[], straight: any[]): Ink[] => [
+  ...obstacleCaps(mol, caps, job).map((c: any): Ink => ({kind: 'caption', atoms: [], box: c.box})),
+  ...straight.flatMap((a: any) => arrowShapes(a, ctx.f, L)).map((poly: number[][]): Ink => ({kind: 'arrow', atoms: [], poly})),
+  ...(mol.shapes ?? []).flatMap((sh: any) => shapeInk(sh, ctx.f, L)).map((poly: number[][]): Ink => ({kind: 'shape', atoms: [], poly}))];
+// the distance field of the ink kept by `keep`, over `box`
+const inkField = (ink: Ink[], box: Box, keep: (x: Ink) => boolean = () => true) =>
+  new Field(box, {polys: ink.filter((x) => x.poly && keep(x)).map((x) => x.poly!), boxes: ink.filter((x) => x.box && keep(x)).map((x) => x.box!)});
 
 // The drawn (visible) part of each bond, measured along its axis on its own polygons (px): a bond that stops at a letter
 // is shorter than its atom-to-atom length, and this is what the eye reads as its length. s0 and s1 run from atoms[0].
@@ -380,7 +441,7 @@ function lengthenLabelBonds(mol: any, ctx: Ctx, job: any, extra: Set<number> = n
 // A local curved arrow (a bond's electrons onto one of its own atoms, or an atom's pair into one of its own bonds) with
 // too little room is given some on request (opts.stretchArrows {ids, ratio}): its bond grows to `ratio` (at most
 // STRETCH_MAX) standard bond lengths, the smaller side moving out along the bond.  A ring bond keeps its length.
-const STRETCH_MAX = 1.2;
+const STRETCH_MAX = 1.4;
 function localBondOf(r: CurvedReq): [number, number] | null {
   if (r.src.kind === 'bond' && r.snk.kind === 'atom' && r.src.atoms.includes(r.snk.atoms[0])) return [r.src.atoms[0], r.src.atoms[1]];
   if (r.src.kind === 'atom' && r.snk.kind === 'bond' && r.snk.atoms.includes(r.src.atoms[0])) return [r.snk.atoms[0], r.snk.atoms[1]];
@@ -452,18 +513,21 @@ function stretchArrowBonds(mol: any, job: any) {
 // takes the first open seat of eight (upper right, upper left, lower right, lower left, right, left, above, below),
 // clear of other ink and of where its curved arrows go; when none is open, the one of 24 directions with the most
 // room.  The same atom in several panels takes one seat where that fits in every panel.
-function placeCharges(mol: any, ctx: Ctx, job: any) {
+function placeCharges(mol: any, ctx: Ctx, job: any, only?: number): {rows: any[]; ms: number; seats?: {angle: number; cost: number}[]} {
+  // only: list the open seats of that atom's ring (best first) without moving it, for seatWithNumbers
   const {f, measure, ratio} = ctx, t0 = now(), fixed = new Set<number>(job.fixedChargeAngles ?? []);
-  const todo: number[] = mol.atoms.map((_: any, i: number) => i).filter((i: number) => mol.atoms[i].circled && Math.abs(mol.atoms[i].charge ?? 0) === 1 && !fixed.has(i));
-  if (!todo.length) return {rows: [], ms: now() - t0};
-  const base = render(mol, f, measure, L), cls = classify(mol, base, ctx), px = atomPxOf(mol), hw = f.line / 2;
-  const arrows = fittedArrows(mol, ctx), caps = placed(mol, base, ctx, arrows);
-  const capBoxes: Box[] = obstacleCaps(mol, caps, job).map((c: any) => c.box);
-  const polys = [...base.polygons.filter((_: any, k: number) => cls[k] !== 'mark'), ...arrows.flatMap((a: any) => arrowShapes(a, f, L)), ...(mol.shapes ?? []).flatMap((s: any) => shapeInk(s, f, L))];
+  const todo: number[] = mol.atoms.map((_: any, i: number) => i).filter((i: number) => mol.atoms[i].circled && Math.abs(mol.atoms[i].charge ?? 0) === 1 && !fixed.has(i)
+    && (only === undefined || i === only));
+  if (!todo.length) return {rows: [], ms: now() - t0, seats: []};
+  const base = render(mol, f, measure, L), px = atomPxOf(mol), hw = f.line / 2;
+  // the shared ink: everything drawn but the rings being placed now (letters and captions are measured below, leaving
+  // out each ring's own letters, which Octet already seats it clear of)
+  const ink = inkOf(mol, ctx, job, base), placing = new Set<number>(todo);
+  const capBoxes: Box[] = ink.filter((x) => x.kind === 'caption').map((x) => x.box!);
   const pcs = piecesOf(mol, base, ctx);
   const all: Box[] = [...pcs.flat().map((p) => p.box), ...capBoxes];
   const bb = union([...px.map((p) => [p[0], p[1], p[0], p[1]] as Box), ...all]) ?? [0, 0, 1, 1];
-  const field = new Field(pad(bb, 2 * L), {polys});
+  const field = inkField(ink, pad(bb, 2 * L), (x) => x.poly !== undefined && !(x.kind === 'mark' && x.key === 'charge' && placing.has(x.atoms[0])));
   const angles = Array.from({length: 24}, (_, k) => k * 15);
   if (job.options?.repairCharges) for (let a = 1.25; a < 360; a += 1.25) if (a % 15) angles.push(a);
   const centers = new Map<number, (Pt | null)[]>(todo.map((i) => [i, angles.map(() => null)]));
@@ -540,9 +604,15 @@ function placeCharges(mol: any, ctx: Ctx, job: any) {
       if (pcs[i].some((p) => !p.sign && pg(p.box) - Rout < -0.45 * ctx.pt)) ownership = 1e6;
     }
     const foreign = foreignRoom(i, c, Rout), crowded = Math.max(0, 0.5 * L - foreign);
-    const total = ownership + (sep < 26 ? 1e6 : 0) + (clear < 2 ? 1000 + (2 - clear) * 200 : 0) + (clear < 10 ? (10 - clear) ** 2 * 0.8 : 0) + Math.max(0, 50 - sep) * 2 + corr + near + 0.03 * angDiff(th, 45)
+    // another atom's ring within one ring's width: the two read as one pair of signs (the ⊕⊖ of N and C2'')
+    let ringGap = Infinity;
+    for (const e of base.electrons) if (e.key === 'charge' && e.atom !== i && !placing.has(e.atom) && mol.atoms[e.atom].circled)
+      ringGap = Math.min(ringGap, dist(c, e.at) - Rout - (0.34 * f.size * ratio(mol.atoms[e.atom]) + hw));
+    for (const [j, q] of chosen) if (j !== i) ringGap = Math.min(ringGap, dist(c, q) - 2 * Rout);
+    const ringNear = ringGap < 2 * Rout;
+    const total = ownership + (sep < 26 ? 1e6 : 0) + (ringNear ? 500 : 0) + (clear < 2 ? 1000 + (2 - clear) * 200 : 0) + (clear < 10 ? (10 - clear) ** 2 * 0.8 : 0) + Math.max(0, 50 - sep) * 2 + corr + near + 0.03 * angDiff(th, 45)
       + crowded * 20;
-    return {total, clear, th, ownership, sep, corr, crowded};
+    return {total, clear, th, ownership, sep, corr, crowded, ringNear};
   };
   // the same atom in several panels (job.sameAtom) is placed together
   const groups: number[][] = [];
@@ -551,13 +621,20 @@ function placeCharges(mol: any, ctx: Ctx, job: any) {
   for (const i of todo) if (!inGroup.has(i)) groups.push([i]);
   const rows: any[] = [];
   const minClear = job.options?.repairCharges ? 4 : 2;
+  if (only !== undefined) {
+    // the seats that keep the ring's rules (one ring's width from another atom's ring included)
+    const seats = angles.map((deg, k) => ({k, deg, c: cost(only, k), at: centers.get(only)![k]}))
+      .filter(({c, at}) => at && c.clear >= minClear && !c.ownership && (c.sep ?? 0) >= 26 && !c.ringNear && c.total < 1000)
+      .sort((a, b) => a.c.total - b.c.total).map(({deg, c}) => ({angle: deg, cost: c.total}));
+    return {rows: [], ms: now() - t0, seats};
+  }
   for (const g of groups) {
     let bestK = -1, best = Infinity;
-    angles.forEach((_, k) => { const cs = g.map((i) => cost(i, k)); if (cs.some((c) => c.clear < minClear || c.ownership || (c.sep ?? 0) < 26)) return; const s = cs.reduce((t, c) => t + c.total, 0); if (s < best) { best = s; bestK = k; } });
+    angles.forEach((_, k) => { const cs = g.map((i) => cost(i, k)); if (cs.some((c) => c.clear < minClear || c.ownership || (c.sep ?? 0) < 26 || c.ringNear)) return; const s = cs.reduce((t, c) => t + c.total, 0); if (s < best) { best = s; bestK = k; } });
     // the first open seat, diagonals first: upper right, upper left, lower right, lower left, then right, left, above,
     // below; other directions only when none is open
     const diagonals = [45, 135, 315, 225, 0, 180, 90, 270].map((a) => angles.indexOf(a));
-    const open = (i: number, k: number) => { const c = cost(i, k); return c.clear >= minClear && !c.ownership && (c.sep ?? 0) >= 35 && !c.corr && !c.crowded; };
+    const open = (i: number, k: number) => { const c = cost(i, k); return c.clear >= minClear && !c.ownership && (c.sep ?? 0) >= 35 && !c.corr && !c.crowded && !c.ringNear; };
     const shared = diagonals.find((k) => g.every((i) => open(i, k)));
     const cheapest = (i: number) => { let kk = 0, bv = Infinity; angles.forEach((_, k) => { const c = cost(i, k).total; if (c < bv) { bv = c; kk = k; } }); return kk; };
     for (const i of g) {
@@ -569,6 +646,40 @@ function placeCharges(mol: any, ctx: Ctx, job: any) {
     }
   }
   return {rows, ms: now() - t0};
+}
+
+// The marks of one atom are seated one after another (pairs, then the ring, then the number), each taking its own best
+// seat, so the number can be left without one.  For an atom whose number has no seat that keeps every rule (the dry
+// number search), the open seats of the rings that crowd it (its own and its bonded neighbours', when they may move) are
+// tried best first with the number searched again each time; the first seats that keep every rule (all numbers too)
+// are kept.  When none do, the rings stay, the room stage lengthens a bond (draw_figure.py retry_room, up to
+// STRETCH_MAX) and releases the rings at its ends, and they are seated again together with the number.
+function seatWithNumbers(mol: any, ctx: Ctx, job: any) {
+  const t0 = now(), rows: any[] = [];
+  if (!(job.numbers ?? []).length) return {ms: 0, rows};
+  const fixed = new Set<number>(job.fixedChargeAngles ?? []);
+  const movable = (j: number) => mol.atoms[j].circled && Math.abs(mol.atoms[j].charge ?? 0) === 1 && !fixed.has(j);
+  let stuck = placeNumbers(mol, ctx, job, [], true).stuck ?? [];
+  rows.push({stuck: [...stuck]});
+  for (const i of [...stuck]) {
+    if (!stuck.includes(i)) continue;
+    // the rings that can crowd the number's seats: the atom's own and those of the atoms bonded to it
+    const near = [i, ...mol.bonds.filter((b: any) => b.type !== HBOND && b.atoms.includes(i)).map((b: any) => (b.atoms[0] === i ? b.atoms[1] : b.atoms[0]))].filter(movable);
+    let kept: any = null;
+    for (const j of near) {
+      const a = mol.atoms[j], was = a.angles ? {...a.angles} : undefined;
+      const seats = (placeCharges(mol, ctx, job, j).seats ?? []).filter((x) => x.angle !== was?.charge).slice(0, 12);
+      for (const seat of seats) {
+        a.angles = {...(was ?? {}), charge: seat.angle};
+        const now_ = placeNumbers(mol, ctx, job, [], true).stuck ?? [];
+        if (!now_.includes(i) && now_.length < stuck.length) { kept = {ring: j, angle: seat.angle}; stuck = now_; break; }
+      }
+      if (kept) break;
+      if (was) a.angles = was; else delete a.angles;
+    }
+    rows.push({atom: i, rings: near, kept});
+  }
+  return {ms: now() - t0, rows};
 }
 
 // bonded labels whose letters come within 2.95 pt of the ring's distance to its own letters: the ring at `at` reads as
@@ -600,6 +711,9 @@ function hookDirs(mol: any, job: any, i: number, px: Pt[]): number[] {
 }
 function placeLonePairs(mol: any, ctx: Ctx, job: any) {
   const px = atomPxOf(mol), {f, measure} = ctx;
+  // the shared ink that no pair angle changes (captions, straight arrows, shapes); the structure's own ink is taken from
+  // each candidate drawing below
+  let fixedInk: Ink[] | null = null;
   const sources = new Map<number, End>();
   for (const r of (job.curved ?? []) as CurvedReq[]) if (r.electrons !== 1 && r.src.kind === 'atom' && mol.atoms[r.src.atoms[0]].pairs)
     sources.set(r.src.atoms[0], r.snk);
@@ -624,19 +738,34 @@ function placeLonePairs(mol: any, ctx: Ctx, job: any) {
         const dots: Pt[] = [-1, 1].map((sign) => [pair.at[0] + sign * .19 * z * normal[0], pair.at[1] + sign * .19 * z * normal[1]] as Pt);
         const own = (poly: number[][]) => dots.some((dot) => poly.every(([x, y]) => dist([x, y], dot) <= dotRadius + .1));
         const movableCharges = d.electrons.filter((e: any) => e.key === 'charge' && mol.atoms[e.atom].circled && !(job.fixedChargeAngles ?? []).includes(e.atom));
-        const ink = d.polygons.filter((poly: number[][]) => !own(poly) && !movableCharges.some((e: any) =>
-          poly.every(([x, y]) => dist([x, y], e.at) <= .34 * f.size * ctx.ratio(mol.atoms[e.atom]) + f.line / 2 + .6)));
-        const field = new Field(pad(union(dots.map((p) => [p[0], p[1], p[0], p[1]] as Box))!, 12), {polys: ink});
+        fixedInk ??= inkOf(mol, ctx, job, d).filter((x) => ['caption', 'arrow', 'shape'].includes(x.kind));
+        const ink = [...d.polygons.filter((poly: number[][]) => !own(poly) && !movableCharges.some((e: any) =>
+          poly.every(([x, y]) => dist([x, y], e.at) <= .34 * f.size * ctx.ratio(mol.atoms[e.atom]) + f.line / 2 + .6))), ...fixedInk.filter((x) => x.poly).map((x) => x.poly!)];
+        const field = new Field(pad(union(dots.map((p) => [p[0], p[1], p[0], p[1]] as Box))!, 12), {polys: ink, boxes: fixedInk.filter((x) => x.box).map((x) => x.box!)});
         let clear = Math.min(...dots.map((dot) => field.at(dot) - dotRadius));
         const pcs = piecesOf(mol, d, ctx);
         pcs.forEach((list, j) => { if (j !== i) for (const p of list) for (const dot of dots) clear = Math.min(clear, boxDist(dot, p.box) - dotRadius); });
         // A seat past the H of the atom's own label (left of H2N) reads as the H's pair: blocked.
         const symbol = ownSymbol(mol, pcs, px, i);
         if (symbol && Math.min(...dots.map((dot) => boxDist(dot, symbol))) > .5 * z) clear = Math.min(clear, 0);
+        // A pair reads as the pair of the nearest letter (the radical rule, and Octet's CDXML reader gives a free pair to
+        // the nearest atom): its dots must stand nearer their own symbol (the point of a bare vertex) than any other
+        // atom and than the other pieces of the atom's own label (the H of NH below the N).
+        const ownGap = Math.min(...dots.map((dot) => symbol ? boxDist(dot, symbol) : dist(dot, px[i])));
+        let otherGap = Infinity;
+        for (const q of pcs[i] ?? []) if (!q.sign && q.box !== symbol && !q.text.includes('•')) for (const dot of dots) otherGap = Math.min(otherGap, boxDist(dot, q.box));
+        px.forEach((q, j) => { if (j !== i && !mol.atoms[j].hidden) { const b = ownSymbol(mol, pcs, px, j); for (const dot of dots) otherGap = Math.min(otherGap, b ? boxDist(dot, b) : dist(dot, q)); } });
+        if (ownGap >= otherGap) clear = Math.min(clear, 0);
         // the drawn bonds (an H folded into the label is not drawn and takes no seat)
         const bondDirs = mol.bonds.filter((b: any) => b.type !== HBOND && b.atoms.includes(i) && !b.atoms.some((j: number) => mol.atoms[j].hidden))
           .map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
-        const sep = Math.min(180, ...bondDirs.map((b: number) => angDiff(deg, b)));
+        // hydrogen-bond lines leaving the atom are ink lines like its bonds: a pair keeps the same 35 degrees off them
+        // (the dots and the pair, or the pair's arrow and the line, would touch), except a reacting pair's own hydrogen
+        // bond to what it attacks (the arrow runs along it)
+        const lineDirs = [...bondDirs, ...mol.bonds.filter((b: any) => b.type === HBOND && b.atoms.includes(i)
+          && !(pairIndex === 0 && end && end.atoms.includes(b.atoms[0] === i ? b.atoms[1] : b.atoms[0])))
+          .map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]))];
+        const sep = Math.min(180, ...lineDirs.map((b: number) => angDiff(deg, b)));
         // a reacting pair takes no seat facing away (more than 90 degrees) from what it attacks
         // ... nor a seat with one of the atom's own bonds between it and what it attacks (the arrow would have to cross
         // or go round that bond)
@@ -708,10 +837,19 @@ function drawn(mol: any, ctx: Ctx) {
   if (memo.size > 8) memo.delete(memo.keys().next().value!);
   return made;
 }
-// How badly atom i's label sits: its bonds without a visible line, and its letters on other letters or on bond ink.
-function labelClash(mol: any, ctx: Ctx, i: number): number {
+// The boxes of the captions placed so far (residue names, texts, conditions; not the numbers and titles placed later),
+// each with the atom it moves with (job.attached) or -1.
+function captionBoxes(mol: any, ctx: Ctx, job: any): {box: Box; atom: number}[] {
+  if (!(mol.captions ?? []).length) return [];
+  const own = new Map<number, number>(((job.attached ?? []) as {caption: number; atom: number}[]).map((t) => [mol.captions[t.caption]?.id, t.atom]));
+  return obstacleCaps(mol, placed(mol, drawn(mol, ctx).d, ctx, fittedArrows(mol, ctx)), job).map((c: any) => ({box: c.box as Box, atom: own.get(c.id) ?? -1}));
+}
+// How badly atom i's label sits: its bonds without a visible line, and its letters on other letters, on bond ink or on
+// a caption other than its own (caps: captionBoxes).
+function labelClash(mol: any, ctx: Ctx, i: number, caps: {box: Box; atom: number}[] = []): number {
   const {d, cls, pcs} = drawn(mol, ctx);
   let value = 0;
+  for (const c of caps) if (c.atom !== i) for (const part of pcs[i]) value += Math.max(0, 1 - boxGap(part.box, c.box)) * 100000;
   mol.bonds.forEach((b: any, k: number) => {
     if (!b.atoms.includes(i) || b.type === HBOND || b.atoms.some((j: number) => mol.atoms[j].hidden)) return;
     const v = bondVisible(mol, d, ctx, cls, k);
@@ -732,6 +870,10 @@ function labelClash(mol: any, ctx: Ctx, i: number): number {
       const ink = writesH && !part.sign && part.text === mol.atoms[i].label ? foreign : all;
       value += Math.max(0, 2 - ink.overBox(part.box, 1)) * 100000;
     }
+    // a piece whose glyph ink lies on a bond of other atoms fails overlap_text_bond (check_rules.py measures the ink
+    // against the bonds, the atom's own left out) and no later step moves it off: it outweighs any contact of boxes
+    const notOwn = new Field(pad(d.label[i], 8), {polys: d.polygons.filter((_: any, k: number) => cls[k] === 'bond' && !(owners[k] >= 0 && mol.bonds[owners[k]].atoms.includes(i)))});
+    for (const part of pcs[i]) if (notOwn.overBox(part.ink, 1) <= 0) value += 1e6;
   }
   return value;
 }
@@ -748,6 +890,23 @@ function hydrogenSide(mol: any, ctx: Ctx, i: number): string | null {
   if (!own || !mate) return null;
   const dx = mate.box[0] + mate.box[2] - own.box[0] - own.box[2], dy = mate.box[1] + mate.box[3] - own.box[1] - own.box[3];
   return Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'below' : 'above');
+}
+// Whether atom i's label writes an H toward one of its drawn bonds as check_rules.py one_label_bonds reads it: from the
+// center of the symbol nearest the atom to the center of the H nearest that symbol (glyph ink), less than acos 0.7
+// (45.6 degrees) from the bond.
+function hydrogenOnBond(mol: any, ctx: Ctx, i: number): boolean {
+  const pcs = drawn(mol, ctx).pcs[i], p: Pt = [mol.atoms[i].location[0] * L, -mol.atoms[i].location[1] * L];
+  const syms = pcs.filter((q) => !q.sign && q.text === mol.atoms[i].label), hs = pcs.filter((q) => !q.sign && q.text === 'H' && q.text !== mol.atoms[i].label);
+  if (!syms.length || !hs.length) return false;
+  const sym = syms.reduce((a, b) => (boxDist(p, b.ink) < boxDist(p, a.ink) ? b : a)).ink;
+  const h = hs.reduce((a, b) => (boxGap(b.ink, sym) < boxGap(a.ink, sym) ? b : a)).ink;
+  const ux = (h[0] + h[2] - sym[0] - sym[2]) / 2, uy = (h[1] + h[3] - sym[1] - sym[3]) / 2, un = Math.hypot(ux, uy);
+  if (un < 1e-6) return false;
+  return mol.bonds.some((b: any) => {
+    if (!b.atoms.includes(i) || b.type === HBOND || b.atoms.some((j: number) => mol.atoms[j].hidden)) return false;
+    const o = mol.atoms[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]].location, vx = o[0] * L - p[0], vy = -o[1] * L - p[1], vn = Math.hypot(vx, vy);
+    return vn > 1e-6 && (ux * vx + uy * vy) / un / vn > 0.7;
+  });
 }
 // The axial seat atom i's reacting lone pair takes in placeLonePairs (35 degrees or more from each bond, within 90
 // degrees of what it attacks, nearest that), or null: the written H keep off it.  A label with H and one bond keeps
@@ -811,7 +970,8 @@ function placeFoldedHydrogens(mol: any, ctx: Ctx, job: any) {
     const stacked = ['above', 'below'].includes(mol.atoms[i].align) && !stackable(mol, i);
     if (!stacked && alignFree(mol, ctx, i)) continue;
     // written H on the reacting pair's seat count as H on bond ink; so do H written within 45 degrees of one of the
-    // atom's drawn bonds (NH-C, H2N on the right of its bond): the heavy atom stands at its bonds
+    // atom's drawn bonds, or toward one as one_label_bonds reads it (NH-C, H2N on the right of its bond): the heavy
+    // atom stands at its bonds
     const seat = pairSeat(mol, job, i, ctx), px = atomPxOf(mol);
     const bondDirs = mol.bonds.filter((b: any) => b.atoms.includes(i) && b.type !== HBOND && !b.atoms.some((j: number) => mol.atoms[j].hidden))
       .map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
@@ -820,7 +980,7 @@ function placeFoldedHydrogens(mol: any, ctx: Ctx, job: any) {
       return labelClash(mol, ctx, i) + (seat !== null && side === seat ? 200000 : 0) + (dotSeat !== null && side === dotSeat ? 200000 : 0)
         + foreignShort(mol, ctx, job, i) * 20
         // H written on a drawn bond fails the checks and no later step moves it: it outweighs any contact of letters
-        + (side !== undefined && bondDirs.some((b: number) => angDiff(side, b) < 45) ? 1e6 : 0);
+        + ((side !== undefined && bondDirs.some((b: number) => angDiff(side, b) < 45)) || hydrogenOnBond(mol, ctx, i) ? 1e6 : 0);
     };
     let best = stacked ? Infinity : cost(), chosen = mol.atoms[i].align;
     if (best < 1) continue;
@@ -838,6 +998,9 @@ function keepHydrogenSides(mol: any, ctx: Ctx, job: any) {
   // the atom maps an atom is bonded to; a group that moved to another atom (a transferred methyl) follows its new bond
   const partners = (i: number): string[] => mol.bonds.filter((b: any) => b.atoms.includes(i) && b.type !== HBOND)
     .map((b: any) => String(job.refs[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]).split(':').pop() as string);
+  // the side taken keeps its letters off the captions (another molecule's residue name, a text): the layout left
+  // room for the side the label had
+  const caps = (job.sameAtom ?? []).length ? captionBoxes(mol, ctx, job) : [];
   for (const group of (job.sameAtom ?? []) as number[][]) {
     let want: string | null = null, first = -1;
     for (const i of group) {
@@ -854,7 +1017,7 @@ function keepHydrogenSides(mol: any, ctx: Ctx, job: any) {
         && angDiff(pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]), toward) < 60) || pairSeat(mol, job, i, ctx) === toward
         || radicalSeat(mol, job, i) === toward) continue;
       const saved = mol.atoms[i].align;
-      const fit = (stackable(mol, i) ? ['left', 'right', 'above', 'below'] : ['left', 'right']).find((align) => { mol.atoms[i].align = align; return sideOf(i) === want && labelClash(mol, ctx, i) < 1; });
+      const fit = (stackable(mol, i) ? ['left', 'right', 'above', 'below'] : ['left', 'right']).find((align) => { mol.atoms[i].align = align; return sideOf(i) === want && labelClash(mol, ctx, i, caps) < 1; });
       mol.atoms[i].align = fit ?? saved;
     }
   }
@@ -893,32 +1056,52 @@ function placeRadicals(mol: any, ctx: Ctx, job: any) {
         if (theirs.length) angles.push(clear ?? sides.reduce((x, y) => (room(y) > room(x) ? y : x)));
       }
     }
-    if (fixed === undefined && angles.length) {
-      // the dot leaves the label beside the atom's own letter: a way out that passes a written H or another piece of
-      // the label (where the dot would read as on that piece) turns to the nearest way that clears them, off the bonds
-      const pcs = drawn(mol, ctx).pcs[i], own = pcs.find((p) => !p.sign && p.text === a.label);
-      const others = own ? pcs.filter((p) => !p.sign && p !== own && !p.text.includes('•')) : [];
-      if (own && others.length) {
-        const o = px[i], c = 0.4 * (own.ink[3] - own.ink[1]);
-        const bonds = mol.bonds.filter((b: any) => b.atoms.includes(i) && !b.atoms.some((j: number) => mol.atoms[j].hidden))
-          .map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
-        // the ray from the atom along deg, widened by the dot and its gap, meets the piece's glyph ink
-        const blocked = (deg: number) => others.some((p) => {
-          const t = (deg * Math.PI) / 180, u: Pt = [Math.cos(t), -Math.sin(t)];
-          let lo = 0, hi = Infinity;
-          for (const k of [0, 1]) {
-            const s0 = p.ink[k] - c - o[k], s1 = p.ink[k + 2] + c - o[k];
-            if (Math.abs(u[k]) < 1e-9) { if (s0 > 0 || s1 < 0) return false; continue; }
-            lo = Math.max(lo, Math.min(s0 / u[k], s1 / u[k])); hi = Math.min(hi, Math.max(s0 / u[k], s1 / u[k]));
+    if (fixed === undefined) {
+      // each dot takes the seat nearest the one wished that keeps clear of the shared ink and reads as its own atom's:
+      // nearer its own symbol (the point of a bare vertex) than any other atom and than the other pieces of its own label
+      // (a written H, a count), 25 degrees or more off its bonds (check_rules.py radical_marks)
+      const n = a.radical === 2 ? 2 : 1, wish = Array.from({length: n}, (_, k) => angles[k] ?? (k ? ((angles[0] ?? 30) + 120) % 360 : 30));
+      const bonds = mol.bonds.filter((b: any) => b.atoms.includes(i) && !b.atoms.some((j: number) => mol.atoms[j].hidden))
+        .map((b: any) => pageDeg(px[i], px[b.atoms[0] === i ? b.atoms[1] : b.atoms[0]]));
+      const z = ctx.f.size * ctx.ratio(a), dotR = 0.1 * z;
+      const keep = {...(a.angles ?? {})};
+      let fixedInk: Ink[] | null = null;
+      const seat = (k: number, deg: number, chosen: number[]) => {
+        a.angles = {...keep, ...Object.fromEntries(chosen.map((c, m) => [`radical${m}`, c])), [`radical${k}`]: deg};
+        if (n === 2 && k === 0) a.angles.radical1 = (deg + 120) % 360;
+        const d = render(mol, ctx.f, ctx.measure, L), e = d.electrons.find((x: any) => x.atom === i && x.key === `radical${k}`);
+        if (!e) return {ok: false, score: 1e9};
+        fixedInk ??= inkOf(mol, ctx, job, d).filter((x) => ['caption', 'arrow', 'shape'].includes(x.kind));
+        const ink = inkOf(mol, ctx, job, d, {fixed: fixedInk});
+        const reach = markReach(mol, ctx, e);
+        const field = inkField(ink, pad([e.at[0], e.at[1], e.at[0], e.at[1]], 14), (x) => !(x.kind === 'mark' && x.atoms[0] === i && x.key === `radical${k}`)
+          && !(x.poly && x.poly.every(([u, v]) => Math.hypot(u - e.at[0], v - e.at[1]) <= reach)) && !(x.kind === 'label' && x.atoms[0] === i));
+        const clear = field.at(e.at) - dotR;
+        const pcs = piecesOf(mol, d, ctx), sym = ownSymbol(mol, pcs, px, i);
+        const ownGap = sym ? boxDist(e.at, sym) : dist(e.at, px[i]);
+        let other = Infinity;
+        for (const q of pcs[i]) if (!q.sign && q.box !== sym && !q.text.includes('•')) other = Math.min(other, boxDist(e.at, q.box));
+        px.forEach((q, j) => { if (j !== i && !mol.atoms[j].hidden) { const b = ownSymbol(mol, pcs, px, j); other = Math.min(other, b ? boxDist(e.at, b) : dist(e.at, q)); } });
+        const sep = Math.min(180, ...bonds.map((bd: number) => angDiff(bd, deg)));
+        const ok = clear >= 1 && ownGap < other && sep >= 25;
+        return {ok, score: Math.max(0, 1 - clear) * 1000 + (ownGap >= other ? 500 + (ownGap - other) * 50 : 0) + Math.max(0, 25 - sep) * 30};
+      };
+      const chosen: number[] = [];
+      for (let k = 0; k < n; k++) {
+        let best = {deg: wish[k], score: Infinity};
+        for (let step = 0; step <= 180; step += 5) {
+          let found = false;
+          for (const deg of step ? [(wish[k] - step + 360) % 360, (wish[k] + step) % 360] : [wish[k]]) {
+            const r = seat(k, deg, chosen);
+            if (r.ok) { best = {deg, score: 0}; found = true; break; }
+            if (r.score < best.score) best = {deg, score: r.score};
           }
-          return lo <= hi;
-        });
-        angles.forEach((want, k) => {
-          if (!blocked(want)) return;
-          for (let step = 5; step <= 180; step += 5) for (const deg of [(want - step + 360) % 360, (want + step) % 360])
-            if (!blocked(deg) && bonds.every((bd: number) => angDiff(bd, deg) >= 25)) { angles[k] = deg; return; }
-        });
+          if (found) break;
+        }
+        chosen.push(best.deg);
       }
+      a.angles = keep;
+      angles.splice(0, angles.length, ...chosen);
     }
     a.angles = {...(a.angles ?? {}), radical0: fixed ?? angles[0] ?? 30,
       ...(a.radical === 2 ? {radical1: angles[1] ?? ((fixed ?? angles[0] ?? 30) + 120) % 360} : {})};
@@ -955,10 +1138,27 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
   const ratioZ = (i: number) => f.size * ctx.ratio(mol.atoms[i]);
   const ringBox = (e: any): Box => { const R = 0.34 * ratioZ(e.atom) + f.line / 2; return [e.at[0] - R, e.at[1] - R, e.at[0] + R, e.at[1] + R]; };
   const rings = d0.electrons.filter((e: any) => e.key === 'charge' && mol.atoms[e.atom].circled);
-  // obstacles: every polygon, the reaction arrows and boxes; letters, rings and captions other than the atom numbers
-  const textBoxes: Box[] = [...pcs.flat().map((p) => p.box), ...rings.map(ringBox), ...obstacleCaps(mol, caps0, job).map((c: any) => c.box)];
-  const basePolys = [...d0.polygons, ...straight.flatMap((a: any) => arrowShapes(a, f, L)), ...(mol.shapes ?? []).flatMap((s: any) => shapeInk(s, f, L))];
+  // obstacles: the shared ink (every polygon, the reaction arrows and shapes; letters and captions other than the atom
+  // numbers as boxes), with each ring as its whole box
+  const ink0 = inkOf(mol, ctx, job, d0, {fixed: fixedInkOf(mol, ctx, job, caps0, straight)});
+  const textBoxes: Box[] = [...ink0.filter((x) => x.box).map((x) => x.box!), ...rings.map(ringBox)];
+  const basePolys = ink0.filter((x) => x.poly).map((x) => x.poly!);
   const bb = union([...px.map((p) => [p[0], p[1], p[0], p[1]] as Box), ...textBoxes]) ?? [0, 0, 1, 1], bounds = pad(bb, 2 * L);
+  // a field over the whole figure is the costly part of routing: the shared ink (letters padded 2 px) and the drawn ink
+  // alone are each laid out once per drawing; every arrow routed gets a small field over its own box, and an arrow is
+  // measured against the shared field and the small fields of the arrows before it
+  const baseField = new Field(bounds, {polys: basePolys, boxes: textBoxes.map((b) => pad(b, 2))});
+  const baseInk = new Field(bounds, {polys: basePolys});
+  const ownBase = new Map<string, [Field, Field]>();
+  const arrowFields = new WeakMap<any, Field>();
+  const fieldOf = (q: any): Field => {
+    let fq = arrowFields.get(q);
+    if (!fq) {
+      fq = new Field(union(q.polys.flat().map((v: number[]) => [v[0], v[1], v[0], v[1]] as Box)) ?? [0, 0, 1, 1], {polys: q.polys});
+      arrowFields.set(q, fq);
+    }
+    return fq;
+  };
   const symbols = px.map((_, i) => ownSymbol(mol, pcs, px, i));
   const atomBox = (i: number): Box | null => symbols[i];
   const besideMates = (i: number, p: Pt): number => {
@@ -984,6 +1184,43 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     return (dC < 20 ? (20 - dC) * 25 : 0) + (dC < dS + 6 ? 500 : 0);
   };
   const bondIndex = (i: number, j: number) => mol.bonds.findIndex((b: any) => b.type !== HBOND && b.atoms.includes(i) && b.atoms.includes(j));
+  // the middle of a bond's drawn line, as a fraction from its stored first atom: the line stops a label margin short of
+  // each labeled end's letters (check_rules.py _drawn_segment reads it the same way); an unlabeled bond, the visible part
+  // the drawn lines of a bond: its label margins cut, each line of a double or triple bond at its offset
+  const drawnLines = (bi: number): [Pt, Pt][] => {
+    const b = mol.bonds[bi], p = px[b.atoms[0]], q = px[b.atoms[1]], dx = q[0] - p[0], dy = q[1] - p[1], len = Math.hypot(dx, dy) || 1;
+    const cut = (i: number, from: Pt, to: Pt): number => {
+      const boxes = pcs[i].filter((x) => !x.sign).map((x) => x.box);
+      let t = 0;
+      while (boxes.length && t < 1 && Math.min(...boxes.map((bx) => boxDist([from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t], bx))) <= f.margin) t += 0.01;
+      return t;
+    };
+    const t0 = cut(b.atoms[0], p, q), t1 = 1 - cut(b.atoms[1], q, p), n: Pt = [-dy / len, dx / len], sd = d0.sides?.[bi] ?? 0;
+    const offs = b.type === 2 ? (sd ? [0, sd * f.spacing] : [-f.spacing / 2, f.spacing / 2]) : b.type === 3 ? [0, -f.spacing, f.spacing] : [0];
+    return offs.map((o) => [[p[0] + dx * t0 + n[0] * o, p[1] + dy * t0 + n[1] * o], [p[0] + dx * t1 + n[0] * o, p[1] + dy * t1 + n[1] * o]] as [Pt, Pt]);
+  };
+  const lineSpan = (bi: number): number => {
+    const b = mol.bonds[bi], p = px[b.atoms[0]], q = px[b.atoms[1]];
+    const cut = (i: number, from: Pt, to: Pt): number => {
+      const boxes = pcs[i].filter((x) => !x.sign).map((x) => x.box);
+      let t = 0;
+      while (boxes.length && t < 1 && Math.min(...boxes.map((bx) => boxDist([from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t], bx))) <= f.margin) t += 0.01;
+      return t;
+    };
+    if (!atomBox(b.atoms[0]) && !atomBox(b.atoms[1])) { const v = bondVisible(mol, d0, ctx, cls, bi); return v ? (v.s1 - v.s0) / v.len : 1; }
+    return Math.max(0.05, 1 - cut(b.atoms[0], p, q) - cut(b.atoms[1], q, p));
+  };
+  const lineMiddle = (bi: number): number => {
+    const b = mol.bonds[bi], p = px[b.atoms[0]], q = px[b.atoms[1]];
+    const cut = (i: number, from: Pt, to: Pt): number => {
+      const boxes = pcs[i].filter((x) => !x.sign).map((x) => x.box);
+      let t = 0;
+      while (boxes.length && t < 1 && Math.min(...boxes.map((bx) => boxDist([from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t], bx))) <= f.margin) t += 0.01;
+      return t;
+    };
+    if (!atomBox(b.atoms[0]) && !atomBox(b.atoms[1])) { const v = bondVisible(mol, d0, ctx, cls, bi); return v ? (v.s0 + v.s1) / 2 / v.len : 0.5; }
+    return (cut(b.atoms[0], p, q) + 1 - cut(b.atoms[1], q, p)) / 2;
+  };
   const bondEnd = (bi: number, t: number, side: number, extra: number): Pt => {
     // t runs from the bond's stored first atom; the side of a double bond's second line (d0.sides) is relative to that order
     const b = mol.bonds[bi], p = px[b.atoms[0]], q = px[b.atoms[1]], dx = q[0] - p[0], dy = q[1] - p[1], len = Math.hypot(dx, dy);
@@ -996,10 +1233,11 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
   const site = (j: number, p: Pt) => { const b = atomBox(j); return b ? boxDist(p, b) : dist(p, px[j]); };
   const aimMargin = (p: Pt, end: End) => {
     const members = new Set(end.atoms);
-    const mine = end.kind === 'atom' ? site(end.atoms[0], p) : segDist(p, px[end.atoms[0]], px[end.atoms[1]]);
+    const mine = end.kind === 'atom' ? site(end.atoms[0], p) : end.kind === 'gap' ? Math.min(site(end.atoms[0], p), site(end.atoms[1], p))
+      : segDist(p, px[end.atoms[0]], px[end.atoms[1]]);
     let others = 1e9;
     px.forEach((_, j) => { if (!members.has(j)) others = Math.min(others, site(j, p)); });
-    mol.bonds.forEach((b: any) => { if (b.type === HBOND || b.atoms.some((x: number) => members.has(x))) return; others = Math.min(others, segDist(p, px[b.atoms[0]], px[b.atoms[1]])); });
+    if (end.kind !== 'gap') mol.bonds.forEach((b: any) => { if (b.type === HBOND || b.atoms.some((x: number) => members.has(x))) return; others = Math.min(others, segDist(p, px[b.atoms[0]], px[b.atoms[1]])); });
     return {mine, others};
   };
   const aim = (p: Pt, end: End) => { const m = aimMargin(p, end); return m.others < m.mine + 6 ? 600 + (m.mine + 6 - m.others) * 30 : 0; };
@@ -1028,6 +1266,11 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (l2 || 1)));
     return [a[0] + t * dx, a[1] + t * dy];
   };
+  const HEAD_DEV = 25;                        // degrees: a head turned further from its target (an atom: its center) costs
+  const HOOK_DEV = 55;                        // degrees: a bond's electrons onto its own atom arrive this near the bond's direction
+  const T_OFF = 120;                          // cost per bond length a bond end lies off the middle of the bond's visible line
+  const MEET = 0.1;                            // bond lengths: the second fishhook of a forming bond ends this near the first's head
+  const MEET_FREE = 0.3;                       // bond lengths around that head where the first fishhook is no obstacle
   const BARE_HEAD_GAP = 0.07;                  // bond lengths beyond the 0.08 L around a bare vertex (head 0.15 L from it)
   const BENDS = [0.18, -0.18, 0.3, -0.3, 0.45, -0.45, 0.65, -0.65, 0.9, -0.9, 1.2, -1.2, 1.6, -1.6];
   const ARC_MAX = 1.9;                         // longest route / distance between the ends
@@ -1036,8 +1279,82 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
   const seatField = seats.length ? new Field(bounds, {boxes: seats.map((b) => pad(b, 2))}) : null;
   const requests: CurvedReq[] = [...(job.curved ?? [])];
   if (opts.reverseCurved) requests.reverse();
+  // of the two fishhooks of one forming bond, the one from an unpaired-electron dot (short, little room) goes first and
+  // the one from a bond (a free arc) meets its tip
+  for (let i = 0; i < requests.length; i++) for (let j = i + 1; j < requests.length; j++) {
+    const a = requests[i], b = requests[j];
+    if (a.electrons === 1 && b.electrons === 1 && a.snk.kind === 'gap' && b.snk.kind === 'gap' && a.snk.atoms.every((x) => b.snk.atoms.includes(x)) &&
+        a.src.kind !== 'atom' && b.src.kind === 'atom') { requests[i] = b; requests[j] = a; }
+  }
   for (const req of requests) {
-    const retained = opts.fixedCurved?.[req.id];
+    const offMiddle = (end: End, nat: [number, number] | undefined) => {
+      if (end.kind !== 'bond' || !nat) return false;
+      const bi = bondIndex(end.atoms[0], end.atoms[1]);
+      if (bi < 0) return false;
+      const tm = lineMiddle(bi);
+      const a = px[mol.bonds[bi].atoms[0]], b = px[mol.bonds[bi].atoms[1]], p: Pt = [nat[0] * L, -nat[1] * L];
+      const l2 = (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2;
+      const local = (end === req.src && req.snk.kind === 'atom' && end.atoms.includes(req.snk.atoms[0]))
+        || (end === req.snk && req.src.kind === 'atom' && end.atoms.includes(req.src.atoms[0]));
+      return !local && l2 > 0 && Math.abs(((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / l2 - tm) > 0.245 * lineSpan(bi);
+    };
+    // a kept head at an atom (or at the atom receiving a new bond's pair) that points beside it (more than 45 degrees off
+    // the middle of its symbol; check_rules.py _head_beside) is routed again
+    const besideHead = (k: any): boolean => {
+      const tgt = req.snk.kind === 'atom' && !(req.src.kind === 'bond' && req.src.atoms.includes(req.snk.atoms[0])) ? req.snk.atoms[0]
+        : req.snk.kind === 'gap' && req.electrons !== 1 ? req.snk.atoms.find((i) => !req.src.atoms.includes(i)) : undefined;
+      if (tgt === undefined || req.snk.kind === 'gap' && req.snk.atoms.filter((i) => !req.src.atoms.includes(i)).length !== 1) return false;
+      const arrow: any = {id: 0, kind: req.electrons === 1 ? 'fishhook' : 'curved', from: k.from, to: k.to, bend: k.bend, colour: '#000000',
+        start: k.start ?? 'none', end: k.end ?? (req.electrons === 1 ? 'left' : 'full')};
+      const tip: Pt = [k.to[0] * L, -k.to[1] * L];
+      const head = (arrowShapes(arrow, f, L) as number[][][]).find((q) => q.length >= 3 && q.some((v) => dist(v as Pt, tip) < 0.5));
+      const rest = head ? head.filter((v) => dist(v as Pt, tip) >= 0.5) : [];
+      if (!rest.length) return false;
+      const u = norm([tip[0] - rest.reduce((t, v) => t + v[0], 0) / rest.length, tip[1] - rest.reduce((t, v) => t + v[1], 0) / rest.length]);
+      const own = pcs[tgt].filter((q) => !q.sign && q.text === mol.atoms[tgt].label);
+      const box = own.length ? own.reduce((a, b) => (boxDist(px[tgt], a.ink) <= boxDist(px[tgt], b.ink) ? a : b)).ink : null;
+      const c: Pt = box ? [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2] : px[tgt];
+      if (angleBetween(u, norm(sub2(c, tip))) > 45) return true;
+      // check_rules.py _reads_as_bond: nearer the middle part of a bond than its atom's symbol unless, carried on, it
+      // meets the symbol first; or, missing the symbol, it meets one of the atom's own bonds within a bond length
+      const reach = box ? boxDist(tip, box) : dist(tip, px[tgt]);
+      let near = -1, nd = 1e9;
+      mol.bonds.forEach((b: any, bi: number) => {
+        if (b.type === HBOND || b.atoms.some((x: number) => mol.atoms[x].hidden)) return;
+        const a0 = px[b.atoms[0]], a1 = px[b.atoms[1]], dx = a1[0] - a0[0], dy = a1[1] - a0[1];
+        const t = ((tip[0] - a0[0]) * dx + (tip[1] - a0[1]) * dy) / (dx * dx + dy * dy || 1);
+        if (t > 0.2 && t < 0.8) { const d = segDist(tip, a0, a1); if (d < nd) { nd = d; near = bi; } }
+      });
+      if (near >= 0 && nd < reach) {
+        const sb = box ? rayBox(tip, u, box) : null, sl = raySeg(tip, u, px[mol.bonds[near].atoms[0]], px[mol.bonds[near].atoms[1]]);
+        if (!(sb !== null && (sl === null || sb < sl))) return true;
+      } else if (box && rayBox(tip, u, box) === null)
+        for (const b of mol.bonds) {
+          if (b.type === HBOND || !b.atoms.includes(tgt) || b.atoms.some((x: number) => mol.atoms[x].hidden)) continue;
+          const sl = raySeg(tip, u, px[b.atoms[0]], px[b.atoms[1]]);
+          if (sl !== null && sl <= L) return true;
+        }
+      return false;
+    };
+    // a kept arrow that touches other ink or letters (its layout may have changed since it was routed), or whose head
+    // lies within 3 px of other ink, is routed again
+    const tightHead = (k: any): boolean => {
+      const arrow: any = {id: 0, kind: req.electrons === 1 ? 'fishhook' : 'curved', from: k.from, to: k.to, bend: k.bend, colour: '#000000',
+        start: k.start ?? 'none', end: k.end ?? (req.electrons === 1 ? 'left' : 'full')};
+      const tip: Pt = [k.to[0] * L, -k.to[1] * L];
+      const shapes = arrowShapes(arrow, f, L) as number[][][];
+      const head = shapes.find((q) => q.length >= 3 && q.some((v) => dist(v as Pt, tip) < 0.5));
+      const endAtoms = new Set([...req.src.atoms, ...req.snk.atoms]);       // the letters of its own end atoms are its targets
+      const fld = new Field(union(shapes.flat().map((v) => [v[0], v[1], v[0], v[1]] as Box)) ?? bounds, {polys: [...basePolys, ...done.flatMap((p) => p.polys)],
+        boxes: [...ink0.filter((x) => x.box && !(x.kind === 'label' && x.atoms.some((a) => endAtoms.has(a)))).map((x) => x.box!), ...rings.map(ringBox)]});
+      for (const poly of shapes) for (let j = 0; j < poly.length; j++) {
+        const p = poly[j] as Pt, q = poly[(j + 1) % poly.length] as Pt, n = Math.max(1, Math.ceil(dist(p, q)));
+        for (let k2 = 0; k2 <= n; k2++) if (fld.at([p[0] + (q[0] - p[0]) * k2 / n, p[1] + (q[1] - p[1]) * k2 / n]) < (poly === head ? 3 : 1)) return true;
+      }
+      return false;
+    };
+    const kept = opts.fixedCurved?.[req.id];
+    const retained = kept && !offMiddle(req.src, kept.from) && !offMiddle(req.snk, kept.to) && !besideHead(kept) && !tightHead(kept) ? kept : undefined;
     if (retained) {
       const arrow: any = {id: 900 + done.length, kind: req.electrons === 1 ? 'fishhook' : 'curved',
         from: retained.from, to: retained.to, bend: retained.bend, colour: '#000000', start: retained.start ?? 'none', end: retained.end ?? (req.electrons === 1 ? 'left' : 'full')};
@@ -1049,11 +1366,71 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     }
     const repairRequested = opts.repairArrows && (!opts.repairArrowIds || opts.repairArrowIds.includes(req.id));
     // Exhaust the existing route candidates before declaring an arrow undrawable.
+    // a first-pass route that breaks a rule is kept aside while the wider repair candidates are tried; the better is taken
+    let fallback: any = null;
     for (const repair of repairRequested ? [true] : [false, true]) {
-    const autoBends = repair ? [...BENDS, 0.1, -0.1, 0.24, -0.24, 0.38, -0.38, 0.52, -0.52,
-      ...(req.src.kind === 'atom' ? [.12, .14, .16, .2, .22, .26, .28, .32, .34, .36, .4, .42, .46, .5, .55, .6, .7, .8, .95, 1].flatMap((b) => [b, -b]) : [])] : BENDS;
-    const field = new Field(bounds, {polys: [...basePolys, ...done.flatMap((p) => p.polys)], boxes: textBoxes.map((b) => pad(b, 2))});
-    type Cand = {p: Pt; tag: string; t: number; tm: number; ex: number; atom?: number; pen: number};
+    // never flatter than the first default bend (0.18 of the chord): a flatter arc reads as a straight line
+    const autoBends = repair ? [...BENDS, 0.24, -0.24, 0.38, -0.38, 0.52, -0.52,
+      ...(req.src.kind === 'atom' ? [.2, .22, .26, .28, .32, .34, .36, .4, .42, .46, .5, .55, .6, .7, .8, .95, 1].flatMap((b) => [b, -b]) : [])] : BENDS;
+    // an arrow from one atom to another atom or to the gap between it and another (a proton taken across a hydrogen
+    // bond) runs along the hydrogen bond between those two atoms: that line is not its obstacle (check_rules.py
+    // _arrow_hbond leaves it out too)
+    const pair = req.src.kind === 'atom' && req.snk.kind !== 'bond' ? [...new Set([...req.src.atoms, ...req.snk.atoms])] : [];
+    const ownPolys = pair.length === 2 ? ink0.filter((x) => x.poly && !(x.kind === 'hbond' && x.atoms.length === 2
+      && x.atoms.every((a) => pair.includes(a)))).map((x) => x.poly!) : basePolys;
+    let bases: [Field, Field] = [baseField, baseInk];
+    if (ownPolys.length !== basePolys.length) {
+      const k = [...pair].sort((x, y) => x - y).join('-');
+      if (!ownBase.has(k)) ownBase.set(k, [new Field(bounds, {polys: ownPolys, boxes: textBoxes.map((b) => pad(b, 2))}), new Field(bounds, {polys: ownPolys})]);
+      bases = ownBase.get(k)!;
+    }
+    const doneFields = done.map(fieldOf);
+    const field = new FieldSet([bases[0], ...doneFields]);
+    // D192: the lines an arrow's body may cross (plain bonds and hydrogen bonds; never a wedge, hash or wavy bond)
+    const crossLines = mol.bonds.filter((b: any) => !b.stereo && !b.atoms.some((i: number) => mol.atoms[i].hidden))
+      .map((b: any) => { const p = px[b.atoms[0]], q = px[b.atoms[1]];
+        return {p, q, hb: b.type === HBOND, x0: Math.min(p[0], q[0]), x1: Math.max(p[0], q[0]), y0: Math.min(p[1], q[1]), y1: Math.max(p[1], q[1])}; });
+    // the two fishhooks of one forming bond meet tip to tip: the second ends at the head of the first, facing it, and near
+    // that head the first is no obstacle (it must still not be touched)
+    const mate = req.electrons === 1 && req.snk.kind === 'gap' ? done.find((q) => q.req.electrons === 1 && q.req.snk.kind === 'gap' &&
+      req.snk.atoms.every((i) => q.req.snk.atoms.includes(i))) : undefined;
+    const meetAt: Pt | null = mate ? [mate.arrow.to[0] * L, -mate.arrow.to[1] * L] : null;
+    const matePath = mate ? arrowPath(mate.arrow, L) as Pt[] : [];
+    const mateDir: Pt | null = mate ? norm([matePath[matePath.length - 1][0] - matePath[Math.max(0, matePath.length - 3)][0], matePath[matePath.length - 1][1] - matePath[Math.max(0, matePath.length - 3)][1]]) : null;
+    const fieldNoMate = mate ? new FieldSet([bases[0], ...done.filter((q) => q !== mate).map(fieldOf)]) : field;
+    const mateField = mate ? fieldOf(mate) : null;
+    const at = (p: Pt) => (meetAt && dist(p, meetAt) < MEET_FREE * L ? fieldNoMate : field).at(p);
+    // the drawn ink alone (no letters): what lies under the body or inside the head is measured against it
+    const inkField = new FieldSet([bases[1], ...doneFields]);
+    const inkNoMate = mate ? new FieldSet([bases[1], ...done.filter((q) => q !== mate).map(fieldOf)]) : inkField;
+    const inkAt = (p: Pt) => (meetAt && dist(p, meetAt) < MEET_FREE * L ? inkNoMate : inkField).at(p);
+    const inkAtXY = (x: number, y: number) => (meetAt && Math.hypot(x - meetAt[0], y - meetAt[1]) < MEET_FREE * L ? inkNoMate : inkField).atXY(x, y);
+    // the clearance a sample keeps, as check_rules.py measures it: the padded field (letters 2 px larger) where it gives
+    // 2 px or more; nearer, the drawn ink and each letter's own box, inside which the clearance is minus the depth (a
+    // route through a letter costs more than one that grazes it)
+    const clearAt = (p: Pt): number => {
+      const a = at(p);
+      if (a >= 2) return a;
+      let t = inkAt(p);
+      for (const b of textBoxes) {
+        const dx = Math.max(b[0] - p[0], p[0] - b[2]), dy = Math.max(b[1] - p[1], p[1] - b[3]);
+        t = Math.min(t, dx > 0 || dy > 0 ? Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) : Math.max(dx, dy));
+      }
+      return t;
+    };
+    // the clearance on the padded scale (letters 2 px larger), carried on toward and into a letter as its true distance less
+    // 2 px: it falls as a route comes nearer, so it ranks routes; clearAt gives the true distance, which the rule judges
+    const rankAt = (p: Pt, pd: number): number => {
+      if (pd >= 2) return pd;
+      let t = pd;
+      for (const b of textBoxes) {
+        const dx = Math.max(b[0] - p[0], p[0] - b[2]), dy = Math.max(b[1] - p[1], p[1] - b[3]);
+        const d = (dx > 0 || dy > 0 ? Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) : Math.max(dx, dy)) - 2;
+        if (d < t) t = d;
+      }
+      return t;
+    };
+    type Cand = {p: Pt; tag: string; t: number; tm: number; ex: number; atom?: number; pen: number; fail?: number};
     const ends = (side: End, gapAtom: number, extras: number[]): Cand[] => {
       const out: Cand[] = [];
       if (side.kind === 'atom') {
@@ -1073,7 +1450,7 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         }
         // a head that points at a bare vertex ends close to it: there is no letter to point at
         const bareHead = side === req.snk && !atomBox(side.atoms[0]);
-        for (const gap of (bareHead ? (repair ? [BARE_HEAD_GAP * L, 0.1 * L] : [BARE_HEAD_GAP * L]) : repair ? [gapAtom, 0.1 * L, 0.25 * L] : [gapAtom])) for (const ang of radial(repair ? 48 : 24)) { const p = boundary(side.atoms[0], ang, gap); out.push({p, tag: `a${Math.round((ang * 180) / Math.PI)}${repair ? ':' + gap : ''}`, t: 0.5, tm: 0.5, ex: 0, atom: side.atoms[0], pen: aim(p, side) + misread(p, side) + besideMates(side.atoms[0], p)}); }
+        for (const gap of (bareHead ? (repair ? [BARE_HEAD_GAP * L, 0.1 * L, 0.13 * L, 0.16 * L] : [BARE_HEAD_GAP * L]) : repair ? [gapAtom, 0.1 * L, 0.25 * L] : [gapAtom])) for (const ang of radial(repair ? 48 : 24)) { const p = boundary(side.atoms[0], ang, gap); out.push({p, tag: `a${Math.round((ang * 180) / Math.PI)}${repair ? ':' + gap : ''}`, t: 0.5, tm: 0.5, ex: 0, atom: side.atoms[0], pen: aim(p, side) + misread(p, side) + besideMates(side.atoms[0], p)}); }
         return out;
       }
       if (side.kind === 'gap') {
@@ -1082,28 +1459,43 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         const receivers = side.atoms.filter((i) => !req.src.atoms.includes(i));
         if (req.electrons !== 1 && receivers.length === 1) {
           const asAtom: End = {kind: 'atom', atoms: receivers};
-          const gapR = atomBox(receivers[0]) ? gapAtom : BARE_HEAD_GAP * L;
-          for (const ang of radial(repair ? 48 : 24)) { const p = boundary(receivers[0], ang, gapR); out.push({p, tag: `to-atom a${Math.round((ang * 180) / Math.PI)}`, t: .5, tm: .5, ex: 0, atom: receivers[0], pen: aim(p, asAtom) + misread(p, asAtom) + besideMates(receivers[0], p)}); }
+          // a bare receiving vertex: in repair, heads may also end a little farther out, clear of its bonds (still within
+          // check_rules.py BARE_HEAD_REACH)
+          const gaps = atomBox(receivers[0]) ? [gapAtom] : repair ? [BARE_HEAD_GAP * L, 0.1 * L, 0.13 * L, 0.16 * L] : [BARE_HEAD_GAP * L];
+          for (const gapR of gaps) for (const ang of radial(repair ? 48 : 24)) { const p = boundary(receivers[0], ang, gapR); out.push({p, tag: `to-atom a${Math.round((ang * 180) / Math.PI)}${gapR !== gaps[0] ? ':' + (gapR / L).toFixed(2) : ''}`, t: .5, tm: .5, ex: 0, atom: receivers[0], pen: aim(p, asAtom) + misread(p, asAtom) + besideMates(receivers[0], p)}); }
           return out;
         }
         const fractions = req.electrons === 1 ? [.5, .45, .55, .3, .7] : [.5, .4, .6, .3, .7, ...(repair ? [.26, .35, .65, .74] : [])];
         const offsets = req.electrons === 1 ? [0, .08 * L, -.08 * L] : [0, .08 * L, -.08 * L, .18 * L, -.18 * L, ...(repair ? [.195 * L, -.195 * L, .199 * L, -.199 * L] : [])];
+        const meet = (p: Pt) => (meetAt ? Math.max(0, dist(p, meetAt) - MEET * L) * 60 : 0);
         for (const t of fractions) for (const off of offsets) {
           const p: Pt = [a[0] + dx * t - dy / len * off, a[1] + dy * t + dx / len * off];
-          out.push({p, tag: `gap:${t}:${off}`, t, tm: .5, ex: 0, pen: Math.abs(t - .5) * 60});
+          out.push({p, tag: `gap:${t}:${off}`, t, tm: .5, ex: 0, pen: Math.abs(t - .5) * 60 + meet(p) + aim(p, side)});
+        }
+        if (meetAt) for (const r of [.06, .08, .1]) for (const ang of radial(16)) {
+          const p: Pt = [meetAt[0] + r * L * Math.cos(ang), meetAt[1] + r * L * Math.sin(ang)];
+          // inside the gap's band (check_rules electron_flow: 25-75 % along it, within 0.2 bond of its line)
+          const t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (len * len), off = Math.abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / len;
+          if (t >= .28 && t <= .72 && off <= .17 * L) out.push({p, tag: `meet:${r}:${Math.round((ang * 180) / Math.PI)}`, t, tm: .5, ex: 0, pen: aim(p, side)});
         }
         return out;
       }
       const bi = bondIndex(side.atoms[0], side.atoms[1]);
       if (bi < 0) { problems.push(`arrow ${req.id}: no bond between the atoms of its ${side === req.src ? 'start' : 'end'}`); return out; }
       // the middle of the visible line (a bond that stops at a letter), else the atom-to-atom middle
-      const v = bondVisible(mol, d0, ctx, cls, bi), tm = v ? (v.s0 + v.s1) / 2 / v.len : 0.5;
+      const tm = lineMiddle(bi), span = lineSpan(bi);
+      // an end outside the middle half of the drawn line fails arrows_ends (BOND_END_OFF 0.25): it costs as much as ink a
+      // few px too close (hard), which passes; a short hook from a bond onto its own atom is exempt there and here
+      const hookTail = side === req.src && req.snk.kind === 'atom' && side.atoms.includes(req.snk.atoms[0]);
+      const hookHead = side === req.snk && req.src.kind === 'atom' && side.atoms.includes(req.src.atoms[0]);
+      const band = (t: number) => (!hookTail && !hookHead && Math.abs(t - tm) > 0.245 * span ? 1 : 0);
       // A standard-length bond between two labels has a short visible middle.
       // Keep a positive ink gap while allowing its arrow to read as that bond.
       if (atomBox(side.atoms[0]) && atomBox(side.atoms[1])) extras = [...extras, 0.02 * L, 0.04 * L];
-      for (const dt of (repair ? [0, -0.04, 0.04, -0.08, 0.08, -0.12, 0.12, -0.16, 0.16, -0.24, 0.24] : [0, -0.08, 0.08, -0.16, 0.16, 0.24])) for (const sd of [1, -1]) for (const ex of (repair ? [...extras, 0.08 * L, 0.1 * L] : extras)) {
+      // the tail or head sits at the middle of the bond's visible line; off it only where the middle is blocked (T_OFF)
+      for (const dt of (repair ? [0, -0.04, 0.04, -0.08, 0.08, -0.12, 0.12, -0.16, 0.16, -0.24, 0.24] : [0, -0.04, 0.04, -0.08, 0.08, -0.16, 0.16, -0.24, 0.24])) for (const sd of [1, -1]) for (const ex of (repair ? [...extras, 0.08 * L, 0.1 * L] : extras)) {
         const t = +(tm + dt).toFixed(3), p = bondEnd(bi, t, sd, ex);
-        out.push({p, tag: `b t=${t} side=${sd > 0 ? '+' : '-'} off=${(ex / L).toFixed(2)}L`, t, tm, ex, pen: aim(p, side) + misread(p, side)});
+        out.push({p, tag: `b t=${t} side=${sd > 0 ? '+' : '-'} off=${(ex / L).toFixed(2)}L`, t, tm, ex, pen: aim(p, side) + misread(p, side), fail: band(t)});
       }
       return out;
     };
@@ -1137,16 +1529,27 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
       const chord = dist(s.p, e.p);
       // a short local hook keeps at least the ends' distance of the shortest one that still reads as an arrow (0.42 L;
       // a tighter curl hides its line behind the head)
-      if (chord < (compactHook ? 0.12 : ownEndHook ? 0.42 : 0.28) * L || chord > (repair ? 4.5 : 3.2) * L) continue;
+      if (chord < (compactHook ? 0.12 : ownEndHook ? 0.42 : 0.28) * L || (!repair && chord > 3.2 * L)) continue;
       const amb = (s.atom !== undefined ? chargeAmbiguity(s.p, s.atom) : 0) + (e.atom !== undefined ? chargeAmbiguity(e.p, e.atom) : 0);
       const key = s.tag + '|' + e.tag;
       // The part of the cost known before a route is traced: the gap at its two end points (its first and last points,
       // as arrowPath makes them), the ends' terms, the chord and the bend, summed in the cost's order; the cost only adds
       // terms >= 0 to them.  Ends (with the smallest bend) or a bend already past the best route plus a seat's full cost
       // are never taken and are not traced (the bound of the centerline test below).
-      const nFrom = native(s.p), nTo = native(e.p), endGap = Math.min(field.at([nFrom[0] * L, -nFrom[1] * L]), field.at([nTo[0] * L, -nTo[1] * L]));
-      const pre = (endGap < 5.5 ? (5.5 - endGap) * 1e4 : 0) + amb + s.pen + e.pen + Math.max(0, wishChord - chord) * 2.5;
-      const preEx = (s.ex + e.ex) * 1.2, preT = (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
+      const nFrom = native(s.p), nTo = native(e.p), endGap = Math.min(at([nFrom[0] * L, -nFrom[1] * L]), at([nTo[0] * L, -nTo[1] * L]));
+      // a bond's electrons onto one of its own atoms: past 70 degrees from the bond it breaks a rule, past HOOK_DEV it costs
+      let hookPre = 0;
+      if (req.src.kind === 'bond' && e.atom !== undefined && req.src.atoms.includes(e.atom)) {
+        const j = req.src.atoms.find((x) => x !== e.atom)!;
+        if (angleBetween(norm(sub2(px[j], px[e.atom])), norm(sub2(e.p, px[e.atom]))) > 70) hookPre += 2e5;
+      }
+      if (req.src.kind === 'bond' && req.snk.kind === 'atom' && req.src.atoms.includes(req.snk.atoms[0])) {
+        const i = req.snk.atoms[0], j = req.src.atoms.find((x) => x !== i)!;
+        const dev = angleBetween(norm(sub2(px[j], px[i])), norm(sub2(e.p, px[i])));
+        if (dev > HOOK_DEV) hookPre += (dev - HOOK_DEV) * 30;
+      }
+      const pre = (endGap < 5.5 ? (5.5 - endGap) * 1e4 : 0) + hookPre + amb + s.pen + e.pen + Math.max(0, wishChord - chord) * 2.5;
+      const preEx = (s.ex + e.ex) * 1.2, preT = (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * T_OFF;
       const known = (b: number) => pre + b * 18 + preEx + preT;
       if (bestFree && known(bendMin) > bestFree.cost + (seatField ? 100 : 0)) continue;
       for (const bend of bends) {
@@ -1157,10 +1560,53 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         let len = 0; for (let k = 1; k < path.length; k++) len += dist(path[k - 1], path[k]);
         if (len < minLen) continue;
         if ((repair || req.snk.kind === 'gap') && len > 2 * chord) continue;
+        // the side of a local arrow and a loop are known from the path alone (the same terms as the cost below)
+        const midW = path[Math.floor(path.length / 2)], halfW: Pt = [(s.p[0] + e.p[0]) / 2, (s.p[1] + e.p[1]) / 2];
+        const pivotW = tight ? px[req.src.atoms.find((x) => req.snk.atoms.includes(x))!] : null;
+        const sideW = (q: Pt) => (e.p[0] - s.p[0]) * (q[1] - s.p[1]) - (e.p[1] - s.p[1]) * (q[0] - s.p[0]);
+        const wrongW = (pivotW && (midW[0] - halfW[0]) * (pivotW[0] - halfW[0]) + (midW[1] - halfW[1]) * (pivotW[1] - halfW[1]) > 0 ? 1e6 : 0)
+          + (localBond && sideW(midW) * sideW(localBond) > 0 ? 1e6 : 0) + (len > 2.0 * chord ? 2e5 : 0);
+        if (bestFree && hookPre + wrongW > bestFree.cost + (seatField ? 100 : 0)) continue;
+        const polys = arrowShapes(a, f, L) as number[][][];
+        // the head is measured along its edges (a corner-only sample misses an edge lying on a bond)
+        const headPoly = polys.find((q) => q.length >= 3 && q.some((v) => dist(v as Pt, e.p) < 0.1));
+        // D192 (check_rules.py _arrow_crossings): the body may cross a plain bond's or a hydrogen bond's line once,
+        // through its middle (a quarter of it from either atom), at 30 degrees or more, no letter within 2 pt; the
+        // contact there is not a touch, only a small cost (a route that need not cross is still preferred)
+        const headLen = headPoly ? Math.max(...headPoly.map((v) => dist(v as Pt, e.p))) : 0;
+        const body = path.filter((p) => dist(p, e.p) > headLen);
+        const crossAt: {x: Pt; r: number; p: Pt; q: Pt}[] = [];
+        let crossCost = 0;
+        // (only the lines whose box meets the body's box can cross it)
+        let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
+        for (const p of body) { if (p[0] < bx0) bx0 = p[0]; if (p[0] > bx1) bx1 = p[0]; if (p[1] < by0) by0 = p[1]; if (p[1] > by1) by1 = p[1]; }
+        for (const ln of crossLines) {
+          if (ln.x1 < bx0 || ln.x0 > bx1 || ln.y1 < by0 || ln.y0 > by1) continue;
+          const hits: {t: number; ang: number; x: Pt}[] = [];
+          const e0 = ln.q[0] - ln.p[0], e1 = ln.q[1] - ln.p[1];
+          for (let k = 1; k < body.length; k++) {
+            const u = body[k - 1], v = body[k], a0 = v[0] - u[0], a1 = v[1] - u[1], den = a0 * e1 - a1 * e0;
+            if (Math.abs(den) < 1e-9) continue;
+            const w0 = ln.p[0] - u[0], w1 = ln.p[1] - u[1], s1 = (w0 * e1 - w1 * e0) / den, t = (w0 * a1 - w1 * a0) / den;
+            if (s1 < 0 || s1 >= 1 || t <= 0 || t >= 1) continue;
+            const c = Math.abs(a0 * e0 + a1 * e1) / ((Math.hypot(a0, a1) * Math.hypot(e0, e1)) || 1);
+            hits.push({t, ang: (Math.acos(Math.min(1, c)) * 180) / Math.PI, x: [u[0] + s1 * a0, u[1] + s1 * a1]});
+          }
+          if (hits.length !== 1) continue;
+          const {t, ang, x} = hits[0];
+          if (t < 0.25 || t > 0.75 || ang < 30 || textBoxes.some((b) => boxDist(x, b) < 2 * ctx.pt)) continue;
+          crossAt.push({x, r: (2 / Math.sin((ang * Math.PI) / 180) + 2) * ctx.pt, p: ln.p, q: ln.q});
+          crossCost += ln.hb ? 60 : 120;
+        }
+        // near a clean crossing a sample whose nearest ink is the crossed line itself is no contact; any other ink there
+        // (another arrow, a charge ring, a letter) still is (check_rules.py exempts that one bond only)
+        const crossing = (q: Pt, dd: number) => crossAt.some((c) => dist(q, c.x) <= c.r && dd >= segDist(q, c.p, c.q) - f.line / 2 - 1);
+        // each sample as the cost below measures it (the ranking scale, a clean crossing left out): the bounds stay below the cost
+        const boundAt = (p: Pt) => { const pd = at(p); return crossAt.length && crossing(p, pd >= 2 ? pd : clearAt(p)) ? 1e9 : rankAt(p, pd); };
         // A seat costs at most 60 + 4 * 10. Even the best route's full seat penalty cannot rescue this path.
         // Sample the centerline first; surviving candidates keep the original order of all cost additions.
         if (bestFree && path.some((p) => {
-          const dd = field.at(p), hard = dd < 5.5 ? (5.5 - dd) * 1e4 : 0;
+          const dd = boundAt(p), hard = dd < 5.5 ? (5.5 - dd) * 1e4 : 0;
           return hard > bestFree.cost + (seatField ? 100 : 0);
         })) continue;
         // the deliberate gaps at both ends (within 0.17 bond length of the end points) are not penalized again
@@ -1171,40 +1617,93 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         // the same bound with what the centerline alone gives (its gaps and softness, the length terms), in the cost's order
         if (bestFree) {
           let lineWorst = 1e9, lineSoft = 0;
-          for (const p of path) { const dd = field.at(p); if (dd < lineWorst) lineWorst = dd; if (dd < 8 && !exempt(p)) lineSoft += (8 - dd) * 0.5; }
-          if ((lineWorst < 5.5 ? (5.5 - lineWorst) * 1e4 : 0) + amb + loop + s.pen + e.pen + lineSoft * 20 + len * 0.04 + Math.max(0, wishLen - len) * 1.5
-            + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45 > bestFree.cost + (seatField ? 100 : 0)) continue;
+          for (const p of path) { const pd = at(p), dd = boundAt(p); if (dd < lineWorst) lineWorst = dd; if (pd < 8 && !exempt(p)) lineSoft += (8 - pd) * 0.5; }
+          if (hookPre + wrongW + (lineWorst < 5.5 ? (5.5 - lineWorst) * 1e4 : 0) + amb + loop + s.pen + e.pen + lineSoft * 20 + len * 0.04 + Math.max(0, wishLen - len) * 1.5
+            + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * T_OFF > bestFree.cost + (seatField ? 100 : 0)) continue;
         }
-        const polys = arrowShapes(a, f, L) as number[][][];
-        let worst = 1e9, soft = 0;
+        // the head's clearance is its own term: a head on a bond (check_rules.py _head_on_bond) costs even where another
+        // part of the arrow is already tight
+        let worst = 1e9, headWorst = 1e9, soft = 0, worstExact = 1e9, headExact = 1e9;
+        // every term of the cost is >= 0: the terms known before sampling, with the gaps and softness measured so far, are a
+        // lower bound of it, and a route already past the best one (with a seat's full cost) is left as soon as it shows
+        const lim = bestFree ? bestFree.cost + (seatField ? 100 : 0) : Infinity;
+        const known0 = crossCost + wrongW + hookPre + amb + loop + s.pen + e.pen + len * 0.04 + Math.max(0, wishLen - len) * 1.5
+          + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * T_OFF;
+        const past = () => known0 + (worst < 5.5 ? (5.5 - worst) * 1e4 : 0) + (headWorst < 5.5 ? (5.5 - headWorst) * 1e4 : 0)
+          + (Math.min(worstExact, headExact) < 1 ? 2e5 : 0) + soft * 20 > lim;
         for (const poly of polys) for (let j = 0; j < poly.length; j++) {
           const p = poly[j] as Pt, q = poly[(j + 1) % poly.length] as Pt;
-          const count = repair ? Math.max(1, Math.ceil(dist(p, q) / 2)) : 1;
+          // every edge every 2 px (1 px on the head): a corner-only sample misses a hydrogen bond's dot under an edge
+          const count = Math.max(1, Math.ceil(dist(p, q) / (poly === headPoly ? 1 : 2)));
           for (let k = 0; k < count; k++) {
             const sample: Pt = [p[0] + (q[0] - p[0]) * k / count, p[1] + (q[1] - p[1]) * k / count];
-            const dd = field.at(sample); if (dd < worst) worst = dd; if (dd < 8 && !exempt(sample)) soft += (8 - dd) / count;
+            const pd = at(sample), dx = pd >= 2 ? pd : clearAt(sample), dr = rankAt(sample, pd);
+            if (poly === headPoly) { if (dr < headWorst) headWorst = dr; if (dx < headExact) headExact = dx; }
+            else if ((dr < worst || dx < worstExact) && !(crossAt.length && crossing(sample, dx))) { if (dr < worst) worst = dr; if (dx < worstExact) worstExact = dx; }
+            if (pd < 8 && !exempt(sample)) soft += (8 - pd) / count;
           }
         }
-        for (const p of path) { const dd = field.at(p); if (dd < worst) worst = dd; if (dd < 8 && !exempt(p)) soft += (8 - dd) * 0.5; }
+        for (const p of path) {
+          const pd = at(p), dx = pd >= 2 ? pd : clearAt(p), dr = rankAt(p, pd);
+          if ((dr < worst || dx < worstExact) && !(crossAt.length && crossing(p, dx))) { if (dr < worst) worst = dr; if (dx < worstExact) worstExact = dx; }
+          if (pd < 8 && !exempt(p)) soft += (8 - pd) * 0.5;
+        }
+        if (bestFree && past()) continue;
+        // ink under the body or inside the head, between their edges (a hydrogen bond's dot, 0.3 pt across), is missed
+        // by the edge samples, but check_rules.py sees it: the centerline every 1 px less half the line (not its first
+        // 3 px, at the arrow's own source) and the inside of the head every 1 px, against the drawn ink alone (letters
+        // are boxes on the edge samples, so the set gap between a head and its atom's letter is not a contact)
+        let gone = false;
+        for (let k = 1; k < path.length && !gone; k++) {
+          const p0 = path[k - 1], p1 = path[k], n = Math.ceil(dist(p0, p1));
+          for (let j = 0; j < n; j++) {
+            const qx = p0[0] + (p1[0] - p0[0]) * j / n, qy = p0[1] + (p1[1] - p0[1]) * j / n;
+            if (Math.hypot(qx - path[0][0], qy - path[0][1]) < 3) continue;
+            const dd = inkAtXY(qx, qy) - f.line / 2;
+            if ((dd < worst || dd < worstExact) && !(crossAt.length && crossing([qx, qy], dd))) { if (dd < worst) worst = dd; if (dd < worstExact) worstExact = dd; }
+          }
+          if (bestFree && past()) gone = true;
+        }
+        if (gone) continue;
+        if (headPoly) {
+          const hx = headPoly.map((v) => v[0]), hy = headPoly.map((v) => v[1]), hx1 = Math.max(...hx), hy1 = Math.max(...hy), hy0 = Math.floor(Math.min(...hy));
+          for (let x = Math.floor(Math.min(...hx)); x <= hx1; x++) for (let y = hy0; y <= hy1; y++) {
+            let inside = false;
+            for (let a = 0, b = headPoly.length - 1; a < headPoly.length; b = a++) {
+              const [xa, ya] = headPoly[a], [xb, yb] = headPoly[b];
+              if ((ya > y) !== (yb > y) && x < ((xb - xa) * (y - ya)) / (yb - ya) + xa) inside = !inside;
+            }
+            if (inside) { const dd = inkAtXY(x, y); if (dd < headWorst) headWorst = dd; if (dd < headExact) headExact = dd; }
+          }
+        }
+        // the second fishhook of a forming bond does not touch the first, and its head faces the first's head
+        let mateGap = 1e9;
+        if (mateField) for (const poly of polys) for (const v of poly) mateGap = Math.min(mateGap, mateField.at(v as Pt));
+        const nP = path.length, uIn = norm([path[nP - 1][0] - path[Math.max(0, nP - 3)][0], path[nP - 1][1] - path[Math.max(0, nP - 3)][1]]);
+        const facing = mateDir ? Math.max(0, uIn[0] * mateDir[0] + uIn[1] * mateDir[1] + 0.5) * 400 : 0;
+        const touchMate = mateGap < 2 ? (2 - mateGap) * 1e4 : 0;
         // the end points must keep a visible gap (>= 5 px) to the nearest ink, and so must the rest
-        const hard = worst < 5.5 ? (5.5 - worst) * 1e4 : 0;
+        const hard = (worst < 5.5 ? (5.5 - worst) * 1e4 : 0) + (headWorst < 5.5 ? (5.5 - headWorst) * 1e4 : 0);
+        worst = Math.min(worst, headWorst);
         const prev = withEnds.get(key);
         // a number's seat costs only where the arrow's body crosses it, not near its ends (an arrow end never moves for a number)
         let seat = 0;
         if (seatField) { let m = 1e9; for (const poly of polys) for (const p of poly) if (dist(p as Pt, s.p) > 0.45 * L && dist(p as Pt, e.p) > 0.45 * L) m = Math.min(m, seatField.at(p as Pt)); if (m < 4) seat = 60 + (4 - m) * 10; }
         // the head points at its target (an atom's center, or the nearest point of a bond's axis) and the tail leaves its source
         const n = path.length, tEnd = norm([path[n - 1][0] - path[Math.max(0, n - 3)][0], path[n - 1][1] - path[Math.max(0, n - 3)][1]]), tStart = norm([path[Math.min(n - 1, 2)][0] - path[0][0], path[Math.min(n - 1, 2)][1] - path[0][1]]);
-        const headDev = angleBetween(tEnd, norm(sub2(targetPoint(req.snk, e.p), e.p))), tailDev = angleBetween(tStart, norm(sub2(s.p, targetPoint(req.src, s.p))));
-        const aimDir = (headDev > 25 ? (headDev - 25) * 6 : 0) + (tailDev > 75 ? (tailDev - 75) * 2 : 0);
-        // a head beside a symbol whose line, carried on, misses the symbol and meets one of that atom's bonds within a bond
-        // length reads as pointing at the bond (check_rules.py arrows_ends; harness_rsi D538, D539)
-        let atBond = 0;
         const own = e.atom !== undefined ? pcs[e.atom].filter((q) => !q.sign && q.text === mol.atoms[e.atom].label) : [];
         const box = own.length ? own.reduce((a, b) => (boxDist(px[e.atom], a.ink) <= boxDist(px[e.atom], b.ink) ? a : b)).ink : e.atom !== undefined ? atomBox(e.atom) : null;   // the glyph ink, as check_rules.py measures it
         // the head's direction as drawn: from the middle of the head polygon's other corners to its tip (check_rules.py _head_dir)
         const head = polys.find((q) => q.length >= 3 && q.some((v) => dist(v as Pt, e.p) < 0.1));
         const rest = head ? head.filter((v) => dist(v as Pt, e.p) >= 0.1) : [];
         const uHead = rest.length ? norm([e.p[0] - rest.reduce((t, v) => t + v[0], 0) / rest.length, e.p[1] - rest.reduce((t, v) => t + v[1], 0) / rest.length]) : tEnd;
+        // a head at an atom points, as drawn, at the middle of its symbol (check_rules.py _head_beside); elsewhere along the path
+        const headDev = e.atom !== undefined ? angleBetween(uHead, norm(sub2(box ? [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2] : px[e.atom], e.p)))
+          : angleBetween(tEnd, norm(sub2(targetPoint(req.snk, e.p), e.p))), tailDev = angleBetween(tStart, norm(sub2(s.p, targetPoint(req.src, s.p))));
+        const aimDir = (headDev > HEAD_DEV ? (headDev - HEAD_DEV) * (e.atom !== undefined ? 15 : 6) : 0) + (tailDev > 75 ? (tailDev - 75) * 2 : 0);
+        // a head beside a symbol whose line, carried on, misses the symbol and meets one of that atom's bonds within a bond
+        // length reads as pointing at the bond (check_rules.py arrows_ends; harness_rsi D538, D539)
+        let atBond = 0;
         if (box && rayBox(e.p, uHead, box) === null)
           for (const b of mol.bonds) {
             if (b.type === HBOND || !b.atoms.includes(e.atom) || b.atoms.some((x: number) => mol.atoms[x].hidden)) continue;
@@ -1219,19 +1718,73 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         // its concave side faces the bond and the atom
         const side = (q: Pt) => (e.p[0] - s.p[0]) * (q[1] - s.p[1]) - (e.p[1] - s.p[1]) * (q[0] - s.p[0]);
         const outward = localBond && side(mid) * side(localBond) > 0 ? 1e6 : 0;
-        const cost = inward + outward + hard + amb + aimDir + atBond + loop + s.pen + e.pen + soft * 20 + len * 0.04 + Math.max(0, wishLen - len) * 1.5 + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * 45;
-        const cand = {a, polys, cost, seat, worst, len, chord, s: s.tag, e: e.tag, hard, key, wrongSide: inward + outward};
+        // a short arrow (ends within 1.2 bonds) reads as a curve only with a clear bulge: at least 0.3 of its chord
+        const shallow = !compactHook && !ownEndHook && chord < 1.2 * L && Math.abs(bend) < 0.3 ? (0.3 - Math.abs(bend)) * 400 : 0;
+        // a bond's electrons moving onto one of its own atoms: the head reaches that atom from the bond's side, within
+        // HOOK_DEV degrees of the bond, not round past the atom
+        let around = 0;
+        if (req.src.kind === 'bond' && req.snk.kind === 'atom' && req.src.atoms.includes(req.snk.atoms[0])) {
+          const i = req.snk.atoms[0], j = req.src.atoms.find((x) => x !== i)!;
+          const dev = angleBetween(norm(sub2(px[j], px[i])), norm(sub2(e.p, px[i])));
+          if (dev > HOOK_DEV) around = (dev - HOOK_DEV) * 30;
+        }
+        // the rules the checks judge, measured as they measure them (D191): each broken one ranks the route below every
+        // route that breaks fewer, whatever the weights below; the weights only order routes that break as many
+        const ownHook = req.src.kind === 'bond' && e.atom !== undefined && req.src.atoms.includes(e.atom);
+        const broken: string[] = [];
+        if (Math.min(worstExact, headExact) < 1) broken.push('touches ink');                              // overlap_arrow_*
+        if (mateField && mateGap < 1) broken.push('touches its partner');
+        if (!(req.electrons === 1 && req.src.kind === 'atom') && !matches(s.p, req.src) || !matches(e.p, req.snk))
+          broken.push('end reads as another atom or bond');                                                 // arrows_ends
+        if (meetAt && dist(e.p, meetAt) > 0.15 * L) broken.push('fishhook heads apart');                    // electron_flow MEET_BONDS
+        if (s.fail || e.fail) broken.push('end off the middle of its bond');                              // arrows_ends
+        if (e.atom !== undefined && !ownHook && headDev > 45) broken.push('head beside its atom');        // _head_beside
+        if (e.atom !== undefined && !ownHook && headPoly) {                                               // _head_on_bond
+          const lines = mol.bonds.map((b: any, bi: number) => (b.type !== HBOND && b.atoms.includes(e.atom) ? drawnLines(bi) : [])).flat();
+          let g = 1e9;
+          for (let j = 0; j < headPoly.length && g >= 4.05; j++) {
+            const p = headPoly[j] as Pt, q = headPoly[(j + 1) % headPoly.length] as Pt, m = Math.max(1, Math.ceil(dist(p, q)));
+            for (let k = 0; k <= m; k++) { const x: Pt = [p[0] + (q[0] - p[0]) * k / m, p[1] + (q[1] - p[1]) * k / m]; for (const [u, v] of lines) g = Math.min(g, segDist(x, u, v) - f.line / 2); }
+          }
+          if (g < 4.05) broken.push('head on a bond of its atom');
+        }
+        if (e.atom !== undefined) {                                                         // _reads_as_bond (hooks too)
+          // the head is nearer to the middle part (0.2-0.8) of a bond than to its atom's symbol (the vertex of a bare atom),
+          // unless, carried on, it meets the symbol before that bond
+          const reach = box ? boxDist(e.p, box) : dist(e.p, px[e.atom]);
+          let near = -1, nd = 1e9;
+          mol.bonds.forEach((b: any, bi: number) => {
+            if (b.type === HBOND || b.atoms.some((x: number) => mol.atoms[x].hidden)) return;
+            const a0 = px[b.atoms[0]], a1 = px[b.atoms[1]], dx = a1[0] - a0[0], dy = a1[1] - a0[1];
+            const t = ((e.p[0] - a0[0]) * dx + (e.p[1] - a0[1]) * dy) / (dx * dx + dy * dy || 1);
+            if (t > 0.2 && t < 0.8) { const d = segDist(e.p, a0, a1); if (d < nd) { nd = d; near = bi; } }
+          });
+          if (near >= 0 && nd < reach) {
+            const sb = box ? rayBox(e.p, uHead, box) : null, sl = raySeg(e.p, uHead, px[mol.bonds[near].atoms[0]], px[mol.bonds[near].atoms[1]]);
+            if (!(sb !== null && (sl === null || sb < sl))) broken.push('head reads as pointing at a bond');
+          } else if (atBond) broken.push('head points at a bond of its atom');
+        }
+        if (ownHook) {                                                                                    // HOOK_DEV_MAX
+          const j = req.src.atoms.find((x) => x !== e.atom)!;
+          if (angleBetween(norm(sub2(px[j], px[e.atom!])), norm(sub2(e.p, px[e.atom!]))) > 70) broken.push('hook past its atom');
+        }
+        if (len > 2.0 * chord) broken.push('a loop');                                                    // arrows_shape
+        const cost = broken.length * 2e5 + crossCost + inward + outward + hard + touchMate + facing + shallow + around + amb + aimDir + atBond + loop + s.pen + e.pen + soft * 20 + len * 0.04 + Math.max(0, wishLen - len) * 1.5 + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * T_OFF;
+        const cand = {a, polys, cost, seat, worst, len, chord, s: s.tag, e: e.tag, hard, key, wrongSide: inward + outward, broken};
         if (!bestFree || cost < bestFree.cost) bestFree = cand;
         if (!prev || cost + seat < prev.cost + prev.seat) withEnds.set(key, cand);
       }
     }
     // Keep a manual bend whose route keeps clear of the ink and, for a local arrow, bulges to its proper side; otherwise
     // the automatic bends are tried as well and the cheapest route wins.
-    if (bestFree && !bestFree.hard && !bestFree.wrongSide) break;
+    if (bestFree && !bestFree.hard && !bestFree.wrongSide && !bestFree.broken.length) break;
     }
-    const best = bestFree ? withEnds.get(bestFree.key) : null;
+    let best = bestFree ? withEnds.get(bestFree.key) : null;
+    if (best && best.broken.length && !repair) { fallback = best; continue; }
+    if (fallback && (!best || fallback.cost + fallback.seat < best.cost + best.seat)) best = fallback;
     if (!best) { if (repair) problems.push(`arrow ${req.id}: no route found`); continue; }
     if (best.hard > 0) problems.push(`arrow ${req.id}: best route comes within ${r2(best.worst)} px of other ink`);
+    if (best.broken.length) problems.push(`arrow ${req.id}: no route keeps every rule (${best.broken.join(', ')})`);
     done.push({req, arrow: best.a, polys: best.polys, info: {start: best.s, end: best.e, bend: best.a.bend, length_bonds: r2(best.len / L, 1000), chord_bonds: r2(best.chord / L, 1000), min_gap_px: r2(best.worst), cost: r2(best.cost, 10), seat_cost: r2(best.seat, 10), bend_without_seats: bestFree.a.bend}});
     break;
     }
@@ -1373,15 +1926,16 @@ function fitBoxes(mol: any, ctx: Ctx, tsFrames: any[] = []) {
 function placeNumbers(mol: any, ctx: Ctx, job: any, curvedPolys: number[][][], dry = false) {
   const {f, measure, pt, style, capWidth} = ctx, t0 = now(), opts = job.options ?? {};
   const reqs: NumberReq[] = job.numbers ?? [];
-  if (!reqs.length) return {rows: [], problems: [], seats: [] as Box[], ms: 0};
+  if (!reqs.length) return {rows: [], problems: [], seats: [] as Box[], ms: 0, stuck: [] as number[], costs: [] as number[]};
   const d0 = render(mol, f, measure, L), px = atomPxOf(mol), pcs = piecesOf(mol, d0, ctx);
   const straight = fittedArrows(mol, ctx), caps0 = placed(mol, d0, ctx, straight);
   const otherCaps = obstacleCaps(mol, caps0, job);
   const rings = d0.electrons.filter((e: any) => e.key === 'charge' && mol.atoms[e.atom].circled).map((e: any) => ({atom: e.atom as number, c: e.at as Pt, R: 0.34 * f.size * ctx.ratio(mol.atoms[e.atom]) + f.line / 2}));
   const marks = d0.electrons.filter((e: any) => e.key && e.key !== 'charge').map((e: any) => ({atom: e.atom as number, c: e.at as Pt}));
-  const polys = [...d0.polygons, ...straight.flatMap((a: any) => arrowShapes(a, f, L)), ...curvedPolys, ...(mol.shapes ?? []).flatMap((s: any) => shapeInk(s, f, L))];
+  // the shared ink with the routed curved arrows; letters and captions are measured below against the number's glyphs
+  const ink = inkOf(mol, ctx, job, d0, {curved: curvedPolys, fixed: fixedInkOf(mol, ctx, job, caps0, straight)});
   const bb = union([...px.map((p) => [p[0], p[1], p[0], p[1]] as Box), ...pcs.flat().map((p) => p.box), ...otherCaps.map((c: any) => c.box)]) ?? [0, 0, 1, 1];
-  const field = new Field(pad(bb, 2 * L), {polys});
+  const field = inkField(ink, pad(bb, 2 * L), (x) => x.poly !== undefined);
   // an SVG text's line box reaches 0.189 em above a capital's top and 0.212 em below the baseline
   const lineBoxes: Box[] = [...d0.labels.map((l: any) => { const m = measure(l.text), s = l.size / f.size; return [l.x, l.y - m.ascent * s - 0.189 * l.size, l.x + m.width * s, l.y + 0.212 * l.size] as Box; }), ...otherCaps.map((c: any) => c.box)];
   // px (4.03 px = 1 pt), between the number's glyph ink and the rest: own gap at least 6 and about 8; the nearest other
@@ -1452,7 +2006,7 @@ function placeNumbers(mol: any, ctx: Ctx, job: any, curvedPolys: number[][][], d
       let nearestOther = 1e9, nearestLetter = 1e9;
       for (let j = 0; j < px.length; j++) if (j !== i) { nearestOther = Math.min(nearestOther, gapTo(j)); for (const p of pcs[j]) nearestLetter = Math.min(nearestLetter, gapB(p.ink)); }
       for (const b of put) nearestOther = Math.min(nearestOther, gapB(b));
-      for (const q of rings) if (q.atom !== i) nearestOther = Math.min(nearestOther, Math.max(0, boxDist(q.c, box) - q.R));
+      // another atom's charge circle is kept clear (clearance above) but does not take the number: it is not an atom
       const assoc = own + OWN_MARGIN > nearestOther ? 150 + (own + OWN_MARGIN - nearestOther) * 5 : 0;
       // never between two labels: the letters of every other atom stay LETTER_MIN away (a rule), LETTER_CLEAR if there is room
       const between = (nearestLetter < LETTER_MIN ? 150 + (LETTER_MIN - nearestLetter) * 5 : 0) + (nearestLetter < LETTER_CLEAR ? ((LETTER_CLEAR - nearestLetter) / 4) ** 2 * 0.6 : 0);
@@ -1491,7 +2045,8 @@ function placeNumbers(mol: any, ctx: Ctx, job: any, curvedPolys: number[][][], d
     if (sk2.cost + sj.cost < state[k].cost + state[j].cost - 1) { state[k] = sk2; state[j] = sj; }
   }
   // seats for the arrow router: only places that keep every rule (a number without one must not bend arrows into loops)
-  if (dry) return {rows: [], problems: [], seats: state.filter((s) => s.cost < 100).map((s) => s.box as Box), ms: now() - t0};
+  if (dry) return {rows: [], problems: [], seats: state.filter((s) => s.cost < 100).map((s) => s.box as Box), ms: now() - t0,
+    stuck: preps.filter((_, k) => state[k].cost >= 100).map((P) => P.i as number), costs: state.map((s) => s.cost as number)};
   preps.forEach((P, k) => {
     const best = state[k], cap = P.cap;
     cap.x = +(best.cx / L).toFixed(4); cap.y = +(-(best.cy + P.asc / 2) / L).toFixed(4); cap.align = 'centre';
@@ -1702,6 +2257,9 @@ function viewOf(m: any, refs: string[], numberReqs: NumberReq[], placedIds: stri
     lengthen.rows.push(...more.rows);
   }
   T.charges = charges.ms;
+  // a number with no seat that keeps every rule beside its atom's ring: the ring and the number are seated together
+  const joint = seatWithNumbers(mol, ctx, job);
+  T.joint = joint.ms;
   // boxes around their atoms' letters and marks
   const boxed = fitBoxes(mol, ctx, job.tsFrames);
   placeTsMarks(mol, ctx, job.tsFrames);
@@ -1842,6 +2400,7 @@ function viewOf(m: any, refs: string[], numberReqs: NumberReq[], placedIds: stri
         bonds: lengthen.rows.map((r: any) => ({a: refOf(M.bonds[r.bond].atoms[0]), b: refOf(M.bonds[r.bond].atoms[1]), moved: refOf(r.moving), moved_end_named: r.named, branch_atoms: r.branch.length, moved_pt: P(r.moved_px), length_before_pt: P(r.length_before_px), length_pt: P(r.length_px),
           length_bonds: r2(r.length_px / L, 1000), visible_before_pt: r.visible_before_px === null ? null : P(r.visible_before_px), visible_pt: r.visible_px === null ? null : P(r.visible_px), target_pt: r.target_px === null ? null : P(r.target_px)}))},
       charge_placement: charges.rows.map((r: any) => ({...r, ref: refOf(r.atom)})),
+      joint_seats: joint.rows.map((r: any) => (r.atom === undefined ? {stuck: r.stuck.map(refOf)} : {ref: refOf(r.atom), rings: r.rings.map(refOf), kept: r.kept && {ring: refOf(r.kept.ring), angle: r.kept.angle}})),
       boxes_grown: boxed.rows,
       routes: routed.done.map((p) => ({id: p.req.id, ...p.info})),
       number_placement: numbers.rows.map((r: any) => ({...r, ref: refOf(r.atom)})),

@@ -228,12 +228,12 @@ def _names(aid, text):
 
 def _retryable(result):
     """Retry only if at least one finding can change with automatic placement (of the hydrogen-bond findings, a line
-    that crosses a bond or another hydrogen bond's line, and a charge circle near a dotted line, since the circle can
-    move)."""
+    that crosses a bond or another hydrogen bond's line, a charge circle near a dotted line, since the circle can
+    move, and a curved arrow touching a dotted line, since the arrow or the molecules can move)."""
     return any(not (name in ('arrows_steps', 'residue_codes', 'hbond_dots')
                     or name == 'radical_marks' and 'not from radicals' in finding
                     or name == 'arrows_ends' and finding.startswith('arrow ') and ': no route found from ' in finding
-                    or ('hbond ' in finding or 'hydrogen bond' in finding) and name != 'overlap_charge'
+                    or ('hbond ' in finding or 'hydrogen bond' in finding) and name not in ('overlap_charge', 'overlap_arrow_bond')
                     and not (name == 'bond_crossing' and finding.startswith('hbond ')
                              and (' crosses bond ' in finding or ' crosses hbond ' in finding)))
                for name in result['failed'] for finding in result['checks'][name]['findings'])
@@ -409,6 +409,14 @@ def retry_iupac_pairs(out, fig, result, draw, draw_args, stats):
                    if c['from']['kind'] == 'atom' and c['electrons'] == 2
                    and (_names(c['id'], findings)
                         or c['from']['refs'][0] in findings)]
+        # a molecule that an arrow touches without being one of its ends (a water beside the route) moves too
+        ends = {c['id']: {r.rsplit(':', 1)[0] for e in (c['from'], c['to']) for r in e['refs']}
+                for p in fig.resolved['panels'] for c in p['curved']}
+        for n in ('overlap_arrow_bond', 'overlap_arrow_text'):
+            for x in result['checks'][n]['findings']:
+                m = re.search(r'arrow (\S+) touches (?:bond|hbond|lone_pair|label \S+ \()?\s*(\S+?:\d+)', x)
+                if m and m.group(1) in ends and m.group(2) in fig.atoms and m.group(2).rsplit(':', 1)[0] not in ends[m.group(1)]:
+                    sources.append((m.group(2), m.group(1)))
         accepted = False
         for ref, aid in dict.fromkeys(sources):
             # Retain checked routes in other panels while this panel is adjusted.
@@ -483,9 +491,10 @@ def retry_forming_branch(out, fig, result, draw, draw_args, stats):
     """
     import collections
     notes = []
-    if 'overlap_arrow_bond' not in result['failed']:
+    # the corridor may be blocked by a bond or by a letter
+    if not {'overlap_arrow_bond', 'overlap_arrow_text'} & set(result['failed']):
         return fig, result, notes
-    findings = ' '.join(result['checks']['overlap_arrow_bond']['findings'])
+    findings = ' '.join(x for n in ('overlap_arrow_bond', 'overlap_arrow_text') for x in result['checks'].get(n, {}).get('findings', []))
     saved = check_rules.load_state(out)['reload']
     for panel in fig.resolved['panels']:
         graph = collections.defaultdict(set)
@@ -598,15 +607,21 @@ def _repair_options(fig, result):
 
 
 SETTLE_CHECKS = ('overlap_text_bond', 'overlap_text_text', 'overlap_arrow_bond', 'overlap_arrow_text', 'overlap_arrow_arrow',
-                 'bond_crossing', 'arrows_ends', 'arrows_shape', 'hbond_dots', 'overlap_charge', 'charge_open')
+                 'bond_crossing', 'arrows_ends', 'arrows_shape', 'hbond_dots', 'overlap_charge', 'charge_open',
+                 'lone_pair_geometry')
                                                        # failed checks that settle's places can change
 SETTLE_BATCHES = (3, 4)  # settle's next layouts drawn side by side when the drawing of its best fails: 3, then 4 more
 
 
-def _finding_panels(result):
-    """The panels named by the atoms in the failed checks' findings."""
+def _finding_panels(result, fig=None):
+    """The panels named in the failed checks' findings: by their atoms, and by the arrows they name (a finding about an
+    arrow alone, such as one touching a letter, names no atom)."""
     text = ' '.join(x for name in result['failed'] for x in result['checks'][name]['findings'])
-    return sorted(set(re.findall(r'\b([A-Za-z][A-Za-z0-9]*)\.[A-Za-z_]\w*:\d+', text)))
+    panels = set(re.findall(r'\b([A-Za-z][A-Za-z0-9]*)\.[A-Za-z_]\w*:\d+', text))
+    for c in (fig.curved if fig is not None else []):
+        if c['from'].get('refs') and re.search(r'(?<![\w.:-])%s(?![\w.-])' % re.escape(c['id']), text):
+            panels.add(c['from']['refs'][0].split('.', 1)[0])
+    return sorted(panels)
 
 
 def retry_settle(spec, out, fig, result, draw, draw_args, stats):
@@ -614,7 +629,7 @@ def retry_settle(spec, out, fig, result, draw, draw_args, stats):
     SETTLE_BATCHES at a time) for the panels with findings, and keep the one with the fewest failed checks, then findings,
     then settle's own order.  The ranks kept stay in settle.CHOICE, so later stages that lay out again start there."""
     import settle
-    panels = _finding_panels(result)
+    panels = _finding_panels(result, fig)
     if not panels:
         return fig, result, []
     def rank(checked):
@@ -679,7 +694,7 @@ def retry_layout(spec, out, fig, result, draw, draw_args, stats, first=None):
     # The attempts are judged one at a time as before, but drawn PAIR_WORKERS at once: the next candidates of the search
     # are drawn with the current options beside the one judged first, and those after an accepted one are drawn again.
     attempt, ahead, fault = 0, [], None
-    while attempt < limit and _retryable(result) and DRAW_BUDGET['left'] > 0:
+    while attempt < limit and _retryable(result) and layout_repair.relevant(result) and DRAW_BUDGET['left'] > 0:
         want = min(PAIR_WORKERS, limit - attempt, DRAW_BUDGET['left'])
         while len(ahead) < want and fault is None:
             try:
@@ -698,8 +713,7 @@ def retry_layout(spec, out, fig, result, draw, draw_args, stats, first=None):
         def better(checked, result=result):
             # a hydrogen bond's crossing line counts with the findings: one that moves elsewhere may still be fewer
             kept = lambda r, n: {x for x in r['checks'][n]['findings'] if not (n == 'bond_crossing' and x.startswith('hbond '))}
-            safe = not checked['checks']['stereochemistry']['findings'] and all(
-                kept(checked, n) <= kept(result, n) for n in protected)
+            safe = all(kept(checked, n) <= kept(result, n) for n in protected)
             return safe and rank(checked) < rank(result) and not _closer(result, checked)
         def judge(found, result=result):     # (attempts judged, the accepted one or None, stop after them)
             r = rejected
@@ -763,8 +777,10 @@ def _local_arrows(fig, result):
     return sorted(chosen | {i for i, atoms in local.items() if any(atoms & local[j] for j in chosen)})
 
 
-ROOM_PT = 3.0           # labels, charge circles and numbers of two atoms of one molecule (not bonded) keep this apart
-ROOM_RATIO = 1.2        # a bond grown to part them reaches this many standard lengths
+ROOM_PT = 3.0           # the marks (labels, charge circles, numbers, lone-pair and radical dots) of two atoms of one
+                        # molecule keep this apart; two bonded atoms' labels are left to the label-bond checks
+ROOM_RATIOS = (1.1, 1.2, 1.3, 1.4)   # a bond grown to part them reaches one of these many standard lengths (the least
+                                    # growth among the best predictions; adapter.ts STRETCH_MAX is the last)
 
 
 ROOM_DRAWS = 10         # drawings of the room fix per run, apart from MAX_RETRY_DRAWS
@@ -772,8 +788,8 @@ ROOM_BATCH = 4          # room candidates drawn at once, the best predicted firs
 
 
 def _room_ink(fig, sids=None):
-    """The ink the room measure reads, of the species sids (all when None): boxes of labels, charge circles and numbers
-    [(atom, kind, box)] and the drawn bond segments [(atom, atom, points)]."""
+    """The ink the room measure reads, of the species sids (all when None): boxes of labels, charge circles, numbers,
+    lone pairs and radical dots [(atom, kind, box)] and the drawn bond segments [(atom, atom, points)]."""
     def mine(ref):
         return sids is None or ref.rsplit(':', 1)[0] in sids
     items = []
@@ -785,6 +801,16 @@ def _room_ink(fig, sids=None):
             r = (c.get('outer_d') or 7.4) / 2
             items.append((c['ref'], 'circle', (c['center'][0] - r, c['center'][1] - r, c['center'][0] + r, c['center'][1] + r)))
     items += [(n['ref'], 'number', tuple(n['box'])) for n in fig.report.get('numbers') or [] if n.get('box') and mine(n['ref'])]
+    for pair in fig.report.get('lone_pairs') or []:
+        dots = [d for d in pair.get('dots') or [] if d]
+        if dots and pair.get('ref') in fig.atoms and mine(pair['ref']):
+            r = pair.get('radius') or 0.9
+            items.append((pair['ref'], 'pair', (min(d[0] for d in dots) - r, min(d[1] for d in dots) - r,
+                                                max(d[0] for d in dots) + r, max(d[1] for d in dots) + r)))
+    for mark in fig.report.get('radicals') or []:
+        c, r = mark.get('center_pt'), mark.get('radius_pt') or 0.9
+        if c and mark.get('ref') in fig.atoms and mine(mark['ref']):
+            items.append((mark['ref'], 'radical', (c[0] - r, c[1] - r, c[0] + r, c[1] + r)))
     segs = []
     for shape in fig.scene()['bonds']:              # the drawn ink: a wedge is wider at its end
         owner = shape.owner if isinstance(shape.owner, tuple) else None
@@ -797,10 +823,27 @@ def _room_ink(fig, sids=None):
     return items, segs
 
 
+def _mark_gap(fig, x, kind, box, own=False):
+    """Gap from a number or charge-circle box to atom x as the checks read it (number_place, charge_own_atom): a circle
+    from its center less its radius to the glyphs of x's label or to its point; a number to the symbol letter of its own
+    atom, else to the glyphs of x's label or to its point."""
+    if kind == 'circle':
+        c, r = ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0), (box[2] - box[0]) / 2.0
+        parts = fig.label_parts(x) if fig.labeled(x) else []
+        if parts:
+            return min(check_rules.pt_box_gap(c, b) for b in parts) - r
+        return math.dist(c, fig.xy(x)) - r
+    if own:
+        sym = fig.symbol_box(x)
+        return check_rules.box_gap(box, sym) if sym is not None else check_rules.pt_box_gap(fig.xy(x), box)
+    return fig.gap_to_atom(box, x)
+
+
 def _room_gaps(fig, items, segs, shift=None):
-    """{(atom, atom): gap pt} of the ink of two atoms of one molecule, not bonded to each other, standing less than ROOM_PT
-    apart: label, circle and number boxes against each other and against the molecule's bonds that the atom does not end
-    (nor, for a label, a bonded atom), a bond named by its nearer end.  shift {atom: (dx, dy)} moves an atom's ink first,
+    """{(atom, atom): gap pt} of the ink of two atoms of one molecule standing less than ROOM_PT apart: the boxes of labels,
+    circles, numbers, lone pairs and radical dots against each other (two bonded atoms included, but not their two labels,
+    whose gap is the bond's visible line) and against the molecule's bonds that the atom does not end (nor, for a label, a
+    bonded atom), a bond named by its nearer end.  shift {atom: (dx, dy)} moves an atom's ink first,
     a bond's ink moving with its two ends in proportion."""
     shift, zero = shift or {}, (0.0, 0.0)
     bonded = {frozenset((b['a'], b['b'])) for b in fig.bonds}
@@ -813,8 +856,9 @@ def _room_gaps(fig, items, segs, shift=None):
         key = tuple(sorted((ra, rb)))
         if g < ROOM_PT and g < out.get(key, 1e9):
             out[key] = g
-    for (ra, _, a), (rb, _, b) in itertools.combinations(boxes, 2):
-        if ra != rb and frozenset((ra, rb)) not in bonded and ra.rsplit(':', 1)[0] == rb.rsplit(':', 1)[0]:
+    for (ra, ka, a), (rb, kb, b) in itertools.combinations(boxes, 2):
+        if ra != rb and ra.rsplit(':', 1)[0] == rb.rsplit(':', 1)[0] \
+                and not (ka == kb == 'label' and frozenset((ra, rb)) in bonded):
             note(ra, rb, max(a[0] - b[2], b[0] - a[2], a[1] - b[3], b[1] - a[3]))
     for a, b, pts in segs:
         da, db = shift.get(a, zero), shift.get(b, zero)
@@ -840,6 +884,24 @@ def _room_gaps(fig, items, segs, shift=None):
                 continue
             g, t = min((check_rules.pt_box_gap((x, y), box), t) for x, y, t in moved)
             note(ref, a if t < 0.5 else b, g)
+    # a number or charge circle that the checks find nearer another atom of its molecule than its own (decided on the
+    # figure as drawn) has no seat by its own atom: the other atoms' marks and labels within reach of that atom (the
+    # mark's size plus ROOM_PT on either side) take the room it needs, each crowding the pair by how far inside it stands
+    for (ref, kind, box), (_, _, drawn) in zip(boxes, items):
+        if kind not in ('number', 'circle'):
+            continue
+        sid = ref.rsplit(':', 1)[0]
+        own0 = _mark_gap(fig, ref, kind, drawn, own=True)
+        if not any(_mark_gap(fig, x, kind, drawn) < own0 for x in fig.atoms if x != ref and x.rsplit(':', 1)[0] == sid):
+            continue
+        reach = max(drawn[2] - drawn[0], drawn[3] - drawn[1]) + 2 * ROOM_PT
+        d = shift.get(ref, zero)
+        at = (fig.xy(ref)[0] + d[0], fig.xy(ref)[1] + d[1])
+        for other, _, ob in boxes:
+            if other != ref and other.rsplit(':', 1)[0] == sid:
+                g = check_rules.pt_box_gap(at, ob)
+                if g < reach:
+                    note(ref, other, ROOM_PT - (reach - g))
     return out
 
 
@@ -851,7 +913,7 @@ def _crowded(fig):
 def _room_options(fig, crowd, done):
     """Bond growths predicted to give the crowded pairs room, from the drawn ink moved as the backend's stretchBonds
     moves it: (summed shortfall now, [(predicted shortfall, growth pt, [(atom, atom, moving atom, ratio)])] best first).
-    An open-chain bond on the way between a crowded pair grows to 1.1 or ROOM_RATIO standard lengths, either side moving;
+    An open-chain bond on the way between a crowded pair grows to one of ROOM_RATIOS standard lengths, either side moving;
     one or two bonds at once.  A growth that brings any pair of the molecule closer below ROOM_PT is left out."""
     sids = {a.rsplit(':', 1)[0] for _, a, _ in crowd}
     items, segs = _room_ink(fig, sids)
@@ -897,7 +959,7 @@ def _room_options(fig, crowd, done):
             for moving, anchor, atoms in ((u, v, su), (v, u, whole - su)):
                 (x0, y0), (x1, y1) = fig.xy(anchor), fig.xy(moving)
                 length = math.hypot(x1 - x0, y1 - y0) or 1.0
-                for ratio in (1.1, ROOM_RATIO):
+                for ratio in ROOM_RATIOS:
                     grow = ratio * fig.bond_pt - length
                     if grow > 0.02 * fig.bond_pt:
                         d = ((x1 - x0) / length * grow, (y1 - y0) / length * grow)
@@ -939,16 +1001,25 @@ def _room_options(fig, crowd, done):
     return sum(ROOM_PT - g for g in base.values()), [(p, g, [s[0] for s in c]) for p, g, c in first + later]
 
 
+def _new_stereo(result, checked):
+    """A stereochemistry finding the candidate has and the kept drawing has not (an input's own error stays in both)."""
+    return not set(checked['checks']['stereochemistry']['findings']) <= set(result['checks']['stereochemistry']['findings'])
+
+
 def _room_job(fig, saved, grown):
     """A room candidate's (resolved, options): the bonds grown (all rounds so far) drawn by stretchBonds; the label
-    alignments and charge seats kept everywhere; the arrows and numbers of the panels with a grown bond placed again."""
+    alignments kept everywhere; the charge seats kept but at the grown bonds' ends, where the ring is seated again together
+    with its atom's number on the longer bond; the arrows and numbers of the panels with a grown bond placed again."""
     pids = {u.split('.', 1)[0] for u, _, _, _ in grown}
+    ends = {x for u, v, _, _ in grown for x in (u, v)}
     resolved = copy.deepcopy(fig.resolved)
     atoms = {x['ref']: x for p in resolved['panels'] for x in p['atoms']}
     for kept in saved.get('atoms', []):
         if kept['ref'] in atoms:
             atoms[kept['ref']]['native_align'] = kept.get('align')
-            if kept.get('charge_angle') is not None:
+            if kept['ref'] in ends:
+                atoms[kept['ref']].pop('charge_angle', None)       # an earlier retry may have held it in the resolved figure
+            elif kept.get('charge_angle') is not None:
                 atoms[kept['ref']]['charge_angle'] = kept['charge_angle']
     mine = {c['id'] for p in resolved['panels'] if p['id'] in pids for c in p['curved']}
     return resolved, {'repairNumbers': True, 'repairArrows': True,
@@ -970,7 +1041,7 @@ def _room_pick(jobs, out, fig, result, draw, draw_args, stats):
                 continue
             after = _counts(checked)
             if any(after.get(n, 0) > counts.get(n, 0) for n in set(after) | set(counts)) \
-                    or checked['checks']['stereochemistry']['findings'] or _closer(result, checked) or _tighter(result, checked):
+                    or _new_stereo(result, checked) or _closer(result, checked) or _tighter(result, checked):
                 continue
             gaps = _room_gaps(cand, *_room_ink(cand))
             if any(g < before.get(key, ROOM_PT) - 0.1 for key, g in gaps.items()):
@@ -987,7 +1058,8 @@ def _room_pick(jobs, out, fig, result, draw, draw_args, stats):
 
 
 def retry_room(out, fig, result, draw, draw_args, stats):
-    """Labels, charge circles or numbers of one molecule that stand less than ROOM_PT apart, though the checks may pass:
+    """Marks of two atoms of one molecule (labels, charge circles, numbers, lone pairs, radical dots; bonded atoms included)
+    that stand less than ROOM_PT apart, whether the checks pass or fail:
     the bond growths predicted to part them best (_room_options) drawn ROOM_BATCH at a time, at most twice and
     ROOM_DRAWS drawings in all; a batch is drawn only when its best prediction lowers the shortfall by 0.5 pt."""
     notes, grown = [], []
@@ -1014,7 +1086,108 @@ def retry_room(out, fig, result, draw, draw_args, stats):
         grown += options[k][2]
         notes.append('room between crowded labels: grew %s; shortfall %.1f -> %.1f pt' % (
             ', '.join('%s-%s to %.1f' % (u, v, r) for u, v, _, r in options[k][2]), was, _room_shortfall(fig)))
-    return fig, result, notes
+    return fig, result, notes, grown
+
+
+GROW_RATIOS = (1.25, 1.4)   # a crowded bond grows to these many standard lengths (adapter.ts STRETCH_MAX is the last)
+GROW_DRAWS = 8
+
+
+def retry_grow(out, fig, result, draw, draw_args, stats, grown=()):
+    """A bond too crowded for what belongs at it: an arrow end off the middle of its bond, a short hook curling past
+    its atom (arrows_ends), or a number nearer another atom than its own (number_place).  Open-chain bonds grow to
+    GROW_RATIOS standard lengths, drawn side by side: for an arrow end, its bond together with the arrow's other bond
+    when the two meet at one atom (that atom stays, the outer atoms move), then its bond alone, either side moving; for
+    a hook, its bond, either side moving; for a number, each bond of its atom, the neighbour's side moving.  The drawing
+    with the fewest findings is kept when it has fewer than now, no detector gains one and no two molecules come
+    closer."""
+    adj = collections.defaultdict(set)
+    for p in fig.resolved['panels']:
+        for bd in p['bonds']:
+            if not bd.get('hbond'):
+                adj[bd['a']].add(bd['b'])
+                adj[bd['b']].add(bd['a'])
+    def side(start, cut):
+        seen, stack = {start}, [start]
+        while stack:
+            x = stack.pop()
+            for y in adj[x]:
+                if not (x == start and y == cut) and y not in seen:
+                    seen.add(y)
+                    stack.append(y)
+        return seen
+    def open_bond(a, b):
+        return b in adj[a] and b not in side(a, b)
+    curved = {c['id']: c for c in fig.curved}
+    groups = []
+    for x in result['checks'].get('arrows_ends', {}).get('findings', []):
+        m = re.search(r'^\S+ end: head reaches (\S+) [\d.]+ degrees round from its bond to (\S+) ', x)
+        if m and open_bond(m.group(2), m.group(1)):          # a short hook curling past its atom: room along its bond
+            groups += [((m.group(2), m.group(1), m.group(1)),), ((m.group(1), m.group(2), m.group(2)),)]
+            continue
+        m = re.search(r'^(\S+) (start|end): .* along the drawn line of bond (\S+)-(\S+), not near its middle', x)
+        if not m or not open_bond(m.group(3), m.group(4)):
+            continue
+        aid, end, a, b = m.groups()
+        other = (curved.get(aid) or {}).get('from' if end == 'end' else 'to') or {}
+        refs = other.get('refs', []) if other.get('kind') == 'bond' else []
+        shared = set(refs) & {a, b}
+        if len(refs) == 2 and len(shared) == 1:
+            o = shared.pop()
+            outer = [r for r in refs if r != o][0]
+            if open_bond(o, outer):
+                groups.append(((o, b if a == o else a, b if a == o else a), (o, outer, outer)))
+        groups += [((a, b, b),), ((b, a, a),)]
+    for n in ('delocalized_bonds', 'partial_dashes'):          # a dashed bond too short for three marks
+        for x in result['checks'].get(n, {}).get('findings', []):
+            m = re.match(r'^(\S+?:\d+)-(\S+?:\d+): fewer than three visible marks', x)
+            if m and open_bond(*m.groups()):
+                a, b = m.groups()
+                groups += [((a, b, b),), ((b, a, a),)]
+    for x in result['checks'].get('overlap_charge', {}).get('findings', []):
+        m = re.match(r'^circle of (\S+) is -?[\d.]+ pt from bond (\S+?:\d+)-(\S+?:\d+)', x)
+        if m:                                                 # a charge circle on a bond of its own atom: room along its bonds
+            ref = m.group(1)
+            for nb in sorted(adj[ref], key=lambda r: (r not in m.groups()[1:], r)):
+                if open_bond(ref, nb):
+                    groups.append(((ref, nb, nb),))
+    for x in result['checks'].get('number_place', {}).get('findings', []):
+        m = re.search(r'number .* of (\S+) is nearer atom (\S+) \(', x)
+        if not m:
+            continue
+        ref, near = m.groups()
+        for nb in sorted(adj[ref], key=lambda r: (r != near, fig.atoms.get(r, {}).get('el') == 'H', r)):
+            if open_bond(ref, nb):
+                groups.append(((ref, nb, nb),))
+    choices, seen = [], set()
+    for g in groups:
+        for ratio in GROW_RATIOS:
+            key = (frozenset(frozenset(e[:2]) for e in g), tuple(e[2] for e in g), ratio)
+            if key not in seen:
+                seen.add(key)
+                choices.append([(u, v, mv, ratio) for u, v, mv in g])
+    if not choices:
+        return fig, result, []
+    DRAW_BUDGET['left'] = GROW_DRAWS
+    saved = check_rules.load_state(out)['reload']
+    before = _counts(result)
+    def choose(drawn):
+        best = None
+        for k, (cand, checked, error) in enumerate(drawn):
+            if error or cand is None:
+                continue
+            after = _counts(checked)
+            if any(after.get(n, 0) > before.get(n, 0) for n in set(after) | set(before)) or sum(after.values()) >= sum(before.values()) \
+                    or _new_stereo(result, checked) or _closer(result, checked):
+                continue
+            if best is None or (sum(after.values()), k) < best:
+                best = (sum(after.values()), k)
+        return None if best is None else best[1]
+    for k, (cand, checked, ok, _) in enumerate(_candidates([_room_job(fig, saved, list(grown) + c) for c in choices[:GROW_DRAWS]], out, fig, draw,
+                                                            draw_args, None, stats, 'retry_grow', choose=choose)):
+        if ok:
+            return cand, checked, ['crowded bond: grew %s' % ', '.join('%s-%s to %.2f' % (u, v, r) for u, v, _, r in choices[k])]
+    return fig, result, []
 
 
 def _room_shortfall(fig):
@@ -1161,12 +1334,13 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
     try:
         fig = check_rules.load_figure(out)
         result = check_rules.run_checks(fig)
-        short = {}
+        short, hooks_fig = {}, None
         if native_backend:
             retry_counts['retry_short_hooks'] = {'draws': 0}
             fig, result, short = retry_short_hooks(out, fig, result, draw, {
                 'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
                 'browser_cmd': browser_cmd}, retry_counts['retry_short_hooks'])
+            hooks_fig = fig
             if short:
                 notes.append(_hook_note(short))
                 plain = draw         # the later retries keep these arrows short
@@ -1202,6 +1376,7 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                 return unaligned(resolved, dest, options=options, **kw)
             try:
                 # Resolve saved arrow/number placement before trying molecular motions.
+                start = fig
                 fig, result, retried = retry_placements(resolved, out, fig, result, draw, retry_args, retry_counts['retry_placements'])
                 notes.extend(retried)
                 placed = fig
@@ -1214,27 +1389,37 @@ def _run(spec_path, out_dir, png_width=None, octet_dir=None, node_modules=None, 
                     notes.extend(retried)
                 fig, result, retried = retry_iupac_pairs(out, fig, result, draw, retry_args, retry_counts['retry_iupac_pairs'])
                 notes.extend(retried)
-                if not numbers_only or fig is not placed:
+                if (not numbers_only or fig is not placed) and fig is not start:
                     fig, result, retried = retry_placements(fig.resolved, out, fig, result, draw, retry_args, retry_counts['retry_placements'])
                     notes.extend(retried)
             except Exception as exc:     # a fault in a retry keeps the last accepted figure and its findings
                 notes.append('automatic retry stopped: %s: %s' % (type(exc).__name__, exc))
             resolved = fig.resolved
             times['placement_retry'] = time.time() - retry_started
-        if native_backend and not short:     # arrows that the retries brought close
+        if native_backend and not short and fig is not hooks_fig:     # arrows that the retries brought close
             fig, result, short = retry_short_hooks(out, fig, result, draw, {
                 'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
                 'browser_cmd': browser_cmd}, retry_counts['retry_short_hooks'])
             if short:
                 notes.append(_hook_note(short))
                 resolved = fig.resolved
+                plain2 = draw        # room and grow keep these arrows short
+                def draw(resolved, dest, options=None, _plain=plain2, **kw):
+                    return _plain(resolved, dest, options=dict(options or {}, **short), **kw)
         if native_backend:                   # crowded labels of one molecule, though the checks may pass
             retry_counts['retry_room'] = {'draws': 0}
-            fig, result, roomed = retry_room(out, fig, result, draw, {
+            fig, result, roomed, room_grown = retry_room(out, fig, result, draw, {
                 'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
                 'browser_cmd': browser_cmd}, retry_counts['retry_room'])
             notes.extend(roomed)
             resolved = fig.resolved
+            retry_counts['retry_grow'] = {'draws': 0}
+            if not result['ok']:
+                fig, result, grown = retry_grow(out, fig, result, draw, {
+                    'png_width': png_width, 'dpi': dpi, 'octet_dir': octet_dir, 'node_modules': node_modules,
+                    'browser_cmd': browser_cmd}, retry_counts['retry_grow'], grown=room_grown)
+                notes.extend(grown)
+                resolved = fig.resolved
     except check_rules.InputError as e:
         _failed(out, 'checks could not run', str(e), notes, times, log, stereo_lines)
         return 2, {'error': str(e), 'times_s': times}

@@ -13,7 +13,7 @@ import math
 import re
 
 CONTACT_BASE = 1.3          # distance between the two atoms of a contact (bond lengths), +0.2 per labeled atom
-FISHHOOK_ROOM = 0.5         # more between two species a fishhook joins: its tail sits on a dot and the half head needs room
+FISHHOOK_ROOM = 1.0         # more between two species a fishhook joins: its tail sits on a dot, and its half head meets the other fishhook's tip there
 HBOND_WEIGHT = 1.5          # weight of a hydrogen-bond contact (contacts)
 ARROW_GAP = 0.75            # space between a reaction arrow and the drawings on either side
 ARROW_MIN = 3.0             # shortest reaction arrow
@@ -58,6 +58,12 @@ def vec(deg):
 
 def ang(dx, dy):
     return math.degrees(math.atan2(-dy, dx)) % 360.0
+
+
+HAND_LENGTH_FAR = 0.6      # bonds: hand coordinates this far from one bond apart are repaired (place) ...
+HAND_COLLAPSE_DEG = 60     # ... or 0.25 bond off with a bond angle at either atom under this (a squeezed-in atom); a
+                           # long bond kept on purpose with standard angles (a 1.5-bond acyl carbon) stays as given
+HAND_REPAIR_ELEMENTS = {'H', 'B', 'C', 'N', 'O', 'F', 'Si', 'P', 'S', 'Cl', 'Se', 'Br', 'I'}
 
 
 def adiff(a, b):
@@ -546,6 +552,7 @@ def iupac_positions(mol, positions, kept=()):
         for k, q in rotated.items():
             pos[k] = add(origin, q)
 
+    intra = [(mol.idx[a], mol.idx[b]) for a, b in mol.sp.get('intra_hbonds') or [] if a in mol.idx and b in mol.idx]
     for i in range(mol.n):
         nb = mol.adj[i]
         if mol.atoms[i]['map'] in mol.sp.get('geometry', {}):
@@ -573,6 +580,11 @@ def iupac_positions(mol, positions, kept=()):
             if (max(abs(a - b) for a, b in zip(spans, (60, 60, 120, 120))) <= 2
                     and any(min(adiff(direction(i, j), a) for a in (0, 90, 180, 270)) <= 2 for j in terminal)):
                 continue
+        # a hydrogen bond inside the molecule whose ring runs through this atom (its H beyond one bond, its acceptor
+        # beyond another): those two bonds stand next to each other, so that the other two point out of the ring and
+        # its dotted line can pass clear of them
+        ends = [[j for j in nb if k in mol.subtree(j, i)] for pair in intra if i not in pair for k in pair]
+        closing = [(ends[k][0], ends[k + 1][0]) for k in range(0, len(ends), 2) if ends[k] and ends[k + 1] and ends[k] != ends[k + 1]]
         doubles = [j for j in nb if mol.order[frozenset((i, j))] == 2]
         square = not stereo and (len(terminal) == 4 or not terminal and all(len(mol.adj[j]) >= 3 for j in nb) or len(doubles) >= 2)
         small = len(terminal) in (1, 3) and not square
@@ -594,6 +606,8 @@ def iupac_positions(mol, positions, kept=()):
                         or len(terminal) == 2 and adiff(at[terminal[0]], at[terminal[1]]) != 60):
                     continue
                 cost = sum(adiff(direction(i, j), at[j]) ** 2 * len(mol.subtree(j, i)) for j in nb)
+                around = sorted(nb, key=lambda j: at[j])
+                cost += 1e9 * sum((around.index(a) - around.index(b)) % 4 == 2 for a, b in closing)
                 if small and len(terminal) == 1:
                     # Preserve the side of a unique small group (often the
                     # reacting explicit H), choosing its nearest axial seat.
@@ -766,7 +780,11 @@ def iupac_stereobonds(mol, xy, styles):
                 if abs(separation - 60) <= 10:
                     choices.append((a, b))
         elif len(nb) == 3:
-            choices = [(j,) for j in sorted(simple, key=lambda j: len(mol.subtree(j, i)))]
+            # the implicit H must stay readable: a stereobond to a branched substituent leaves it ambiguous (the rule
+            # stereo_display checks), so such a neighbor comes last; then the smallest substituent first
+            rings = {k for k in range(mol.n) if mol.in_ring[k]}
+            wide = lambda j: stereochemistry.wide_end(i, j, lambda x: mol.adj[x], lambda x: 'C' if mol.atoms[x]['dummy'] else mol.atoms[x]['symbol'], rings)
+            choices = [(j,) for j in sorted(simple, key=lambda j: (wide(j), len(mol.subtree(j, i))))]
         for choice in choices:
             accepted = None
             for first in ('wedge', 'hash'):
@@ -1019,8 +1037,9 @@ class Layout(object):
                 pts.append(((xy[a][0] + t * (xy[b][0] - xy[a][0]), xy[a][1] + t * (xy[b][1] - xy[a][1])), False))
         return pts
 
-    def label_box(self, sid, m, xy):
-        """Approximate box (x1, y1, x2, y2) of the label of atom m, or a small box around a skeletal vertex."""
+    def label_box(self, sid, m, xy, name=False):
+        """Approximate box (x1, y1, x2, y2) of the label of atom m, or a small box around a skeletal vertex.  name: a
+        residue name as wide as its caption is drawn (its digits full size), for the room kept between names."""
         import specutil
         mol = self.mol[sid]
         a = mol.atoms[mol.idx[m]]
@@ -1037,6 +1056,8 @@ class Layout(object):
         nbrs = [xy[mol.map[j]] for j in mol.adj[mol.idx[m]]]
         dx = sum(p[0] - x for p in nbrs)
         if kind == 'residue':                      # beside the root vertex, away from its bond (octet_draw.text_side)
+            if name:
+                w = text_width(plain, size, self.style['bond_length_pt'])
             dy = sum(p[1] - y for p in nbrs)
             if nbrs and abs(dx) < 0.3 * math.hypot(dx, dy):   # a steep bond: the name centred above or below the vertex
                 if dy > 0:
@@ -1106,6 +1127,55 @@ class Layout(object):
             shift = ((end[0] - origin[0]) * (1 / length - 1), (end[1] - origin[1]) * (1 / length - 1))
             for i in branch:
                 xy[mol.map[i]] = add(xy[mol.map[i]], shift)
+        # Hand coordinates that hold two bonded atoms far from one bond apart (a misplaced atom, not a ring closure, a
+        # transition state or a bond to a metal; a guanidinium N given 1.73 bonds from its C, 30 degrees from the other
+        # N): the atom on the smaller side comes back to one bond.  At an atom with three neighbors the largest branch
+        # stays and the other two take the two 120-degree seats in the order the hand coordinates gave them; elsewhere
+        # the moved branch takes the widest gap.  Each moved branch is shifted (its own bonds keep their directions, so
+        # an H aimed at a partner stays aimed) or turned with the move, whichever leaves the wider angle at the atom.
+        for edge in sorted(mol.order, key=sorted):
+            a, b = sorted(edge)
+            if a not in fixed or b not in fixed or edge in mol.ring_bonds or sp.get('ts') \
+                    or any(mol.atoms[k]['dummy'] or mol.atoms[k]['symbol'] not in HAND_REPAIR_ELEMENTS for k in (a, b)):
+                continue
+            off = abs(dist(xy[mol.map[a]], xy[mol.map[b]]) - 1)
+
+            def squeezed(i, j):
+                d = ang(xy[mol.map[j]][0] - xy[mol.map[i]][0], xy[mol.map[j]][1] - xy[mol.map[i]][1])
+                return any(adiff(d, ang(xy[mol.map[k]][0] - xy[mol.map[i]][0], xy[mol.map[k]][1] - xy[mol.map[i]][1]))
+                           < HAND_COLLAPSE_DEG for k in mol.adj[i] if k != j)
+            if off <= 0.25 or off <= HAND_LENGTH_FAR and not (squeezed(a, b) or squeezed(b, a)):
+                continue
+            anchor, free = (a, b) if len(mol.subtree(b, a)) <= len(mol.subtree(a, b)) else (b, a)
+            if anchor in mol.subtree(free, anchor):
+                continue
+            o = xy[mol.map[anchor]]
+            towards = lambda j: ang(xy[mol.map[j]][0] - o[0], xy[mol.map[j]][1] - o[1])
+            was = dist(o, xy[mol.map[free]])
+            nb = mol.adj[anchor]
+            stay = max(nb, key=lambda j: (len(mol.subtree(j, anchor)), -j))
+            if len(nb) == 3 and stay != free and not any(frozenset((anchor, j)) in mol.ring_bonds for j in nb):
+                kids = sorted((j for j in nb if j != stay), key=lambda j: (towards(j) - towards(stay)) % 360)
+                seats = {j: (towards(stay) + 120 * (k + 1)) % 360 for k, j in enumerate(kids)}
+            else:
+                st, g = max(gaps([towards(j) for j in nb if j != free]), key=lambda t: t[1]) if len(nb) > 1 else (towards(free), 0.0)
+                seats = {free: (st + g / 2.0) % 360 if len(nb) > 1 else towards(free)}
+            for kid, target in seats.items():
+                rel = {mol.map[k]: (xy[mol.map[k]][0] - o[0], xy[mol.map[k]][1] - o[1]) for k in mol.subtree(kid, anchor)}
+                fp = rel[mol.map[kid]]
+                shifted = {m: add(add(q, fp, -1), vec(target)) for m, q in rel.items()}
+                turned = transform(rel, target - ang(fp[0], fp[1]))
+                tp = turned[mol.map[kid]]
+                turned = {m: add(q, tp, 1 / math.hypot(tp[0], tp[1]) - 1) for m, q in turned.items()}
+
+                def widest(shape, kid=kid):
+                    f = shape[mol.map[kid]]
+                    return min([adiff(ang(-f[0], -f[1]), ang(shape[mol.map[j]][0] - f[0], shape[mol.map[j]][1] - f[1]))
+                                for j in mol.adj[kid] if j != anchor] or [180.0])
+                for m, q in (shifted if widest(shifted) >= widest(turned) - 1e-6 else turned).items():
+                    xy[m] = add(o, q)
+            self.notes.append('%s: hand coordinates put %d %.2f bonds from %d; set the bonds of %d one bond long in standard seats'
+                              % (sid, mol.map[free], was, mol.map[anchor], mol.map[anchor]))
         positioned = iupac_positions(mol, {i: xy[mol.map[i]] for i in range(mol.n)},
                                      {mol.idx[m] for m in self.kept_centers.get(sid, ())})
         changed = [dist(xy[mol.map[i]], positioned[i]) for i in range(mol.n) if mol.map[i] in sp['xy']
@@ -1545,6 +1615,10 @@ class Layout(object):
         for h in panel['hbonds']:
             if h[0]['sid'] != h[1]['sid']:
                 out.append((h[0]['sid'], (h[0]['atom'], None), h[1]['sid'], (h[1]['atom'], None), HBOND_WEIGHT))
+        have = {frozenset(((sa, ea), (sb, eb))) for sa, ea, sb, eb, _ in out}
+        for sa, ma, sb, mb in self.open_gaps(pid):
+            if frozenset(((sa, (ma, None)), (sb, (mb, None)))) not in have:
+                out.append((sa, (ma, None), sb, (mb, None), 3.0))
         return out
 
     def end_point(self, sid, end, xy):
@@ -1583,6 +1657,39 @@ class Layout(object):
         hook = any(ar.get('electrons') == 1 and {sid_a, sid_b} <= {s for s, _ in refs(ar)} and refs(ar) & ends
                    for ar in self.panels[self.pidx[self.sp[sid_a]['panel']]]['arrows'])
         return CONTACT_BASE + 0.2 * n + (FISHHOOK_ROOM if hook else 0.0)
+
+    def open_gaps(self, pid):
+        """[(sid_a, map_a, sid_b, map_b)]: forming bonds between two molecules whose arrows point at the middle of the
+        gap (fishhooks, or a pair from a bond whose atoms are both outside the gap), not at a receiving atom."""
+        out = []
+        for ar in self.panels[self.pidx[pid]]['arrows']:
+            ms = ar['to'].get('members') or []
+            if len(ms) != 2 or ms[0]['sid'] == ms[1]['sid']:
+                continue
+            src = {(ar['from']['sid'], ar['from'][k]) for k in ('atom', 'atom2') if ar['from'][k] is not None}
+            if ar['electrons'] == 2 and sum((m['sid'], m['atom']) not in src for m in ms) == 1:
+                continue                         # the head goes to the atom that receives the pair
+            g = (ms[0]['sid'], ms[0]['atom'], ms[1]['sid'], ms[1]['atom'])
+            if g not in out:
+                out.append(g)
+        return out
+
+    def pair_misread(self, sid, xy):
+        """True when the middle of an open gap of this molecule (open_gaps) is nearer to another atom of the two
+        molecules than to the gap's own atoms: the arrow heads there read as pointing at that atom."""
+        for sa, ma, sb, mb in self.open_gaps(self.sp[sid]['panel']):
+            if sid not in (sa, sb):
+                continue
+            (sid_, m), (osid, om) = ((sa, ma), (sb, mb)) if sa == sid else ((sb, mb), (sa, ma))
+            if osid not in self.xy:
+                continue
+            p, q = xy[m], self.xy[osid][om]
+            mid = ((p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0)
+            own = dist(p, q) / 2.0
+            others = [v for k, v in xy.items() if k != m] + [v for k, v in self.xy[osid].items() if k != om]
+            if others and min(dist(mid, v) for v in others) < own:
+                return True
+        return False
 
     def place_by_contact(self, sid, links):
         """links: [(my_end, other_sid, other_end, weight)].  Returns the best placement {map: (x, y)}."""
@@ -1832,9 +1939,14 @@ class Layout(object):
                         followed = self.follow_contact(sid, kept, mine)
                         if followed is not kept and self.shortfall(sid, followed, self.panel_ink(pid, skip=sid)) > 1e-9:
                             followed = self.place_by_contact(sid, mine)    # turned with its contact it runs into others
+                        elif self.pair_misread(sid, followed):
+                            followed = self.place_by_contact(sid, mine)    # its arrow's head would point at a third atom
                         self.place(sid, self.clear_of_panel(sid, followed))
                     else:
-                        self.place(sid, self.history(sid) or self.place_by_contact(sid, mine))
+                        was = self.history(sid)
+                        if was is not None and self.pair_misread(sid, was):
+                            was = None                                 # its arrow's head would point at a third atom
+                        self.place(sid, was or self.place_by_contact(sid, mine))
                     progress = True
                 if not progress:
                     break
@@ -1925,16 +2037,17 @@ class Layout(object):
                     crowd += 10 * sum(crossed(ends[0], ends[1], xy[mol.map[i]], xy[mol.map[j]])
                                       for i, j in map(tuple, mol.order) if not {mol.map[i], mol.map[j]} & {a['atom'], b['atom']})
                     return max(0.0, d - w) + 5 * max(0.0, w - d) + crowd
-                xy = self.fold_chain(sid, path, score)
+                xy = self.fold_chain(sid, path, score, depth=3)
                 if xy is not None:
                     self.xy[sid] = xy
                     self.notes.append('%s: turned toward its hydrogen bond %d-%d' % (sid, a['atom'], b['atom']))
 
-    def fold_chain(self, sid, path, score, rigid_double=False):
+    def fold_chain(self, sid, path, score, rigid_double=False, depth=0):
         """Fold species sid along path (atom indices from the end that moves to the other end): reflect the part beyond
         each atom about the bond toward the other end, or turn or reflect the branch holding the moving end, keeping each
         change that lowers score(xy); the folded coordinates, or None when nothing lowered it.  Ring bonds stay; with
-        rigid_double, no change pivots at a double bond either (its E/Z stays).  Hand-placed atoms do not move."""
+        rigid_double, no change pivots at a double bond either (its E/Z stays).  Hand-placed atoms do not move.  depth:
+        first every sequence of up to that many changes is scored (a fold whose single changes each score worse)."""
         mol = self.mol[sid]
         hand = set(self.sp[sid]['xy'])
         acc = path[-1]
@@ -1956,21 +2069,38 @@ class Layout(object):
             return out
         def fixed(e):
             return e in mol.ring_bonds or rigid_double and mol.order.get(e, 1) >= 2
+        def changes(xy, k):
+            r, toward, back = path[k], path[k - 1], path[k + 1]
+            beyond = [i for i in mol.subtree(r, back) if i != r]
+            if acc in beyond or fixed(frozenset((r, back))):
+                return []
+            branch = mol.subtree(toward, r)
+            cands = [reflect(xy, beyond, r, back)]
+            if acc not in branch and not fixed(frozenset((r, toward))):
+                cands += [reflect(xy, branch, r, back), turn(xy, branch, r, 120), turn(xy, branch, r, -120)]
+            return cands
         xy = dict(self.xy[sid])
         best = score(xy)
         start = best
+        level, seen = [xy], set()
+        for _ in range(depth):
+            nxt = []
+            for here in level:
+                for k in range(1, len(path) - 1):
+                    for cand in changes(here, k):
+                        key = tuple(sorted((m, round(q[0], 3), round(q[1], 3)) for m, q in cand.items()))
+                        if key in seen or any(dist(cand[m], here[m]) > 1e-6 for m in hand):
+                            continue
+                        seen.add(key)
+                        nxt.append(cand)
+                        s_ = score(cand)
+                        if s_ < best - 1e-6:
+                            best, xy = s_, cand
+            level = nxt
         for _ in range(4):
             improved = False
             for k in range(1, len(path) - 1):
-                r, toward, back = path[k], path[k - 1], path[k + 1]
-                beyond = [i for i in mol.subtree(r, back) if i != r]
-                if acc in beyond or fixed(frozenset((r, back))):
-                    continue
-                branch = mol.subtree(toward, r)
-                cands = [reflect(xy, beyond, r, back)]
-                if acc not in branch and not fixed(frozenset((r, toward))):
-                    cands += [reflect(xy, branch, r, back), turn(xy, branch, r, 120), turn(xy, branch, r, -120)]
-                for cand in cands:
+                for cand in changes(xy, k):
                     if any(dist(cand[m], xy[m]) > 1e-6 for m in hand):
                         continue
                     s_ = score(cand)
@@ -2171,10 +2301,10 @@ class Layout(object):
         return out
 
     def residue_boxes(self, sid, ex):
-        """Boxes of the residue names a placed species shows (label_box of its residue atoms)."""
+        """Boxes of the residue names a placed species shows (label_box of its residue atoms, as wide as drawn)."""
         import specutil
         mol = self.mol[sid]
-        return [self.label_box(sid, m, ex) for m in ex
+        return [self.label_box(sid, m, ex, name=True) for m in ex
                 if m in mol.idx and specutil.atom_kind(self.sp[sid], mol.atoms[mol.idx[m]]) == 'residue']
 
     def name_room(self, p):

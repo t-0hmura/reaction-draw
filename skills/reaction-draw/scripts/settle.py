@@ -3,12 +3,15 @@
 Layout.run calls settle last, before arrange.  In each panel of two or more molecules, a local search starts from
 where the molecules stand and, each round, prices every move at once with numpy: a rigid shift of a molecule after
 the first, the shortest shift that clears it of the others, a seat fitted to its hydrogen bonds, the seats of two
-molecules whose dotted lines cross, and a terminal group holding a hydrogen bond turned over its single bond (alone or
-with its partners re-seated).  The few best moves are priced with the whole score and the best is taken while it
-lowers it.  Where the molecules stood before is only the start: a move is never penalized for its size.
+molecules whose dotted lines cross, and a terminal group holding a hydrogen bond turned over its single bond, or over a
+double bond to an end whose two other atoms are alike (alone or with its partners re-seated).  The few best moves are
+priced with the whole score and the best is taken while it lowers it.  When it stops with a dotted line still crossing
+or touching, a group at an end of that line is turned, its partners re-seated in turn and the search run again (_kick),
+kept when the score drops.  Where the molecules stood before is only the start: a move is never penalized for its size.
 
 The score: 100 per predicted crossing or contact of a dotted line (with a bond, another dotted line, another atom's
-label, or a curved arrow's chord) and per curved arrow whose chord passes a third molecule; 2000 per bond the white
+label, or a curved arrow's chord, or a bond of its own end atom it leaves within HB_ANGLE of, twice that for a double or 1.5 bond) and per third molecule's
+bond or label a curved arrow cannot keep off on any of the arcs the router tries first (ARC_BENDS); 2000 per bond the white
 between two molecules falls short of SPECIES_GAP (the species_gap check's measure); 100 per bond a dotted span falls
 short of the IUPAC span; 100 per bond reacting atoms stand beyond reach of each other; 10 x weight per bond
 hydrogen-bonded atoms stand beyond their contact distance; and, for the moves priced, the letters' collisions
@@ -38,7 +41,17 @@ REACH = 2.0             # reacting atoms farther apart than their contact distan
 REACH_W = 100           # no clear route: score per bond beyond it
 LABEL_CLEAR = 0.1       # a dotted line's drawn part closer than this to another atom's label: a contact (bonds);
                         # the label's white cuts its dots
+ARC_BENDS = (0.1, -0.1, 0.18, -0.18, 0.3, -0.3, 0.45, -0.45)
+                        # the bends the arrow router tries first (adapter.ts BENDS, and 0.1 when it repairs): a curved
+                        # arrow is blocked by the ink near the least blocked of these arcs, not only by its chord
+ARC_STEPS = 6           # segments an arc is priced in
+HB_ANGLE = 30.0         # a dotted line leaving an atom closer than this (degrees) to a bond of that atom runs along
+                        # the bond: a contact (its dots merge with the bond's line); twice this to a bond drawn with a
+                        # second line beside it (double, 1.5), whose line or dashes stand on one side of the axis
 QUICK_ROUNDS = 4            # rounds of the quick search that settles each other candidate
+REGROUPED = 7               # other candidates regrouped (_kick) before they are listed: those retry_settle draws
+                            # (draw_figure.SETTLE_BATCHES)
+KICKS = 2                   # compound moves (_kick) taken per panel at most, each followed by the descent's rounds
 SEATS_TRIED = 3             # seats a hydrogen-bonded molecule starts from for other candidates, in a panel without reacting pairs
 ORBIT = range(60, 360, 60)  # turns (degrees) of a reacting molecule about its partner's end tried for other candidates
 CHOICE = {}                 # {panel id: rank}: which settled layout to keep, 0 the best; a panel named here also gets its
@@ -76,6 +89,49 @@ def _seg_box(a, b, box):
     return np.where(inside, 0.0, d)
 
 
+def _arc(a, b, bend, steps=ARC_STEPS):
+    """Points (..., steps + 1, 2) along the arc from a to b whose middle stands bend x the chord off it, as
+    Octet's arrowPath draws a bent arrow (a parabola through the same middle; the arcs the router uses are shallow)."""
+    t = np.linspace(0.0, 1.0, steps + 1)
+    d = b - a
+    n = np.stack((-d[..., 1], d[..., 0]), -1)
+    return (a[..., None, :] + t[:, None] * d[..., None, :]
+            + (4.0 * bend * t * (1.0 - t))[:, None] * n[..., None, :])
+
+
+def _arc_blocked(a, b, P, Q, B):
+    """For each row, the fewest bonds (P-Q, (R, E, 2)) and label boxes (B, (R, J, 4)) within ARROW_BAND of one arc
+    a -> b ((R, 2)) of ARC_BENDS: the ink a curved arrow between these ends cannot keep off."""
+    # every arc lies in its chord's box grown by its bend x the chord: a bond or box farther than ARROW_BAND from the box
+    # of all the rows' arcs counts in no row, and a row at 0 stays there (the same counts, fewer distances)
+    grow = max(abs(x) for x in ARC_BENDS) * float(np.hypot(*(b - a).T).max()) + ARROW_BAND + 1e-6
+    lo, hi = np.minimum(a, b).min(axis=0) - grow, np.maximum(a, b).max(axis=0) + grow
+    if P is not None:
+        out = (((P[..., 0] < lo[0]) & (Q[..., 0] < lo[0])) | ((P[..., 0] > hi[0]) & (Q[..., 0] > hi[0]))
+               | ((P[..., 1] < lo[1]) & (Q[..., 1] < lo[1])) | ((P[..., 1] > hi[1]) & (Q[..., 1] > hi[1]))).all(axis=0)
+        P, Q = (P[:, ~out], Q[:, ~out]) if (~out).any() else (None, None)
+    if B is not None:
+        out = ((B[..., 2] < lo[0]) | (B[..., 0] > hi[0]) | (B[..., 3] < lo[1]) | (B[..., 1] > hi[1])).all(axis=0)
+        B = B[:, ~out] if (~out).any() else None
+    best = np.full(len(a), np.inf)
+    if P is None and B is None:
+        return np.zeros(len(a))
+    for bend in ARC_BENDS:
+        rows = np.nonzero(best > 0)[0]
+        if not len(rows):
+            break
+        arc = _arc(a[rows], b[rows], bend)
+        count = np.zeros(len(rows))
+        if P is not None:
+            d = np.min([_seg_seg(arc[:, k, None], arc[:, k + 1, None], P[rows], Q[rows]) for k in range(ARC_STEPS)], axis=0)
+            count += (d < ARROW_BAND).sum(axis=1)
+        if B is not None:
+            d = np.min([_seg_box(arc[:, k, None], arc[:, k + 1, None], B[rows]) for k in range(ARC_STEPS)], axis=0)
+            count += (d < ARROW_BAND).sum(axis=1)
+        best[rows] = np.minimum(best[rows], count)
+    return best
+
+
 def _exit(p, q, box):
     """How far along p -> q (a fraction) the segment leaves box, which holds p (0 when it does not)."""
     x1, y1, x2, y2 = box[..., 0], box[..., 1], box[..., 2], box[..., 3]
@@ -96,6 +152,7 @@ class Panel(object):
 
     def __init__(self, lay, pid, sids, links, reach=()):
         self.lay, self.pid, self.sids, self.links, self.reach = lay, pid, sids, links, reach
+        self.gaps = lay.open_gaps(pid)
         self.margin = lay.style['label_margin_pt'] / lay.style['bond_length_pt']
         self.height = layout.CAP * lay.style['font_size_pt'] / lay.style['bond_length_pt']
         self.info = {}
@@ -103,9 +160,16 @@ class Panel(object):
             mol = lay.mol[sid]
             maps = [mol.map[i] for i in range(mol.n)]
             labeled = [i for i in range(mol.n) if mol.labeled(i)]
-            bonds = np.array([sorted(e) for e in mol.order], dtype=int).reshape(-1, 2)
+            pairs = [sorted(e) for e in mol.order]
+            bonds = np.array(pairs, dtype=int).reshape(-1, 2)
+            styles = lay.sp[sid].get('bond_style') or {}
+            # a bond drawn with a second line beside it (double, triple, aromatic, a 1.5 bond's dashes): a dotted line
+            # meets that line double_spacing off the bond's axis
+            side = [lay.style['double_spacing'] if mol.order[frozenset(e)] != 1 or '1.5' in (
+                styles.get((maps[e[0]], maps[e[1]])), styles.get((maps[e[1]], maps[e[0]]))) else 0.0 for e in pairs]
             self.info[sid] = {'maps': maps, 'pos': {m: k for k, m in enumerate(maps)}, 'labeled': labeled,
-                              'plain': [i for i in range(mol.n) if not mol.labeled(i)], 'bonds': bonds}
+                              'plain': [i for i in range(mol.n) if not mol.labeled(i)], 'bonds': bonds,
+                              'side': np.array(side, dtype=float)}
         self.hb = [(a['sid'], a['atom'], b['sid'], b['atom']) for a, b in lay.panels[lay.pidx[pid]]['hbonds']]
         self.hb_pairs = {frozenset(((sa, ma), (sb, mb))) for sa, ma, sb, mb in self.hb if sa != sb}
         # curved arrows as the chords between their ends: a dotted line across one is a crossing
@@ -135,7 +199,7 @@ class Panel(object):
 
     def _score(self, present, geo, rows):
         R = len(rows)
-        off, aoff, refs, lab_ref, lab_atom, bonds, sp_atom = {}, {}, {}, [], [], [], []
+        off, aoff, refs, lab_ref, lab_atom, bonds, sp_atom, side = {}, {}, {}, [], [], [], [], []
         pts, boxes = [], []
         n_at = n_lab = 0
         for k, sid in enumerate(present):
@@ -151,11 +215,13 @@ class Panel(object):
                 lab_ref.append((sid, inf['maps'][i]))
                 lab_atom.append(n_at + i)
             bonds.append(inf['bonds'] + n_at)
+            side.append(inf['side'])
             n_at += len(inf['maps'])
             n_lab += len(inf['labeled'])
         pts = np.concatenate(pts, axis=1)
         boxes = np.concatenate(boxes, axis=1) if n_lab else np.zeros((R, 0, 4))
         bonds = np.concatenate(bonds) if bonds else np.zeros((0, 2), dtype=int)
+        side = np.concatenate(side) if side else np.zeros(0)
         lab_atom = np.array(lab_atom, dtype=int)
         box_of = {a: j for j, a in enumerate(lab_atom.tolist())}
         lines = [(refs[(sa, ma)], refs[(sb, mb)], sa != sb) for sa, ma, sb, mb in self.hb
@@ -167,16 +233,13 @@ class Panel(object):
             if not all(r in refs for r in ends_from + ends_to):
                 continue
             own = [present.index(sid) for sid in {r[0] for r in ends_from + ends_to}]
-            a = pts[:, [refs[r] for r in ends_from]].mean(axis=1)[:, None]
-            b = pts[:, [refs[r] for r in ends_to]].mean(axis=1)[:, None]
-            if len(bonds):
-                e = np.nonzero(~np.isin(sp_atom[bonds[:, 0]], own))[0]
-                if len(e):
-                    total += (_seg_seg(a, b, pts[:, bonds[e, 0]], pts[:, bonds[e, 1]]) < ARROW_BAND).sum(axis=1)
-            if n_lab:
-                j = np.nonzero(~np.isin(sp_atom[lab_atom], own))[0]
-                if len(j):
-                    total += (_seg_box(a, b, boxes[:, j]) < ARROW_BAND).sum(axis=1)
+            a = pts[:, [refs[r] for r in ends_from]].mean(axis=1)
+            b = pts[:, [refs[r] for r in ends_to]].mean(axis=1)
+            e = np.nonzero(~np.isin(sp_atom[bonds[:, 0]], own))[0] if len(bonds) else []
+            j = np.nonzero(~np.isin(sp_atom[lab_atom], own))[0] if n_lab else []
+            if len(e) or len(j):
+                total += _arc_blocked(a, b, pts[:, bonds[e, 0]] if len(e) else None, pts[:, bonds[e, 1]] if len(e) else None,
+                                      boxes[:, j] if len(j) else None)
         if lines:
             la = np.array([l[0] for l in lines]); lb = np.array([l[1] for l in lines])
             p, q = pts[:, la], pts[:, lb]                                  # (R, H, 2)
@@ -186,7 +249,21 @@ class Panel(object):
                          (bonds[None, :, 1] == la[:, None]) | (bonds[None, :, 1] == lb[:, None]))
                 h, e = np.nonzero(keep)
                 d = _seg_seg(p[:, h], q[:, h], pts[:, bonds[e, 0]], pts[:, bonds[e, 1]])
-                total += (d < lr.HB_CROSS).sum(axis=1)
+                total += (d < lr.HB_CROSS + side[e]).sum(axis=1)
+            # a line leaving one of its atoms along a bond of that atom
+            if len(bonds):
+                cos_min = np.where(side > 0, math.cos(math.radians(2 * HB_ANGLE)), math.cos(math.radians(HB_ANGLE)))
+                for end, far in ((la, lb), (lb, la)):
+                    for col in (0, 1):
+                        h, e = np.nonzero(bonds[None, :, col] == end[:, None])
+                        if not len(h):
+                            continue
+                        o = pts[:, end[h]]
+                        u, v = pts[:, far[h]] - o, pts[:, bonds[e, 1 - col]] - o
+                        nu, nv = np.hypot(u[..., 0], u[..., 1]), np.hypot(v[..., 0], v[..., 1])
+                        with np.errstate(divide='ignore', invalid='ignore'):
+                            c = (u * v).sum(-1) / np.maximum(nu * nv, 1e-12)
+                        total += (c > cos_min[e]).sum(axis=1)
             # crossings with other dotted lines that do not share an end
             h1, h2 = np.triu_indices(len(lines), 1)
             if len(h1):
@@ -244,6 +321,16 @@ class Panel(object):
                 pa = pts[:, refs[(sa, ea[0])]] if ea[1] is None else (pts[:, refs[(sa, ea[0])]] + pts[:, refs[(sa, ea[1])]]) / 2
                 pb = pts[:, refs[(sb, eb[0])]] if eb[1] is None else (pts[:, refs[(sb, eb[0])]] + pts[:, refs[(sb, eb[1])]]) / 2
                 total += REACH_W * np.maximum(0.0, np.hypot(pa[:, 0] - pb[:, 0], pa[:, 1] - pb[:, 1]) - lim)
+        # the middle of an open gap, where its arrow heads point, nearer to a third atom of the two molecules
+        for sa, ma, sb, mb in self.gaps:
+            if sa in present and sb in present:
+                pa, pb = pts[:, refs[(sa, ma)]], pts[:, refs[(sb, mb)]]
+                mid = (pa + pb) / 2
+                own = np.hypot(pa[:, 0] - pb[:, 0], pa[:, 1] - pb[:, 1]) / 2
+                rest = [refs[(s, m)] for s in (sa, sb) for m in self.info[s]['maps'] if (s, m) not in ((sa, ma), (sb, mb))]
+                if rest:
+                    near = np.hypot(pts[:, rest, 0] - mid[:, None, 0], pts[:, rest, 1] - mid[:, None, 1]).min(axis=1)
+                    total += REACH_W * np.maximum(0.0, own - near)
         # joined atoms beyond their contact distance
         for sa, ea, sb, eb, w, want in self.links:
             if sa in present and sb in present:
@@ -338,7 +425,8 @@ def _hb_links(lay, pid, sid):
 
 def _flip_groups(lay, sid):
     """Terminal groups of molecule sid that hold a hydrogen bond to another molecule and may turn over their single
-    bond (a carboxylate's two O atoms change places): [(root map, parent map, maps of the group)].  Rings,
+    bond (a carboxylate's two O atoms change places), or over a double bond when only two alike atoms swap (_twins):
+    [(root map, parent map, maps of the group)].  Rings,
     stereocenters, hand coordinates and molecules the input turns or mirrors stay."""
     sp, mol = lay.sp[sid], lay.mol[sid]
     if sp['rotate'] or sp['flip']:
@@ -349,7 +437,8 @@ def _flip_groups(lay, sid):
         i = mol.idx[m]
         for x in [i] + list(mol.adj[i]):
             for y in mol.adj[x]:
-                if (x, y) in seen or frozenset((x, y)) in mol.ring_bonds or mol.order.get(frozenset((x, y))) != 1:
+                if (x, y) in seen or frozenset((x, y)) in mol.ring_bonds or mol.order.get(frozenset((x, y))) != 1 and not (
+                        mol.order.get(frozenset((x, y))) == 2 and _twins(mol, x, y)):
                     continue
                 side = set(mol.subtree(x, y))
                 if y in side or i not in side or len([k for k in side if not mol.is_h[k]]) > 6:
@@ -359,6 +448,14 @@ def _flip_groups(lay, sid):
                 seen.add((x, y))
                 out.append((mol.map[x], mol.map[y], [mol.map[k] for k in side]))
     return out
+
+
+def _twins(mol, x, y):
+    """Whether atom x, double-bonded to y, carries two more atoms of one element that end there (the H of =NH2+, =CH2):
+    turning x over the double bond only swaps them, so no E/Z changes."""
+    rest = [k for k in mol.adj[x] if k != y]
+    kind = lambda k: (mol.atoms[k]['symbol'], mol.atoms[k].get('isotope'), mol.atoms[k].get('charge'))
+    return len(rest) == 2 and all(len(mol.adj[k]) == 1 for k in rest) and kind(rest[0]) == kind(rest[1])
 
 
 def _group_turned(xy, group):
@@ -411,9 +508,21 @@ def _moves(lay, pid, sids, seats_now):
     for sid in sids:
         if lay.sp[sid]['xy'] and sid != sids[0]:
             continue
-        for group in _flip_groups(lay, sid):
-            place = _group_turned(lay.xy[sid], group)
+        groups = _flip_groups(lay, sid)
+        # one group turned, or two at once (a residue whose two hydrogen bonds both point the wrong way)
+        turned = [_group_turned(lay.xy[sid], g) for g in groups]
+        turned += [_group_turned(_group_turned(lay.xy[sid], g), h) for k, g in enumerate(groups) for h in groups[k + 1:]
+                   if not set(g[2]) & set(h[2])]
+        for place in turned:
             moves.append(({sid: place}, 'flip'))
+            if sid != sids[0]:
+                # the molecule re-seated for its turned groups: its hydrogens now point elsewhere
+                was = lay.xy[sid]
+                lay.xy[sid] = place
+                moves.extend(({sid: seat}, 'flip+seat') for seat in seats_now(sid)[:2])
+                lay.xy[sid] = was
+        for group in groups:
+            place = _group_turned(lay.xy[sid], group)
             partners = sorted({o for _, o, _ in _hb_links(lay, pid, sid) if o != sids[0] and not lay.sp[o]['xy']})
             if partners:
                 was = lay.xy[sid]
@@ -598,9 +707,58 @@ def _descend(lay, pid, sids, panel, seats_now, quick=False):
     return score, moved
 
 
+def _kick(lay, pid, sids, panel, seats_now, score):
+    """When the descent stops with a dotted line still crossing or touching (hbond_trouble): each group holding an end
+    of such a line turned over its bond, the molecules hydrogen-bonded to the group re-seated one after another (each
+    to where the others now stand), or, when no such turn lowers the score, each molecule holding such an end put on
+    each of its seats; then the quick search.  The best of these when it lowers the whole score (taken, and returned),
+    else None with nothing moved.  Such a change moves several molecules at once: no single move of the descent lowers
+    the score through the layouts between (a seat clear of the crossing that stands too near a third molecule until that
+    one shifts)."""
+    trouble = lr.hbond_trouble(lay, pid)
+    if not trouble:
+        return None
+    ends = set()
+    for kind, line, other in trouble:
+        ends |= set(line) | (set(other) if kind == 'hbond' else set())
+    here = {s: dict(lay.xy[s]) for s in sids}
+    best = None
+    for sid in sids:
+        if lay.sp[sid]['xy'] and sid != sids[0]:
+            continue
+        for group in _flip_groups(lay, sid):
+            if not any((sid, m) in ends for m in group[2]):
+                continue
+            place = _group_turned(here[sid], group)
+            if all(layout.dist(place[m], here[sid][m]) < 1e-6 for m in group[2]):
+                continue
+            lay.xy[sid] = place
+            for o in sorted({o for my, o, _ in _hb_links(lay, pid, sid) if my in group[2]}):
+                if o != sids[0] and not lay.sp[o]['xy']:
+                    seats = seats_now(o)
+                    if seats:
+                        lay.xy[o] = seats[0]
+            sc, _ = _descend(lay, pid, sids, panel, seats_now, quick=True)
+            if sc < score - 1e-6 and (best is None or sc < best[0]):
+                best = (sc, {s: dict(lay.xy[s]) for s in sids})
+            lay.xy.update({s: dict(xy) for s, xy in here.items()})
+    for sid in sorted({s for s, _ in ends if s != sids[0]}) if best is None else ():
+        for seat in seats_now(sid):
+            lay.xy[sid] = seat
+            sc, _ = _descend(lay, pid, sids, panel, seats_now, quick=True)
+            if sc < score - 1e-6 and (best is None or sc < best[0]):
+                best = (sc, {s: dict(lay.xy[s]) for s in sids})
+            lay.xy.update({s: dict(xy) for s, xy in here.items()})
+    if best is None:
+        return None
+    lay.xy.update(best[1])
+    return best[0]
+
+
 def _candidates(lay, pid, sids, panel, seats_now, start, first):
     """The settled layouts of the panel, distinct by _signature, best first after the one settle keeps (first): each
-    reacting molecule turned about its partner's end by ORBIT, and mirrored when it has no stereocenter, then settled."""
+    reacting molecule turned about its partner's end by ORBIT, and mirrored when it has no stereocenter, then settled;
+    the REGROUPED best of them also regrouped (_kick) as settle's own layout is."""
     pairs = _pairs(lay, pid, sids)
     keep = {s: dict(lay.xy[s]) for s in sids}
     found = {_signature(lay, pairs, start): (first[0], keep)}
@@ -634,10 +792,23 @@ def _candidates(lay, pid, sids, panel, seats_now, start, first):
                 sig = cells()
                 if sig not in found or sc < found[sig][0] - 1e-6:
                     found[sig] = (sc, {s: dict(lay.xy[s]) for s in sids})
-    lay.xy.update(keep)
     first_sig = next(iter(found))
     rest = sorted((v for k, v in found.items() if k != first_sig), key=lambda v: v[0])
-    return [found[first_sig]] + rest
+    # the ones drawn first regrouped as settle's own layout is (_kick) while a dotted line still crosses or touches
+    drawn, seen = [], {tuple(_sig(keep[s]) for s in sids)}
+    for sc, places in rest[:REGROUPED]:
+        lay.xy.update({s: dict(xy) for s, xy in places.items()})
+        for _ in range(KICKS):
+            got = _kick(lay, pid, sids, panel, seats_now, sc)
+            if got is None:
+                break
+            sc = got
+        here = tuple(_sig(lay.xy[s]) for s in sids)
+        if here not in seen:
+            seen.add(here)
+            drawn.append((sc, {s: dict(lay.xy[s]) for s in sids}))
+    lay.xy.update(keep)
+    return [found[first_sig]] + sorted(drawn, key=lambda v: v[0]) + rest[REGROUPED:]
 
 
 def _settle_panel(lay, p, ctx):
@@ -683,6 +854,17 @@ def _settle_panel(lay, p, ctx):
     score0 = _whole(lay, panel)
     start = {s: dict(lay.xy[s]) for s in sids}
     score, moved = _descend(lay, pid, sids, panel, seats_now)
+    cached = dict(seat_cache)
+    for _ in range(KICKS):
+        got = _kick(lay, pid, sids, panel, seats_now, score)
+        if got is None:
+            break
+        score, more = _descend(lay, pid, sids, panel, seats_now)
+        moved += ['regrouped'] + more
+    # the seats cached while regrouping were fitted with other molecules elsewhere: the other candidates search as
+    # they would without it
+    seat_cache.clear()
+    seat_cache.update(cached)
     if pid in CHOICE:
         if base not in _FOUND:
             _FOUND[base] = _candidates(lay, pid, sids, panel, seats_now, start, (score, None))

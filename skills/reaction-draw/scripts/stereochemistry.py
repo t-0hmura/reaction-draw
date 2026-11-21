@@ -12,6 +12,25 @@ legacy mapped-SMILES _CIPCode values.
 import math
 
 
+def wide_end(ref, far, nbrs, el, ring_atoms):
+    """True when a single stereobond from ref (a center with an implicit H and three drawn neighbors) to far leaves the
+    implicit H ambiguous: far carries more than two heavy neighbors, unless it is a tert-butyl carbon or a plain ring
+    atom of a ring the stereobond leaves (an unsubstituted ring such as phenyl, also when ref is on another ring, as in
+    an epoxide: IUPAC 2006 ST-1.2).  The layout picks its stereobond with this rule (layout.iupac_stereobonds) and
+    stereo_display checks it.  nbrs(x): the atoms bonded to x; el(x): its element; ring_atoms: the atoms in rings."""
+    heavy = [n for n in nbrs(far) if el(n) != 'H']
+    tert_butyl = el(far) == 'C' and len(heavy) == 4 and all(len(nbrs(n)) == 1 for n in heavy if n != ref)
+    ring_bond, seen, todo = False, {far}, [n for n in heavy if n != ref and n in ring_atoms] if ref in ring_atoms else []
+    while todo and not ring_bond:              # ref-far lies on a ring when ref is reached from far without that bond
+        x = todo.pop()
+        ring_bond = x == ref
+        if x not in seen:
+            seen.add(x)
+            todo.extend(n for n in nbrs(x) if n in ring_atoms and n not in seen)
+    simple_ring = far in ring_atoms and not ring_bond and all(len(nbrs(n)) == 2 for n in heavy if n in ring_atoms and n != ref)
+    return len(heavy) > 2 and not tert_butyl and not simple_ring
+
+
 def _rdkit():
     try:
         from rdkit import Chem

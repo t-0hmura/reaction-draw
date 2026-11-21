@@ -50,6 +50,7 @@ NUMBER_OWN_MARGIN_PT = 1.5     # the nearest other atom / number / circle is at 
 NUMBER_LETTER_CLEAR_PT = 3.0   # no other atom's letters closer than this to a number (not between two labels)
 SIZE_TOL_PT = 0.05
 ARC_RATIO_MAX = 2.0            # a curved arrow's length / the distance between its ends (half circle 1.57; 220 degrees 2.0)
+ARC_RATIO_MIN = 1.06   # a curved arrow at least this long for the distance between its ends (an arc bulging 0.15 of it)
 COLUMN_ANGLE_TOL = 2.0         # degrees from vertical for reaction arrows joining panels in one column
 FONT_TOL = 0.01                # text widths of the drawing font against Arial's (measured: Liberation Sans 1.000, the
                                # fallback sans-serif font of a machine without it 1.07)
@@ -756,6 +757,70 @@ def _arrow_pivot(f, aid):
     return next(iter(shared)) if len(shared) == 1 and max(len(a), len(b)) == 2 else None
 
 
+CROSS_DEG = 30          # a curved arrow's body may cross the line of a bond or a hydrogen bond (D192) at this angle or more,
+CROSS_END = 0.25        # through the middle of the line (this fraction of it from either atom), with no letter within
+CROSS_TEXT_PT = 2.0     # this of the crossing; plain lines only (a wedge, hash or wavy bond is never crossed)
+
+
+def _seg_cross(u, v, p, q):
+    """(fraction along p-q, angle in degrees, point) where segment u-v properly crosses segment p-q, else None."""
+    d1, d2 = (v[0] - u[0], v[1] - u[1]), (q[0] - p[0], q[1] - p[1])
+    den = d1[0] * d2[1] - d1[1] * d2[0]
+    if abs(den) < 1e-12:
+        return None
+    w = (p[0] - u[0], p[1] - u[1])
+    s_ = (w[0] * d2[1] - w[1] * d2[0]) / den
+    t = (w[0] * d1[1] - w[1] * d1[0]) / den
+    if not (0.0 <= s_ < 1.0 and 0.0 < t < 1.0):
+        return None
+    c = abs(d1[0] * d2[0] + d1[1] * d2[1]) / (math.hypot(*d1) * math.hypot(*d2) or 1.0)
+    return t, math.degrees(math.acos(min(1.0, c))), (u[0] + s_ * d1[0], u[1] + s_ * d1[1])
+
+
+def _arrow_crossings(f, aid, shapes):
+    """{(kind, frozenset of its atoms): (point, angle)} of the lines of bonds and hydrogen bonds the body of curved arrow
+    aid crosses cleanly (D192): once, through the middle of the line, at CROSS_DEG or more, no letter near the crossing.
+    The body's center line runs through the middles of its stroke pieces; the head is not part of it."""
+    cache = f.__dict__.setdefault('_crossings', {})
+    if aid in cache:
+        return cache[aid]
+    c = next((x for x in f.report['curved'] if x['id'] == aid), None)
+    out = {}
+    end = tuple(c['end']) if c and c.get('end') else None
+    body = [s for s in shapes if not (end and s.closed and any(math.dist(q, end) < 0.1 for q in s.pts))]
+    mids = [(sum(p[0] for p in s.pts) / len(s.pts), sum(p[1] for p in s.pts) / len(s.pts)) for s in body]
+    lines = [('bond', (b['a'], b['b'])) for b in f.bonds if b.get('style') not in ('wedge', 'hash', 'wavy')] \
+        + [('hbond', tuple(h)) for h in f.hbonds]
+    texts = [box for _, _, _, box in f.texts()]
+    for kind, key in lines:
+        if key[0] not in f.atoms or key[1] not in f.atoms:
+            continue
+        p, q = f.xy(key[0]), f.xy(key[1])
+        hits = [h for h in (_seg_cross(mids[k], mids[k + 1], p, q) for k in range(len(mids) - 1)) if h]
+        if len(hits) != 1:
+            continue
+        t, ang, x = hits[0]
+        if CROSS_END <= t <= 1 - CROSS_END and ang >= CROSS_DEG and all(pt_box_gap(x, b) >= CROSS_TEXT_PT for b in texts):
+            out[(kind, frozenset(key))] = (x, ang)
+    cache[aid] = out
+    return out
+
+
+def _crossing_piece(f, aid, shapes, piece, s):
+    """True when the contact of arrow piece with ink s belongs to a clean crossing of s's line (D192): s is a bond's or a
+    hydrogen bond's ink, the arrow crosses that line cleanly and the piece lies at the crossing.  The head never does."""
+    if not s.owner or s.owner[0] not in ('bond', 'hbond'):
+        return False
+    hit = _arrow_crossings(f, aid, shapes).get((s.owner[0], frozenset(s.owner[1])))
+    if not hit:
+        return False
+    c = next((x for x in f.report['curved'] if x['id'] == aid), None)
+    if c and c.get('end') and piece.closed and any(math.dist(q, tuple(c['end'])) < 0.1 for q in piece.pts):
+        return False
+    mid = (sum(p[0] for p in piece.pts) / len(piece.pts), sum(p[1] for p in piece.pts) / len(piece.pts))
+    return math.dist(mid, hit[0]) <= 2.0 / math.sin(math.radians(hit[1])) + 2.0
+
+
 def det_overlap_arrow_bond(f):
     sc = f.scene()
     ink = sc['bonds'] + sc['marks']
@@ -769,8 +834,8 @@ def det_overlap_arrow_bond(f):
         for s in (ink[i] for i in _near(ink_boxes, box, 0.0)) if box else ink:
             if joined and s.owner and s.owner[0] == 'hbond' and frozenset(s.owner[1]) == joined:
                 continue                            # the hydrogen bond the arrow runs along, between its own two ends
-            c = min([shape_clear(a, s, overlap_only=True) for a in shapes if not _far(a.bbox, s.bbox, SLACK)]
-                    or [99.0 for _ in shapes[:1]])
+            c = min([shape_clear(a, s, overlap_only=True) for a in shapes if not _far(a.bbox, s.bbox, SLACK)
+                     and not _crossing_piece(f, aid, shapes, a, s)] or [99.0 for _ in shapes[:1]])
             if c <= 0.0:
                 if pivot and s.owner and s.owner[0] == 'bond' and pivot in s.owner[1]:
                     # a local arrow keeps its concave side to its atom; when another bond of that atom lies in the way,
@@ -1004,6 +1069,9 @@ def det_arrows_shape(f):
         if c['length'] > ARC_RATIO_MAX * max(chord, 0.5):
             out.append('%s: %.1f pt of arrow for %.1f pt between its ends (%.1f times; at most %.1f): a loop, not an arc'
                        % (c['id'], c['length'], chord, c['length'] / max(chord, 0.5), ARC_RATIO_MAX))
+        elif chord > 0.5 and c['length'] < ARC_RATIO_MIN * chord:
+            out.append('%s: %.1f pt of arrow for %.1f pt between its ends (%.3f times; at least %.2f): nearly straight, not a curve'
+                       % (c['id'], c['length'], chord, c['length'] / chord, ARC_RATIO_MIN))
     return out
 
 
@@ -1031,6 +1099,11 @@ def det_column_arrows(f):
     return out
 
 
+HEAD_BOND_PT = 1.0    # pt: a head at an atom stays this clear of that atom's own bonds
+HEAD_BESIDE_DEG = 45  # degrees: a head at an atom points within this of the middle of its symbol
+HOOK_DEV_MAX = 70     # degrees: a bond's electrons onto its own atom reach it within this of the bond's direction
+BOND_END_OFF = 0.25   # an arrow's tail or head at a bond lies within this (fraction of the drawn line) of its middle
+MEET_BONDS = 0.15     # the tips of the two fishhooks of one forming bond end within this (bond lengths) of each other
 HEAD_AIM_DEG = 90     # an arrow head that stops HEAD_AIM_REACH_PT or more from the symbol it ends at points within
 HEAD_AIM_REACH_PT = 3.5   # this of the symbol's middle (a nearer head may arrive from the side)
 HEAD_REACH_PT = 5.0   # an arrow head ends within this of the symbol of the atom it points at
@@ -1170,6 +1243,42 @@ def _reads_as_bond(f, c, pt, ref):
     return None
 
 
+def _head_beside(f, c, pt, ref):
+    """A finding when the head at atom ref points more than HEAD_BESIDE_DEG away from the middle of its symbol (the
+    atom's point, unlabeled): it passes beside the atom instead of pointing into it."""
+    u = _head_dir(f, c['id'], pt)
+    box = _own_symbol_box(f, ref)
+    cx, cy = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2) if box else f.xy(ref)
+    v = (cx - pt[0], cy - pt[1]); n = math.hypot(*v)
+    if not u or n < 1e-6:
+        return None
+    dev = math.degrees(math.acos(max(-1.0, min(1.0, (u[0] * v[0] + u[1] * v[1]) / n))))
+    if dev > HEAD_BESIDE_DEG:
+        return '%s: head points %.0f degrees beside %s (at most %d): it passes the atom instead of pointing into it' % (c['id'], dev, ref, HEAD_BESIDE_DEG)
+    return None
+
+
+def _head_on_bond(f, c, pt, ref):
+    """A finding when the head at atom ref comes within HEAD_BOND_PT of one of that atom's own bonds: it lies on the bond."""
+    heads = [s for k, shapes in f.scene()['arrows'] if k == c['id'] for s in shapes
+             if s.closed and any(math.dist(q, pt) < 0.1 for q in s.pts)]
+    if not heads:
+        return None
+    for s in f.scene()['bonds']:
+        if s.owner and s.owner[0] == 'bond' and ref in s.owner[1]:
+            g = shape_clear(heads[0], s)
+            if g < HEAD_BOND_PT:
+                return '%s: head lies %.2f pt from bond %s (at least %.1f): it covers the bond' % (c['id'], g, '-'.join(s.owner[1]), HEAD_BOND_PT)
+    return None
+
+
+def _local_hook(c):
+    """A bond's electrons onto one of its own atoms, or an atom's pair into one of its own bonds: a short hook."""
+    f_, t_ = c['from'], c['to']
+    return (f_['kind'] == 'bond' and t_['kind'] == 'atom' and t_['refs'][0] in f_['refs']) or \
+        (f_['kind'] == 'atom' and t_['kind'] == 'bond' and f_['refs'][0] in t_['refs'])
+
+
 def det_arrows_ends(f):
     out = []
     by_id = {c['id']: c for c in f.report['curved']}
@@ -1190,10 +1299,21 @@ def det_arrows_ends(f):
                         out.append('%s: head does not reach %s, the atom that receives the electron pair' % (c['id'], receiver))
                     elif (reading := _reads_as_bond(f, c, pt, receiver)):
                         out.append(reading)
+                    elif (beside := _head_beside(f, c, pt, receiver) or _head_on_bond(f, c, pt, receiver)):
+                        out.append(beside)
                     continue
                 a, b = (f.xy(ref) for ref in want_end['refs'])
                 if pt is None or math.dist(pt, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)) > .4 * math.dist(a, b):
                     out.append('%s: head lies outside its forming-bond gap' % c['id'])
+                    continue
+                # a head nearer to a third atom than to both atoms of its gap reads as pointing at that atom
+                panel = want_end['refs'][0].split('.')[0] + '.'
+                own = min(_reach(f, pt, r) for r in want_end['refs'])
+                rest = [(_reach(f, pt, r), r) for r in f.atoms if r.startswith(panel) and r not in want_end['refs']
+                        and not f.atoms[r].get('hidden_h')]
+                if rest and min(rest)[0] < own:
+                    out.append('%s: head is %.1f pt from %s and %.1f pt from its forming-bond gap %s: it reads as pointing at %s'
+                               % (c['id'], min(rest)[0], min(rest)[1], own, '-'.join(want_end['refs']), min(rest)[1]))
                 continue
             if side == 'start' and c['electrons'] == 1 and want_end['kind'] == 'atom':
                 continue  # the unpaired-electron mark is checked by electron_flow
@@ -1209,12 +1329,29 @@ def det_arrows_ends(f):
                 near = _nearest_end(f, pt, want_end['kind'])
                 if tuple(sorted(near)) != tuple(sorted(want)):
                     out.append('%s %s point is nearest to %s, not to %s' % (c['id'], side, '-'.join(near), '-'.join(want)))
+                elif want_end['kind'] == 'bond' and not _local_hook(c):
+                    # a tail or head at a bond sits beside the middle of the bond's drawn line
+                    (ax, ay), (bx, by) = _drawn_segment(f, want[0], want[1])
+                    l2 = (bx - ax) ** 2 + (by - ay) ** 2
+                    t = ((pt[0] - ax) * (bx - ax) + (pt[1] - ay) * (by - ay)) / l2 if l2 > 1e-9 else .5
+                    if abs(t - .5) > BOND_END_OFF:
+                        out.append('%s %s: %.0f %% along the drawn line of bond %s, not near its middle' % (c['id'], side, 100 * t, '-'.join(want)))
                 elif side == 'end' and want_end['kind'] == 'atom':
+                    if c['from']['kind'] == 'bond' and want[0] in c['from']['refs']:
+                        # a bond's electrons onto its own atom reach it from the bond's side, not round past it
+                        other = [r for r in c['from']['refs'] if r != want[0]][0]
+                        (ix, iy), (jx, jy) = f.xy(want[0]), f.xy(other)
+                        dev = abs((math.degrees(math.atan2(pt[1] - iy, pt[0] - ix) - math.atan2(jy - iy, jx - ix)) + 180) % 360 - 180)
+                        if dev > HOOK_DEV_MAX:
+                            out.append('%s end: head reaches %s %.0f degrees round from its bond to %s (at most %d): it reads as passing the atom'
+                                       % (c['id'], want[0], dev, other, HOOK_DEV_MAX))
                     reach = _reach(f, pt, want[0])
                     if reach > (HEAD_REACH_PT if f.labeled(want[0]) else BARE_HEAD_REACH * f.bond_pt):
                         out.append('%s end: head stops %.1f pt from the symbol of %s' % (c['id'], reach, want[0]))
                     elif (reading := _reads_as_bond(f, c, pt, want[0])):
                         out.append(reading)
+                    elif not _local_hook(c) and (beside := _head_beside(f, c, pt, want[0]) or _head_on_bond(f, c, pt, want[0])):
+                        out.append(beside)
     return out
 
 
@@ -1534,7 +1671,7 @@ def det_number_place(f, rows=None):
         # (b) clearly nearest to its own atom (other atoms by the glyphs of their labels, or their points)
         others = [(f.gap_to_atom(box, x), 'atom %s' % x) for x in f.atoms if x != ref]
         others += [(box_gap(box, m['box']), 'number of %s' % m['ref']) for m in numbers if m is not n]
-        others += [(max(0.0, pt_box_gap(c['center'], box) - c['outer_d'] / 2.0), 'circle of %s' % c['ref']) for c in circles if c['ref'] != ref]
+        # another atom's charge circle is not an atom: overlap_charge keeps it clear of the number, but it does not take it
         og, ow = min(others) if others else (99.0, '')
         margin = og - own
         # (c) not between labels: no other atom's letters close by
@@ -2279,10 +2416,7 @@ def det_stereo_display(f):
             if far in centers and f.atoms[ref].get('h', 0) and not any(f.atoms[n]['el'] == 'H' for n in f.nbrs[ref]):
                 out.append('%s: H must be explicit when a stereobond joins another stereocenter' % ref)
             if f.atoms[ref].get('h', 0) and len(f.nbrs[ref]) == 3:
-                heavy = [n for n in f.nbrs[far] if f.atoms[n]['el'] != 'H']
-                tert_butyl = f.atoms[far]['el'] == 'C' and len(heavy) == 4 and all(len(f.nbrs[n]) == 1 for n in heavy if n != ref)
-                simple_ring = far in ring_atoms and all(len(f.nbrs[n]) == 2 for n in heavy if n in ring_atoms)
-                if len(heavy) > 2 and not tert_butyl and not simple_ring:
+                if stereo.wide_end(ref, far, lambda x: f.nbrs[x], lambda x: f.atoms[x]['el'], ring_atoms):
                     out.append('%s: implicit H is ambiguous at the wide-end substituent; make H explicit' % ref)
     for b in f.bonds:
         if b.get('style') == 'wavy' and (b['order'] != 1 or b['a'] in specified or b['b'] in specified):
@@ -2385,6 +2519,17 @@ def det_electron_flow(f):
                 t = ((end[0] - a[0]) * dx + (end[1] - a[1]) * dy) / max(dx * dx + dy * dy, 1e-8)
                 if not .25 <= t <= .75 or co.dist_pt_seg(end[0], end[1], a[0], a[1], b[0], b[1]) > .2 * f.bond_pt:
                     out.append('%s: arrow head is outside the forming-bond gap' % c['id'])
+    # the two fishhooks of one forming bond point at one point
+    heads = collections.defaultdict(list)
+    for c in f.curved:
+        if c['electrons'] == 1 and c['to']['kind'] == 'gap' and rows.get(c['id'], {}).get('end'):
+            heads[tuple(sorted(c['to']['refs']))].append((c['id'], rows[c['id']]['end']))
+    for gap, hs in heads.items():
+        for k, (ia, pa) in enumerate(hs):
+            for ib, pb in hs[k + 1:]:
+                if math.dist(pa, pb) > MEET_BONDS * f.bond_pt:
+                    out.append('%s, %s: the heads of the two fishhooks forming %s end %.1f pt apart, not at one point'
+                               % (ia, ib, '-'.join(gap), math.dist(pa, pb)))
     if any(n > 1 for n in used_pairs.values()):
         out.append('more than one full-headed arrow starts at the same drawn lone pair')
     return out
@@ -2545,7 +2690,8 @@ def det_arrows_clear(f):
         def look(s, what):
             if _far(box, s.bbox, limit):
                 return near                             # no shape within the limit: (99.0, what) is not below near
-            gap = min((shape_clear(a, s) for a in shapes if co.bbox_gap(a.bbox, s.bbox) <= limit), default=99.0)
+            gap = min((shape_clear(a, s) for a in shapes if co.bbox_gap(a.bbox, s.bbox) <= limit
+                       and not _crossing_piece(f, aid, shapes, a, s)), default=99.0)
             return min(near, (gap, what))
         # look() keeps near for every ink, text and arrow _far from the arrow: only those near its bbox are looked at
         for s in (ink[i] for i in (_near(ink_boxes, box, limit) if box else ())):

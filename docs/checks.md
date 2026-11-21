@@ -17,6 +17,8 @@ These checks cover overlaps, hidden atom symbols, and the [rules](rules.md). The
 | Bonds and angles | `chain_angles`, `four_bond`, `ring_substituents`, `label_bonds`, `one_label_bonds`, `bond_lengths`, `partial_dashes`, `delocalized_bonds`, `hbond_dots` |
 | Figure | `column_arrows`, `reaction_kinds`, `ts_brackets`, `colors`, `residue_codes`, `residue_once`, `figure_style`, `coordination`, `metal_geometry` |
 
+A curved arrow's body may cross the line of a plain bond or a hydrogen bond (`overlap_arrow_bond` and `arrows_clear` do not count it) when it crosses that line once, through its middle half, at 30° or more, with no letter within 2 pt of the crossing; an arrow that runs along, grazes, or crosses near an atom or a letter, a wedge, hash or wavy bond, and any head on a line still count.
+
 Each detector runs only when its target feature is present in the figure (e.g., `charge_size` runs only when charges are present); the summary lists applicable and non-applicable detectors.
 
 Departures from preferred angles, bond lengths, radical directions, and electron balance, a `+` not placed between two species (`plus_place`), a curved arrow within 0.035 bond lengths (0.5 pt) of ink that is not its own start or end (`arrows_clear`), and a local curved arrow that crosses another bond of its own atom to keep its concave side toward that atom (`overlap_arrow_bond`) produce warnings. An unpaired electron that comes from the bracket H count rather than from `radicals`, or a radical dot nearer another atom or another piece of its own label (such as a shown H) than its own atom (`radical_marks`), mixed residue codes, charge-circle styles, or partial-line styles cause failures. Folded hydrogens, coordination H counts, and TS H counts are preserved in the saved files and verified when read back.
@@ -30,6 +32,17 @@ Once all positioning, hand coordinates, reflections, and bond lengthening are ap
 ## Hydrogen-bond lines
 
 For an `hbonds` overlap, the `FIX` line points to `python scripts/fix_hbonds.py INPUT --out NEW_DIR`. The script tests both the H and heavy-atom endpoints on the same donor, along with small turns, flips, or offsets of the smaller residue or water fragment, while preserving the substrate and existing hand-coordinate limits. At most three repair candidates are drawn; to pass, a candidate must reduce hydrogen-bond findings and worsen no other checks. The original input remains unchanged: an improved `input.hbonds.json` is saved alongside it (numbered if the file already exists), and the changes are recorded under `hbond_repair` in `NEW_DIR/.state.json`.
+
+## Curved arrow shape
+
+`arrows_shape` fails when a curved arrow is a loop (more than 2.0 times as long as the distance between its ends) or nearly straight (less than 1.06 times, an arc bulging less than 0.15 of that distance).
+
+`arrows_ends` fails when an arrow's tail or head at a bond lies outside the middle half of the bond's drawn line. A short hook from a bond onto one of its own atoms (N–H to N) is exempt, but its head must reach the atom from the bond's side, within 70 degrees of the bond, instead of curling round past the atom. Any other head at an atom (including the atom that receives a forming bond's pair) must point, as drawn, within 45 degrees of the middle of that atom's symbol instead of passing beside it, and stay at least 1 pt clear of that atom's own bonds instead of covering one.
+
+## Forming-bond arrows
+
+- The two fishhooks of one forming bond (two radicals pairing) end at one point: `electron_flow` fails when their tips are more than 0.15 bond lengths apart.
+- `arrows_ends` fails when the head of a forming-bond arrow is nearer another atom than both atoms of its gap, since it reads as pointing at that atom. Two atoms that are already bonded are a bond end, not a gap: the head goes to the middle of the bond that gains order.
 
 ## Names and labels
 
