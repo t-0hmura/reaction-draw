@@ -617,7 +617,7 @@ def _finding_panels(result, fig=None):
     """The panels named in the failed checks' findings: by their atoms, and by the arrows they name (a finding about an
     arrow alone, such as one touching a letter, names no atom)."""
     text = ' '.join(x for name in result['failed'] for x in result['checks'][name]['findings'])
-    panels = set(re.findall(r'\b([A-Za-z][A-Za-z0-9]*)\.[A-Za-z_]\w*:\d+', text))
+    panels = set(re.findall(r'\b([A-Za-z][A-Za-z0-9]*)\.[A-Za-z_]\w*:(?:\d+|(?=\s))', text))     # an atom, or a species ("TS.sub: ...")
     for c in (fig.curved if fig is not None else []):
         if c['from'].get('refs') and re.search(r'(?<![\w.:-])%s(?![\w.-])' % re.escape(c['id']), text):
             panels.add(c['from']['refs'][0].split('.', 1)[0])

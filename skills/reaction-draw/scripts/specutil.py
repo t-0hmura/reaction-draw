@@ -569,6 +569,99 @@ def hbond_hydrogens(data):
     return out
 
 
+def stereo_hydrogens(data):
+    """A stereocenter with one H whose other bonds cannot take a wedge or hash (ring bonds, multiple bonds, bonds drawn
+    dashed or wavy, and bonds to another stereocenter; layout.iupac_stereobonds draws none there), as at a transition
+    state's atom whose bonds are partial or 1.5 bonds, shows that H as a bond, and the stereobond goes on it.  Rewrites
+    [C@@H:10] in the species' SMILES so that the H is an atom of a new map (the same map for that atom in every panel),
+    keeping the configuration, and lists the map in keep_h.  A center with a wedge or hash asked in bond_style, or placed
+    by hand ("xy"), is left as written.  Returns a copy of data (or data itself)."""
+    import copy
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import rdCIPLabeler
+    except ImportError:
+        return data
+    panels = data.get('panels') if isinstance(data.get('panels'), list) else []
+    species = [s for p in panels if isinstance(p, dict) for s in p.get('species') or []
+               if isinstance(s, dict) and isinstance(s.get('smiles'), str)]
+    if not species:
+        return data
+
+    def cip(smiles):
+        m = Chem.MolFromSmiles(smiles)
+        if m is None:
+            return None
+        rdCIPLabeler.AssignCIPLabels(m)
+        return {a.GetAtomMapNum(): a.GetProp('_CIPCode') for a in m.GetAtoms() if a.HasProp('_CIPCode')}
+
+    def bare(sp):
+        """The atom indices (of the unsanitized SMILES) of the centers that need their H drawn, and that molecule."""
+        m = Chem.MolFromSmiles(sp['smiles'], sanitize=False)
+        if m is None:
+            return [], None
+        m.UpdatePropertyCache(strict=False)
+        Chem.FastFindRings(m)
+        styles = {}
+        for k, v in (sp.get('bond_style') or {}).items():
+            t = re.match(r'^(\d+)[-=#~](\d+)$', str(k))
+            if t:
+                styles[frozenset((int(t.group(1)), int(t.group(2))))] = (v, int(t.group(1)))
+        hand = {int(k) for k in (sp.get('xy') or {}) if str(k).isdigit()} if isinstance(sp.get('xy'), dict) else set()
+        chiral = {a.GetIdx() for a in m.GetAtoms() if a.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED}
+        out = []
+        for i in chiral:
+            a = m.GetAtomWithIdx(i)
+            mp = a.GetAtomMapNum()
+            if a.GetTotalNumHs() != 1 or a.GetDegree() != 3 or not mp or mp in hand:
+                continue
+            asked = [st for st, narrow in (styles.get(frozenset((mp, b.GetOtherAtom(a).GetAtomMapNum())), (None, None)) for b in a.GetBonds())
+                     if st in ('wedge', 'hash') and narrow == mp]
+            if asked:
+                continue
+            free = [b for b in a.GetBonds() if b.GetBondType() == Chem.BondType.SINGLE and not b.IsInRing()
+                    and b.GetOtherAtomIdx(i) not in chiral
+                    and styles.get(frozenset((mp, b.GetOtherAtom(a).GetAtomMapNum())), (None,))[0] not in ('partial', '1.5', 'wavy', 'coord')]
+            if not free:
+                out.append(i)
+        return out, m
+
+    found = {}
+    for sp in species:
+        idx, _ = bare(sp)
+        if idx:
+            found[id(sp)] = idx
+    if not found:
+        return data
+    top = max(int(x) for sp in species for x in re.findall(r':(\d+)\]', sp['smiles']))
+    new = {}                                     # (species id, heavy map) -> the map of its H
+    out = copy.deepcopy(data)
+    copies = [s for p in out['panels'] if isinstance(p, dict) for s in p.get('species') or []
+              if isinstance(s, dict) and isinstance(s.get('smiles'), str)]
+    for sp, orig in zip(copies, species):
+        if id(orig) not in found:
+            continue
+        idx, m = bare(sp)
+        maps = []
+        for i in sorted(idx):
+            key = (sp.get('id'), m.GetAtomWithIdx(i).GetAtomMapNum())
+            if key not in new:
+                new[key] = top + 1 + len(new)
+            maps.append((i, new[key]))
+        m2 = Chem.AddHs(m, onlyOnAtoms=tuple(i for i, _ in maps))
+        added = list(range(m.GetNumAtoms(), m2.GetNumAtoms()))
+        for k in added:                          # each new H takes the map of the center it hangs on
+            center = m2.GetAtomWithIdx(k).GetNeighbors()[0].GetIdx()
+            m2.GetAtomWithIdx(k).SetAtomMapNum(dict(maps)[center])
+        smiles = Chem.MolToSmiles(m2, canonical=False)
+        before, after = cip(sp['smiles']), cip(smiles)
+        if before is None or after is None or any(after.get(k) != v for k, v in before.items()):
+            continue                             # the configuration must come through unchanged
+        sp['smiles'] = smiles
+        sp['keep_h'] = list(sp.get('keep_h') or []) + [mp for _, mp in maps]
+    return out
+
+
 def load_spec_v2(data, path=None):
     """Check and normalize a spec.  Returns {'format': 2, 'name', 'style', 'rows', 'panels', 'species', 'species_by_id',
     'reaction_arrows', 'numbers', 'colors', 'colors_raw', 'source', 'raw'}; every species gets 'id' = "<panel>.<species>",
@@ -576,6 +669,7 @@ def load_spec_v2(data, path=None):
     if not isinstance(data, dict):
         raise SpecError('the input is a JSON object')
     data = hbond_hydrogens(data)
+    data = stereo_hydrogens(data)
     extra = sorted(set(data) - V2_TOP_KEYS)
     if extra:
         raise SpecError('unknown top-level key(s) %s (known: %s)' % (extra, ', '.join(sorted(V2_TOP_KEYS))))
