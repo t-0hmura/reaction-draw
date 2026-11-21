@@ -1051,6 +1051,10 @@ class Layout(object):
         h = CAP * size / self.style['bond_length_pt']
         plain, w, first, sub = _label_metrics(text, size, self.style['bond_length_pt'])
         kind = specutil.atom_kind(self.sp[sid], a)
+        if kind == 'atom' and re.match(r'^%s\d+[\'"\u2032\u2033]*$' % re.escape(a['symbol']), plain):
+            # an atom numbered with its element (O3, N1'): the number follows the symbol at full size, and may sit a
+            # little low to clear a bond (octet_draw.number_after_seat), so it hangs like a subscript
+            w, sub = text_width(plain, size, self.style['bond_length_pt']), True
         # a subscript (the 3 of CH3, the 2 of NH2) hangs below the line by about a tenth of a bond
         low = SUBSCRIPT_DROP if kind != 'residue' and sub else 0.0
         nbrs = [xy[mol.map[j]] for j in mol.adj[mol.idx[m]]]

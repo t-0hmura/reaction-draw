@@ -40,6 +40,7 @@ ARROW_KINDS = {'single': 'reaction', 'reaction': 'reaction', 'equilibrium': 'equ
 VALENCE = {'C': 4, 'Si': 4, 'N': 3, 'P': 3, 'As': 3, 'B': 3, 'Al': 3, 'O': 2, 'S': 2, 'Se': 2, 'Te': 2, 'F': 1, 'Cl': 1, 'Br': 1, 'I': 1}
 H_FIRST = {'O', 'F', 'S', 'Cl', 'Se', 'Br', 'Te', 'I'}
 ELEMENT = re.compile(r'^[A-Z][a-z]?$')
+NUMBERED = re.compile(r'''^([A-Z][a-z]?)(\d+)(['"\u2032\u2033]*)$''')    # an atom's own element and its number (O3, N1')
 # resolved style keys -> Octet DocStyle (pt; spacing in % of the bond length); the rest is Octet's "ACS Document 1996".
 # font_size_pt sets the labels and the captions (texts, conditions); title_size_pt the titles; number_* the numbers.
 STYLE_KEYS = {'bond_length_pt': ('bond', 1.0), 'line_width_pt': ('line', 1.0), 'bold_width_pt': ('bold', 1.0),
@@ -123,6 +124,34 @@ def h_side(me, nbrs):
     rtl, steep = auto_reading(me, nbrs)
     own = ('above' if sum(q[1] - me[1] for q in nbrs) > 0 else 'below') if steep and len(nbrs) >= 2 else 'left' if rtl else 'right'
     return best, own, room
+
+
+def text_width(text, size_pt, bond_pt):
+    """Width of a plain text in Arial at size_pt, in bond lengths (layout.text_width)."""
+    from layout import text_width as width
+    return width(text, size_pt, bond_pt)
+
+
+def number_after_seat(me, nbrs, half, width, cap_h):
+    """How far below its symbol's middle (bond lengths, y down; negative: above) the number written after an atom's
+    symbol (the 3 of O3) goes: level with the symbol unless a bond leaving the atom passes through that place, then the
+    smallest shift (in twentieths of a bond up to a fifth, down first) that keeps it clear, so that it takes as little
+    room as it can from the arrows round the atom; the clearest of them when none does."""
+    def gap(dy):
+        box = (me[0] + half, me[1] + dy - cap_h / 2, me[0] + half + width, me[1] + dy + cap_h / 2)
+        best = float('inf')
+        for q in nbrs:
+            for t in range(41):
+                px, py = me[0] + (q[0] - me[0]) * t / 40.0, me[1] + (q[1] - me[1]) * t / 40.0
+                ddx = max(box[0] - px, 0.0, px - box[2])
+                ddy = max(box[1] - py, 0.0, py - box[3])
+                best = min(best, math.hypot(ddx, ddy))
+        return best
+    shifts = (0.0, 0.05, -0.05, 0.1, -0.1, 0.15, -0.15, 0.2, -0.2)
+    for dy in shifts:
+        if gap(dy) >= 0.04:
+            return dy
+    return max(shifts, key=gap)
 
 
 def text_side(me, nbrs):
@@ -358,7 +387,27 @@ def build_job(resolved, options=None):
         if a.get('kind') == 'cut':
             e['attach'] = True       # Octet's wavy attachment point: the chain is cut here (CDXML: a wavy external connection)
         residue = label if label and (a.get('kind') == 'residue' or el in ('*', 'R')) else None
-        if residue:
+        numbered = NUMBERED.match(label) if label and a.get('kind', 'atom') == 'atom' and not residue else None
+        if numbered and numbered.group(1) == el and el != 'H':
+            want_h = (int(a.get('display_h', a.get('h')) or 0) if a.get('preserve_h') or a.get('ts')
+                      else max(0, octet_hydrogens(el, charge, used[ref]) - int(a.get('radical') or 0)))
+            if a.get('display_h') is not None:
+                want_h = a['display_h']
+            numbered = numbered if not want_h else None
+        else:
+            numbered = None
+        if numbered:
+            # An atom numbered with its element (O3, N1'): Octet would draw the digits of the label as a subscript (O3
+            # as ozone) and stop the bonds at the box round the whole label.  The atom keeps its own symbol, where the
+            # bonds stop, and the number follows it at full size as a caption that moves with the atom.
+            if el == 'C':
+                e['shown'] = True
+            text = numbered.group(2) + numbered.group(3).replace("'", '\u2032').replace('"', '\u2033')
+            dy = number_after_seat((x, y), shown[ref], text_width(el, label_pt, bond_pt) / 2.0,
+                                   text_width(text, label_pt, bond_pt), cap_h)
+            c = caption(text, x + text_width(el, label_pt, bond_pt) / 2.0, -(y + dy + cap_h / 2), 'left', color=color)
+            attached.append({'caption': cap(c, 'label_number'), 'atom': k})
+        elif residue:
             # A residue's name (Glu170) beside a bare root vertex: Octet draws the digits of an atom label as subscripts.
             e['label'] = 'C'
             me = (x, y)

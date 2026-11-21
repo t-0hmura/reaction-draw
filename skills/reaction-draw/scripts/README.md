@@ -60,7 +60,7 @@ Using the same `id` across panels represents **the same molecule**: non-reacting
 | `residue` | `{"<map>": "Glu170"}` draws a plain-text residue name at a dummy side-chain root ([style guide](../SKILL.md#amino-acid-residue-labels)); mixing styles within a figure fails, and so does showing one residue twice in a panel |
 | `cut` | `[map, ...]` dummy atoms where a chain is cut, drawn as wavy truncation marks (both backbone ends of a residue drawn with its backbone) |
 | `show` | `[map, ...]` carbons whose `C` symbol is explicitly shown (e.g., methyl `CH3` or the C of CO₂) |
-| `label` | `{"<map>": "text"}` overrides an atom's label |
+| `label` | `{"<map>": "text"}` overrides an atom's label; in a label of the atom's symbol and its number (`O3`, `N1′`), the number is drawn at full size after the symbol |
 | `near` | Places a species that has no curved arrows connecting it to others (e.g., an ion or water): `"species:map"` or `{"atom": "species:map", "dir": 60, "dist": 1.3}` (falls back to the nearest open spot if occupied, with a note). Omit `near` for a group that detached in the previous panel (e.g., Cl⁻ or a released product)—it automatically stays beside the atom it left |
 | `xy`, `offset`, `rotate`, `flip` | Manual placement overrides; omit on the first run (see [Hand placement](#hand-placement)) |
 | `keep_h` | List of mapped H atoms to draw explicitly, e.g., `[52]`; other non-reacting H atoms fold into their parent atom labels |

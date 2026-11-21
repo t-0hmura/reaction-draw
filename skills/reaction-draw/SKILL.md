@@ -24,7 +24,7 @@ Run the scripts using this folder's path, and keep both the input JSON file ([fo
 - Start a curved arrow from a bond when its source atom has no lone pair.
 - Write moving hydrogens explicitly (`[H:n]`).
 - List in `show` every carbon whose symbol must be displayed (e.g., terminal methyls, carbons named in the text, or the C of CO₂); do not label every skeletal carbon.
-- Number only essential atoms (those referenced in the text or product names, or moving between molecules) using `numbers`, never free text.
+- Number only essential atoms (those referenced in the text or product names, or moving between molecules) using `numbers`, never free text. Number a carbon with the digit alone (`1`, not `C1`); a heteroatom that the source numbers with its symbol may instead have that text as its `label` (`O3`, `N1′`), which shows the number at full size after the symbol.
 - Use the dedicated [input keys](references/input-more.md) for radicals, coordination bonds, η/π ligands, oxidation states, and isotopes; never simulate them with charges, extra bonds, or free text.
 - Omit `+` signs between species within a panel, as the panel title already identifies them. Use `plus` (never free text) only when the source explicitly shows a `+`.
 - Draw transition states only on request: use `"ts": true` with `partial` or `1.5` bonds ([template](templates/ts_diels_alder.json)).
