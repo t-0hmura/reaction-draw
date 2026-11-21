@@ -42,6 +42,8 @@ CIRCLE_TOL_PT = 0.15           # outer diameter of a charge circle against the d
 CIRCLE_RATIO = 0.34            # Octet: circle radius (center line) = 0.34 x label size
 CHARGE_GAP_MAX_PT = 3.0        # a circle this close (or closer) to its own symbol letter is next to it
 CHARGE_CLEAR_PT = 0.5          # a circle keeps this much from other ink, arrows and other atoms' text
+LETTER_CLEAR_PT = 5.0          # a circle keeps this much from another atom's letters and bonds, and the letters of two
+                               # atoms that are not bonded keep this much apart (closer ones look touching)
 CIRCLE_OWN_OVERLAP_PT = 0.5    # a circle may reach this far into its own letter's glyph box (the box's corners are
                                # empty for round letters such as O); deeper, it covers the letter
 NUMBER_CLEAR_PT = 1.2          # an atom number keeps this much white from bonds, arrows, circles and other texts (glyph ink
@@ -165,7 +167,7 @@ def audit_lines(features):
 
 
 def warning_finding(name, message):
-    if name in ('chain_angles', 'ring_substituents', 'radical_direction', 'species_gap', 'plus_place', 'arrows_clear'):
+    if name in ('chain_angles', 'ring_substituents', 'radical_direction', 'plus_place', 'arrows_clear'):
         return True
     if name == 'four_bond':
         return 'axis-aligned four-bond stereocenter' not in message
@@ -678,6 +680,21 @@ def det_overlap_text_text(f):
             if g < 0:
                 out.append('%s %r%s and %s %r%s overlap by %.2f pt' % (
                     ka, ta, ' (' + oa + ')' if oa else '', kb, tb, ' (' + ob + ')' if ob else '', -g))
+    # the letters of two atoms of one panel that are not bonded to each other: LETTER_CLEAR_PT apart
+    bonded = {frozenset((b['a'], b['b'])) for b in f.bonds}
+    labels = [(o, t, b) for o, k, t, b in items if k == 'label' and o]
+    near = {}
+    for i, (oa, ta, ba) in enumerate(labels):
+        for ob, tb, bb in labels[i + 1:]:
+            if oa == ob or frozenset((oa, ob)) in bonded or oa.split('.', 1)[0] != ob.split('.', 1)[0]:
+                continue
+            g = box_gap(ba, bb)
+            if 0 <= g < LETTER_CLEAR_PT:
+                key = tuple(sorted((oa, ob)))
+                if g < near.get(key, (LETTER_CLEAR_PT, ''))[0]:
+                    near[key] = (g, 'labels %r (%s) and %r (%s) stand %.2f pt apart, closer than %.1f pt' % (
+                        ta, oa, tb, ob, g, LETTER_CLEAR_PT))
+    out += [m for _, m in sorted(near.values())]
     return out
 
 
@@ -757,7 +774,7 @@ def _arrow_pivot(f, aid):
     return next(iter(shared)) if len(shared) == 1 and max(len(a), len(b)) == 2 else None
 
 
-CROSS_DEG = 30          # a curved arrow's body may cross the line of a bond or a hydrogen bond (D192) at this angle or more,
+CROSS_DEG = 30          # a curved arrow's body may cross the line of a bond or a hydrogen bond at this angle or more,
 CROSS_END = 0.25        # through the middle of the line (this fraction of it from either atom), with no letter within
 CROSS_TEXT_PT = 2.0     # this of the crossing; plain lines only (a wedge, hash or wavy bond is never crossed)
 
@@ -779,7 +796,7 @@ def _seg_cross(u, v, p, q):
 
 def _arrow_crossings(f, aid, shapes):
     """{(kind, frozenset of its atoms): (point, angle)} of the lines of bonds and hydrogen bonds the body of curved arrow
-    aid crosses cleanly (D192): once, through the middle of the line, at CROSS_DEG or more, no letter near the crossing.
+    aid crosses cleanly: once, through the middle of the line, at CROSS_DEG or more, no letter near the crossing.
     The body's center line runs through the middles of its stroke pieces; the head is not part of it."""
     cache = f.__dict__.setdefault('_crossings', {})
     if aid in cache:
@@ -807,7 +824,7 @@ def _arrow_crossings(f, aid, shapes):
 
 
 def _crossing_piece(f, aid, shapes, piece, s):
-    """True when the contact of arrow piece with ink s belongs to a clean crossing of s's line (D192): s is a bond's or a
+    """True when the contact of arrow piece with ink s belongs to a clean crossing of s's line: s is a bond's or a
     hydrogen bond's ink, the arrow crosses that line cleanly and the piece lies at the crossing.  The head never does."""
     if not s.owner or s.owner[0] not in ('bond', 'hbond'):
         return False
@@ -873,24 +890,25 @@ def det_overlap_charge(f):
     # only ink, arrows and texts within CHARGE_CLEAR_PT of a circle's bbox can be closer than that
     for c in circles:
         disk = disk_shape(c['center'], c['outer_d'] / 2.0)
-        for s in (ink[i] for i in _near(ink_boxes, disk.bbox, CHARGE_CLEAR_PT)):
+        for s in (ink[i] for i in _near(ink_boxes, disk.bbox, LETTER_CLEAR_PT)):
             if s.owner == ('charge', c['ref']):
                 continue
+            need = LETTER_CLEAR_PT if s.owner and s.owner[0] == 'bond' and c['ref'] not in s.owner[1] else CHARGE_CLEAR_PT
             g = shape_clear(disk, s, overlap_only=True)
-            if g < CHARGE_CLEAR_PT:
+            if g < need:
                 out.append('circle of %s is %.2f pt from %s' % (c['ref'], g, _ink_name(s)))
         for aid, shapes in sc['arrows']:
             g = _min_clear(disk, shapes, CHARGE_CLEAR_PT)
             if g < CHARGE_CLEAR_PT:
                 out.append('circle of %s is %.2f pt from arrow %s' % (c['ref'], g, aid))
-        for owner, kind, text, box in (texts[i] for i in _near(text_boxes, disk.bbox, CHARGE_CLEAR_PT)):
+        for owner, kind, text, box in (texts[i] for i in _near(text_boxes, disk.bbox, LETTER_CLEAR_PT)):
             if owner == c['ref'] and kind == 'label':
                 g = shape_clear(disk, box_shape(box), overlap_only=True)
                 if g < -CIRCLE_OWN_OVERLAP_PT:
                     out.append('circle of %s overlaps its own label by %.2f pt' % (c['ref'], -g))
                 continue
             g = shape_clear(disk, box_shape(box), overlap_only=True)
-            if g < CHARGE_CLEAR_PT:
+            if g < (LETTER_CLEAR_PT if kind == 'label' else CHARGE_CLEAR_PT):
                 out.append('circle of %s is %.2f pt from %s %r' % (c['ref'], g, kind, text))
         for d in circles:
             if d is not c and d['ref'] > c['ref']:
@@ -3238,6 +3256,7 @@ def repair_hints(f, name, findings):
         'charge_size': no_fix,
         'ion_text': 'write the monatomic ion or multiple charge in its SMILES and redraw as superscript charge text',
         'overlap_charge': '{move} so the default charge circle clears the named ink',
+        'species_gap': '{move} so the two molecules stand half a bond apart',
         'overlap_arrow_text': 'move a named free text with xy/near, or {move}',
         'overlap_arrow_bond': '{move} so the arrow\'s route clears the named bond',
         'overlap_arrow_arrow': '{move} to leave distinct routes',

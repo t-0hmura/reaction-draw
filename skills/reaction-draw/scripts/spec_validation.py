@@ -479,7 +479,7 @@ def inspect_spec(data):
                     assigned[target] = gi
 
     # Expectations can be global (all matching panels) or local to a species.
-    # "unspecified" declares a stereocenter whose configuration the source does not show (harness_rsi D541).
+    # "unspecified" declares a stereocenter whose configuration the source does not show.
     declared = {}
     def expectations(block, where, own_sid=None):
         for key, want in obj(block, where).items():

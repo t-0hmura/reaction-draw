@@ -9087,7 +9087,17 @@ var Field = class {
     c.fillStyle = "#fff";
     c.strokeStyle = "#fff";
     c.lineWidth = 1;
+    const M = 16, X0 = this.x0 - M, X1 = this.x0 + this.w + M, Y0 = this.y0 - M, Y1 = this.y0 + this.h + M;
     for (const poly of ink.polys ?? []) {
+      let lx = Infinity, hx = -Infinity, ly = Infinity, hy = -Infinity;
+      for (const v of poly) {
+        const x = v[0], y = v[1];
+        if (x < lx) lx = x;
+        if (x > hx) hx = x;
+        if (y < ly) ly = y;
+        if (y > hy) hy = y;
+      }
+      if (hx < X0 || lx > X1 || hy < Y0 || ly > Y1) continue;
       c.beginPath();
       poly.forEach(([x, y], i) => i ? c.lineTo(x - this.x0, y - this.y0) : c.moveTo(x - this.x0, y - this.y0));
       c.closePath();
@@ -9460,6 +9470,7 @@ function stretchArrowBonds(mol, job) {
   }
   return rows;
 }
+var CHARGE_ROOM = 5;
 function placeCharges(mol, ctx, job, only) {
   const { f, measure, ratio } = ctx, t0 = now(), fixed = new Set(job.fixedChargeAngles ?? []);
   const todo = mol.atoms.map((_, i) => i).filter((i) => mol.atoms[i].circled && Math.abs(mol.atoms[i].charge ?? 0) === 1 && !fixed.has(i) && (only === void 0 || i === only));
@@ -9550,7 +9561,12 @@ function placeCharges(mol, ctx, job, only) {
       ringGap = Math.min(ringGap, dist(c, e.at) - Rout - (0.34 * f.size * ratio(mol.atoms[e.atom]) + hw));
     for (const [j, q] of chosen) if (j !== i) ringGap = Math.min(ringGap, dist(c, q) - 2 * Rout);
     const ringNear = ringGap < 2 * Rout;
-    const total = ownership + (sep < 26 ? 1e6 : 0) + (ringNear ? 500 : 0) + (clear < 2 ? 1e3 + (2 - clear) * 200 : 0) + (clear < 10 ? (10 - clear) ** 2 * 0.8 : 0) + Math.max(0, 50 - sep) * 2 + corr + near + 0.03 * angDiff(th, 45) + crowded * 20;
+    let room = Infinity;
+    pcs.forEach((list, j) => {
+      if (j !== i) for (const p of list) room = Math.min(room, boxDist(c, p.box) - Rout);
+    });
+    for (const b of mol.bonds) if (b.type !== HBOND2 && !b.atoms.includes(i)) room = Math.min(room, segDist(c, px[b.atoms[0]], px[b.atoms[1]]) - Rout - hw);
+    const total = ownership + (sep < 26 ? 1e6 : 0) + (ringNear ? 500 : 0) + (clear < 2 ? 1e3 + (2 - clear) * 200 : 0) + (clear < 10 ? (10 - clear) ** 2 * 0.8 : 0) + (room < CHARGE_ROOM * ctx.pt ? 1e3 * ((CHARGE_ROOM * ctx.pt - room) / (CHARGE_ROOM * ctx.pt)) ** 2 : 0) + Math.max(0, 50 - sep) * 2 + corr + near + 0.03 * angDiff(th, 45) + crowded * 20;
     return { total, clear, th, ownership, sep, corr, crowded, ringNear };
   };
   const groups = [];
@@ -10340,25 +10356,35 @@ function routeArrows(mol, ctx, job, seats = []) {
       const inkNoMate = mate ? new FieldSet([bases[1], ...done.filter((q) => q !== mate).map(fieldOf)]) : inkField2;
       const inkAt = (p) => (meetAt && dist(p, meetAt) < MEET_FREE * L ? inkNoMate : inkField2).at(p);
       const inkAtXY = (x, y) => (meetAt && Math.hypot(x - meetAt[0], y - meetAt[1]) < MEET_FREE * L ? inkNoMate : inkField2).atXY(x, y);
-      const clearAt = (p) => {
-        const a = at(p);
-        if (a >= 2) return a;
-        let t = inkAt(p);
-        for (const b of textBoxes) {
-          const dx = Math.max(b[0] - p[0], p[0] - b[2]), dy = Math.max(b[1] - p[1], p[1] - b[3]);
-          t = Math.min(t, dx > 0 || dy > 0 ? Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) : Math.max(dx, dy));
-        }
-        return t;
-      };
       const rankAt = (p, pd) => {
         if (pd >= 2) return pd;
         let t = pd;
         for (const b of textBoxes) {
           const dx = Math.max(b[0] - p[0], p[0] - b[2]), dy = Math.max(b[1] - p[1], p[1] - b[3]);
+          if (Math.max(dx, dy) - 2 >= t) continue;
           const d = (dx > 0 || dy > 0 ? Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) : Math.max(dx, dy)) - 2;
           if (d < t) t = d;
         }
         return t;
+      };
+      let fusedDx = 0, fusedDr = 0;
+      const clearRank = (p, pd) => {
+        if (pd >= 2) {
+          fusedDx = pd;
+          fusedDr = pd;
+          return;
+        }
+        let t = inkAt(p), r = pd;
+        for (const b of textBoxes) {
+          const dx = Math.max(b[0] - p[0], p[0] - b[2]), dy = Math.max(b[1] - p[1], p[1] - b[3]), lb = Math.max(dx, dy);
+          if (lb >= t && lb - 2 >= r) continue;
+          const v = dx > 0 || dy > 0 ? Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) : Math.max(dx, dy);
+          t = Math.min(t, v);
+          const d = v - 2;
+          if (d < r) r = d;
+        }
+        fusedDx = t;
+        fusedDr = r;
       };
       const ends = (side, gapAtom, extras) => {
         const out = [];
@@ -10513,10 +10539,14 @@ function routeArrows(mol, ctx, job, seats = []) {
               crossCost += ln.hb ? 60 : 120;
             }
             const crossing2 = (q, dd) => crossAt.some((c) => dist(q, c.x) <= c.r && dd >= segDist(q, c.p, c.q) - f.line / 2 - 1);
-            const boundAt = (p) => {
-              const pd = at(p);
-              return crossAt.length && crossing2(p, pd >= 2 ? pd : clearAt(p)) ? 1e9 : rankAt(p, pd);
+            const boundAtPd = (p, pd) => {
+              if (crossAt.length) {
+                clearRank(p, pd);
+                return crossing2(p, fusedDx) ? 1e9 : fusedDr;
+              }
+              return rankAt(p, pd);
             };
+            const boundAt = (p) => boundAtPd(p, at(p));
             if (bestFree && path.some((p) => {
               const dd = boundAt(p), hard2 = dd < 5.5 ? (5.5 - dd) * 1e4 : 0;
               return hard2 > bestFree.cost + (seatField ? 100 : 0);
@@ -10526,7 +10556,7 @@ function routeArrows(mol, ctx, job, seats = []) {
             if (bestFree) {
               let lineWorst = 1e9, lineSoft = 0;
               for (const p of path) {
-                const pd = at(p), dd = boundAt(p);
+                const pd = at(p), dd = boundAtPd(p, pd);
                 if (dd < lineWorst) lineWorst = dd;
                 if (pd < 8 && !exempt(p)) lineSoft += (8 - pd) * 0.5;
               }
@@ -10541,7 +10571,9 @@ function routeArrows(mol, ctx, job, seats = []) {
               const count = Math.max(1, Math.ceil(dist(p, q) / (poly === headPoly ? 1 : 2)));
               for (let k = 0; k < count; k++) {
                 const sample = [p[0] + (q[0] - p[0]) * k / count, p[1] + (q[1] - p[1]) * k / count];
-                const pd = at(sample), dx = pd >= 2 ? pd : clearAt(sample), dr = rankAt(sample, pd);
+                const pd = at(sample);
+                clearRank(sample, pd);
+                const dx = fusedDx, dr = fusedDr;
                 if (poly === headPoly) {
                   if (dr < headWorst) headWorst = dr;
                   if (dx < headExact) headExact = dx;
@@ -10553,7 +10585,9 @@ function routeArrows(mol, ctx, job, seats = []) {
               }
             }
             for (const p of path) {
-              const pd = at(p), dx = pd >= 2 ? pd : clearAt(p), dr = rankAt(p, pd);
+              const pd = at(p);
+              clearRank(p, pd);
+              const dx = fusedDx, dr = fusedDr;
               if ((dr < worst || dx < worstExact) && !(crossAt.length && crossing2(p, dx))) {
                 if (dr < worst) worst = dr;
                 if (dx < worstExact) worstExact = dx;
@@ -10578,16 +10612,22 @@ function routeArrows(mol, ctx, job, seats = []) {
             if (gone) continue;
             if (headPoly) {
               const hx = headPoly.map((v) => v[0]), hy = headPoly.map((v) => v[1]), hx1 = Math.max(...hx), hy1 = Math.max(...hy), hy0 = Math.floor(Math.min(...hy));
-              for (let x = Math.floor(Math.min(...hx)); x <= hx1; x++) for (let y = hy0; y <= hy1; y++) {
-                let inside2 = false;
-                for (let a2 = 0, b = headPoly.length - 1; a2 < headPoly.length; b = a2++) {
+              const hxa = Math.floor(Math.min(...hx)), nh = headPoly.length, xs = [];
+              for (let y = hy0; y <= hy1; y++) {
+                xs.length = 0;
+                for (let a2 = 0, b = nh - 1; a2 < nh; b = a2++) {
                   const [xa, ya] = headPoly[a2], [xb, yb] = headPoly[b];
-                  if (ya > y !== yb > y && x < (xb - xa) * (y - ya) / (yb - ya) + xa) inside2 = !inside2;
+                  if (ya > y !== yb > y) xs.push((xb - xa) * (y - ya) / (yb - ya) + xa);
                 }
-                if (inside2) {
-                  const dd = inkAtXY(x, y);
-                  if (dd < headWorst) headWorst = dd;
-                  if (dd < headExact) headExact = dd;
+                if (!xs.length) continue;
+                xs.sort((u, v) => u - v);
+                for (let x = hxa, k = 0; x <= hx1; x++) {
+                  while (k < xs.length && xs[k] <= x) k++;
+                  if ((xs.length - k) % 2 === 1) {
+                    const dd = inkAtXY(x, y);
+                    if (dd < headWorst) headWorst = dd;
+                    if (dd < headExact) headExact = dd;
+                  }
                 }
               }
             }
@@ -10883,39 +10923,41 @@ function placeNumbers(mol, ctx, job, curvedPolys, dry = false) {
       const box = [cx + ink2[0], base + ink2[1], cx + ink2[2], base + ink2[3]];
       return { cost: 0, deg: pageDeg(px[i], [cx, cy]), r: dist(px[i], [cx, cy]) / L, cx, cy, box, clear: 100, own: 0, nearestOther: 100, nearestLetter: 100, terms: { fixed: true } };
     }
-    for (let deg2 = 0; deg2 < 360; deg2 += opts.repairNumbers ? 2.5 : 5) for (let r = r0 - (opts.repairNumbers ? 0.4 : 0.25); r <= r0 + (opts.repairNumbers ? 0.9 : 0.6) + 1e-9; r += opts.repairNumbers ? 0.0125 : 0.025) {
-      const th = deg2 * Math.PI / 180, cx = px[i][0] + r * L * Math.cos(th), cy = px[i][1] - r * L * Math.sin(th), base = cy + asc / 2;
-      const adv = [cx - w / 2, cy - asc / 2, cx + w / 2, base], box = [cx + ink2[0], base + ink2[1], cx + ink2[2], base + ink2[3]];
+    for (let deg2 = 0; deg2 < 360; deg2 += opts.repairNumbers ? 2.5 : 5) {
       const ang = gaps.length ? Math.min(...gaps.map((g) => (angDiff(deg2, g.mid) / 30) ** 2 + 3 * (1 - g.size / maxGap))) : 0;
-      const rad = ((r - r0) / 0.15) ** 2 * 0.5;
-      if (best && ang + rad > best.cost) continue;
-      let clear = field.overBox(box);
-      pcs.forEach((list) => {
-        for (const p of list) if (!ownSet.has(p.k)) clear = Math.min(clear, boxGap(box, pad(p.box, 0.5)));
-      });
-      for (const c of otherCaps) clear = Math.min(clear, boxGap(box, pad(c.box, 0.5)));
-      for (const b of put) clear = Math.min(clear, boxGap(box, b));
-      const clr = (clear >= 12 ? 0 : ((12 - clear) / 4) ** 2) + (clear < 6.5 ? 100 + (6.5 - clear) * 50 : 0);
-      const lb = [adv[0], adv[1] - 0.189 * sizePx, adv[2], adv[3] + 0.212 * sizePx];
-      const lineHit = lbs.some((o) => lb[0] < o[2] + 0.5 && lb[2] > o[0] - 0.5 && lb[1] < o[3] + 0.5 && lb[3] > o[1] - 0.5) ? 200 : 0;
-      if (best && ang + rad + clr + lineHit > best.cost) continue;
-      const gapB = (b) => boxGap(box, b);
-      const gapTo = (j) => pcs[j].length ? Math.min(...pcs[j].map((p) => gapB(p.ink))) : boxDist(px[j], box);
-      const own = si ? gapB(si.symInk) : boxDist(px[i], box);
-      let nearestOther = 1e9, nearestLetter = 1e9;
-      for (let j = 0; j < px.length; j++) if (j !== i) {
-        nearestOther = Math.min(nearestOther, gapTo(j));
-        for (const p of pcs[j]) nearestLetter = Math.min(nearestLetter, gapB(p.ink));
+      for (let r = r0 - (opts.repairNumbers ? 0.4 : 0.25); r <= r0 + (opts.repairNumbers ? 0.9 : 0.6) + 1e-9; r += opts.repairNumbers ? 0.0125 : 0.025) {
+        const th = deg2 * Math.PI / 180, cx = px[i][0] + r * L * Math.cos(th), cy = px[i][1] - r * L * Math.sin(th), base = cy + asc / 2;
+        const adv = [cx - w / 2, cy - asc / 2, cx + w / 2, base], box = [cx + ink2[0], base + ink2[1], cx + ink2[2], base + ink2[3]];
+        const rad = ((r - r0) / 0.15) ** 2 * 0.5;
+        if (best && ang + rad > best.cost) continue;
+        let clear = field.overBox(box);
+        pcs.forEach((list) => {
+          for (const p of list) if (!ownSet.has(p.k)) clear = Math.min(clear, boxGap(box, pad(p.box, 0.5)));
+        });
+        for (const c of otherCaps) clear = Math.min(clear, boxGap(box, pad(c.box, 0.5)));
+        for (const b of put) clear = Math.min(clear, boxGap(box, b));
+        const clr = (clear >= 12 ? 0 : ((12 - clear) / 4) ** 2) + (clear < 6.5 ? 100 + (6.5 - clear) * 50 : 0);
+        const lb = [adv[0], adv[1] - 0.189 * sizePx, adv[2], adv[3] + 0.212 * sizePx];
+        const lineHit = lbs.some((o) => lb[0] < o[2] + 0.5 && lb[2] > o[0] - 0.5 && lb[1] < o[3] + 0.5 && lb[3] > o[1] - 0.5) ? 200 : 0;
+        if (best && ang + rad + clr + lineHit > best.cost) continue;
+        const gapB = (b) => boxGap(box, b);
+        const gapTo = (j) => pcs[j].length ? Math.min(...pcs[j].map((p) => gapB(p.ink))) : boxDist(px[j], box);
+        const own = si ? gapB(si.symInk) : boxDist(px[i], box);
+        let nearestOther = 1e9, nearestLetter = 1e9;
+        for (let j = 0; j < px.length; j++) if (j !== i) {
+          nearestOther = Math.min(nearestOther, gapTo(j));
+          for (const p of pcs[j]) nearestLetter = Math.min(nearestLetter, gapB(p.ink));
+        }
+        for (const b of put) nearestOther = Math.min(nearestOther, gapB(b));
+        const assoc = own + OWN_MARGIN > nearestOther ? 150 + (own + OWN_MARGIN - nearestOther) * 5 : 0;
+        const between = (nearestLetter < LETTER_MIN ? 150 + (LETTER_MIN - nearestLetter) * 5 : 0) + (nearestLetter < LETTER_CLEAR ? ((LETTER_CLEAR - nearestLetter) / 4) ** 2 * 0.6 : 0);
+        const ix = (box[0] + box[2]) / 2;
+        const side = si && si.tails.length && (si.dir > 0 && ix > si.sym[2] - 1 || si.dir < 0 && ix < si.sym[0] + 1) ? 300 : 0;
+        const ownTerm = si ? own < OWN_MIN ? 100 + (OWN_MIN - own) * 50 : ((own - OWN_WISH) / 4) ** 2 * 0.6 : 0;
+        const cost = ang + rad + clr + lineHit + assoc + between + side + ownTerm;
+        const terms = { angle: r2(ang), radius: r2(rad), clearance: r2(clr), line_box: lineHit, ownership: r2(assoc), between_labels: r2(between), symbol_side: side, own_gap: r2(ownTerm) };
+        if (!best || cost < best.cost) best = { cost, deg: deg2, r, cx, cy, box, clear, own, nearestOther, nearestLetter, terms };
       }
-      for (const b of put) nearestOther = Math.min(nearestOther, gapB(b));
-      const assoc = own + OWN_MARGIN > nearestOther ? 150 + (own + OWN_MARGIN - nearestOther) * 5 : 0;
-      const between = (nearestLetter < LETTER_MIN ? 150 + (LETTER_MIN - nearestLetter) * 5 : 0) + (nearestLetter < LETTER_CLEAR ? ((LETTER_CLEAR - nearestLetter) / 4) ** 2 * 0.6 : 0);
-      const ix = (box[0] + box[2]) / 2;
-      const side = si && si.tails.length && (si.dir > 0 && ix > si.sym[2] - 1 || si.dir < 0 && ix < si.sym[0] + 1) ? 300 : 0;
-      const ownTerm = si ? own < OWN_MIN ? 100 + (OWN_MIN - own) * 50 : ((own - OWN_WISH) / 4) ** 2 * 0.6 : 0;
-      const cost = ang + rad + clr + lineHit + assoc + between + side + ownTerm;
-      const terms = { angle: r2(ang), radius: r2(rad), clearance: r2(clr), line_box: lineHit, ownership: r2(assoc), between_labels: r2(between), symbol_side: side, own_gap: r2(ownTerm) };
-      if (!best || cost < best.cost) best = { cost, deg: deg2, r, cx, cy, box, clear, own, nearestOther, nearestLetter, terms };
     }
     return best;
   };

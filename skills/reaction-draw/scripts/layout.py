@@ -2229,7 +2229,8 @@ class Layout(object):
     def place_texts(self, pid):
         """The panel's texts in the panel frame: first a "+" for each plus pair, in the middle of the gap; "xy" as given;
         "near" at the asked direction and distance when that is free of the panel's atoms, bonds and earlier texts, else
-        at the free place nearest to it.  Each gets its box."""
+        at the free place nearest to it, a name preferring a place nearer its own molecule than any other (so that it
+        does not read as the name of another molecule's atom).  Each gets its box."""
         from specutil import plain_text as plain
         bpt = self.style['bond_length_pt']
         p = self.panels[self.pidx[pid]]
@@ -2263,6 +2264,14 @@ class Layout(object):
             else:
                 r = t['near']
                 apt = self.xy[r['sid']][r['atom']]
+                # a name (letters or digits, not a "+") prefers a place nearer its own molecule than any other
+                own_pts = [q for q, _ in self.points_of(r['sid'], self.xy[r['sid']])] \
+                    if r['sid'] in self.xy and any(ch.isalnum() for ch in plain(t['text'])) else []
+                other_pts = [q for sid in sids if sid != r['sid'] for q, _ in self.points_of(sid, self.xy[sid])]
+
+                def gap_to(b, qs):
+                    return min((math.hypot(max(b[0] - q[0], 0.0, q[0] - b[2]), max(b[1] - q[1], 0.0, q[1] - b[3]))
+                                for q in qs), default=float('inf'))
                 d = float(t['dist']) if t.get('dist') is not None else TEXT_NEAR_GAP
                 dirs, dists = near_candidates(t.get('dir'), d)
                 best = None
@@ -2292,7 +2301,8 @@ class Layout(object):
                                 near += max(0.0, TEXT_APART - _box_gap(b, b2)) ** 2
                         # a free place nearest the asked one, apart from other names if any place is; when every place
                         # touches something, the least touched
-                        key = (coll > 1e-9, round(coll, 6) if coll > 1e-9 else 0.0, near > 1e-9,
+                        foreign = bool(own_pts) and gap_to(b, other_pts) < gap_to(b, own_pts) - 1e-6
+                        key = (coll > 1e-9, round(coll, 6) if coll > 1e-9 else 0.0, foreign, near > 1e-9,
                                round(near, 6) if near > 1e-9 else 0.0, k + j, k)
                         if best is None or key < best[0]:
                             best = (key, (x, y), dg, dd, k + j)

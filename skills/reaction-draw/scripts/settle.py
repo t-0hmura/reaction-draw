@@ -54,6 +54,9 @@ REGROUPED = 7               # other candidates regrouped (_kick) before they are
 KICKS = 2                   # compound moves (_kick) taken per panel at most, each followed by the descent's rounds
 SEATS_TRIED = 3             # seats a hydrogen-bonded molecule starts from for other candidates, in a panel without reacting pairs
 ORBIT = range(60, 360, 60)  # turns (degrees) of a reacting molecule about its partner's end tried for other candidates
+PAIR_EXTRA = {}             # {frozenset of two species ids: bonds}: white these two molecules need beyond SPECIES_GAP,
+                            # where the drawing found them closer than settle's estimate of their letters
+                            # (draw_figure.retry_gap sets it)
 CHOICE = {}                 # {panel id: rank}: which settled layout to keep, 0 the best; a panel named here also gets its
                             # other candidates listed in lay.settle_found (specutil.resolve_candidates sets it)
 _SETTLED = collections.OrderedDict()
@@ -383,7 +386,8 @@ class Panel(object):
 
     def _gap(self, present, pts, boxes):
         """Sum over pairs of molecules of how far the white between their closest ink falls short of SPECIES_GAP
-        (bonds): what check_rules.det_species_gap measures, the two ends of a hydrogen bond between them exempt."""
+        (bonds): what check_rules.det_species_gap measures, the two ends of a hydrogen bond between them exempt.  A
+        pair of molecules in PAIR_EXTRA asks for that much more."""
         R, g = len(pts), layout.SPECIES_GAP
         shapes = []
         arrays, exempts = self._gap_arrays(present)
@@ -399,11 +403,13 @@ class Panel(object):
                 bx[:, k] = boxes[:, a[k]]
             shapes.append(bx)
         out = np.zeros(R)
+        need = g
         for x in range(len(shapes)):
             for y in range(x + 1, len(shapes)):
                 A, B = shapes[x], shapes[y]
                 if not A.shape[1] or not B.shape[1]:
                     continue
+                g = need + PAIR_EXTRA.get(frozenset((present[x], present[y])), 0.0)
                 lo, hi = A[..., :2].min(1), A[..., 2:].max(1)
                 lo2, hi2 = B[..., :2].min(1), B[..., 2:].max(1)
                 near = np.nonzero(((lo - g < hi2) & (lo2 - g < hi)).all(axis=1))[0]
@@ -486,6 +492,10 @@ def _moves(lay, pid, sids, seats_now):
     moves = []
     for sid in sids[1:]:
         if lay.sp[sid]['xy']:
+            # a molecule placed by hand keeps its shape and place, but shifts whole when it was drawn too close to
+            # another (PAIR_EXTRA)
+            if any(sid in pair for pair in PAIR_EXTRA):
+                moves.extend(({sid: _shift(lay.xy[sid], dg, d)}, 'shift') for dg in range(0, 360, 45) for d in SHIFTS)
             continue
         xy = lay.xy[sid]
         moves.extend(({sid: _shift(xy, dg, d)}, 'shift') for dg in range(0, 360, 45) for d in SHIFTS)
@@ -816,7 +826,7 @@ def _settle_panel(lay, p, ctx):
     sids = [s for s in ('%s.%s' % (pid, k) for k in p['species']) if s in lay.xy]
     if len(sids) < 2:
         return
-    base = _key(lay, pid)
+    base = _key(lay, pid) + (tuple(sorted((tuple(sorted(k)), v) for k, v in PAIR_EXTRA.items() if set(k) <= set(sids))),)
     key = (base, CHOICE.get(pid))
     if key in _SETTLED and (pid not in CHOICE or base in _FOUND):
         if pid in CHOICE:

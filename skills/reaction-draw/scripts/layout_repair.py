@@ -178,7 +178,7 @@ def _seg_gaps(a, b, p, q):
 
 
 def _crossed(figure):
-    """{arrow id: atoms of the bonds its body crosses}: crossings that check_rules.py accepts (D192) but that a better
+    """{arrow id: atoms of the bonds its body crosses}: crossings that check_rules.py accepts but that a better
     layout may avoid; when another check fails, the layout search sees them as it sees a touched bond."""
     out = {}
     try:
@@ -578,7 +578,7 @@ def _followers(lay, pid, sid, old, new):
 
 def _arrow_hs(result, figure):
     """(arrow, H ref) for each H at an end of a curved arrow that touched a bond, a dotted line or a letter, or that
-    crosses a bond (accepted, D192, but an H turned toward the arrow's other end may spare the crossing)."""
+    crosses a bond (accepted, but an H turned toward the arrow's other end may spare the crossing)."""
     ids = {m.group(1) for n in ('overlap_arrow_bond', 'overlap_arrow_text') for x in result['checks'].get(n, {}).get('findings', [])
            for m in re.finditer(r'arrow (\S+) touches (?:h?bond|label)', x)} | set(_crossed(figure))
     return [(a['id'], r) for p in figure.resolved['panels'] for a in p.get('curved', []) if a.get('id') in ids

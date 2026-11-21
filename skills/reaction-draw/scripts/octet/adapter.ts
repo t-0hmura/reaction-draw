@@ -155,7 +155,12 @@ class Field {
     const c = cv.getContext('2d', {willReadFrequently: true})!;
     c.fillStyle = '#000'; c.fillRect(0, 0, this.w, this.h);
     c.fillStyle = '#fff'; c.strokeStyle = '#fff'; c.lineWidth = 1;
-    for (const poly of ink.polys ?? []) { c.beginPath(); poly.forEach(([x, y], i) => (i ? c.lineTo(x - this.x0, y - this.y0) : c.moveTo(x - this.x0, y - this.y0))); c.closePath(); c.fill(); c.stroke(); }
+    const M = 16, X0 = this.x0 - M, X1 = this.x0 + this.w + M, Y0 = this.y0 - M, Y1 = this.y0 + this.h + M;
+    for (const poly of ink.polys ?? []) {
+      let lx = Infinity, hx = -Infinity, ly = Infinity, hy = -Infinity;
+      for (const v of poly) { const x = v[0], y = v[1]; if (x < lx) lx = x; if (x > hx) hx = x; if (y < ly) ly = y; if (y > hy) hy = y; }
+      if (hx < X0 || lx > X1 || hy < Y0 || ly > Y1) continue;
+      c.beginPath(); poly.forEach(([x, y], i) => (i ? c.lineTo(x - this.x0, y - this.y0) : c.moveTo(x - this.x0, y - this.y0))); c.closePath(); c.fill(); c.stroke(); }
     for (const b of ink.boxes ?? []) c.fillRect(b[0] - this.x0, b[1] - this.y0, b[2] - b[0], b[3] - b[1]);
     const img = c.getImageData(0, 0, this.w, this.h).data, mask = new Uint8Array(this.w * this.h);
     for (let i = 0; i < mask.length; i++) mask[i] = img[i * 4] > 127 ? 1 : 0;
@@ -513,6 +518,9 @@ function stretchArrowBonds(mol: any, job: any) {
 // takes the first open seat of eight (upper right, upper left, lower right, lower left, right, left, above, below),
 // clear of other ink and of where its curved arrows go; when none is open, the one of 24 directions with the most
 // room.  The same atom in several panels takes one seat where that fits in every panel.
+// pt a circled charge is seated clear of other ink when it can be: check_rules.LETTER_CLEAR_PT keeps it this far from
+// another atom's letters and bonds
+const CHARGE_ROOM = 5;
 function placeCharges(mol: any, ctx: Ctx, job: any, only?: number): {rows: any[]; ms: number; seats?: {angle: number; cost: number}[]} {
   // only: list the open seats of that atom's ring (best first) without moving it, for seatWithNumbers
   const {f, measure, ratio} = ctx, t0 = now(), fixed = new Set<number>(job.fixedChargeAngles ?? []);
@@ -610,7 +618,11 @@ function placeCharges(mol: any, ctx: Ctx, job: any, only?: number): {rows: any[]
       ringGap = Math.min(ringGap, dist(c, e.at) - Rout - (0.34 * f.size * ratio(mol.atoms[e.atom]) + hw));
     for (const [j, q] of chosen) if (j !== i) ringGap = Math.min(ringGap, dist(c, q) - 2 * Rout);
     const ringNear = ringGap < 2 * Rout;
-    const total = ownership + (sep < 26 ? 1e6 : 0) + (ringNear ? 500 : 0) + (clear < 2 ? 1000 + (2 - clear) * 200 : 0) + (clear < 10 ? (10 - clear) ** 2 * 0.8 : 0) + Math.max(0, 50 - sep) * 2 + corr + near + 0.03 * angDiff(th, 45)
+    // the room to other atoms' letters and to bonds that do not end at this atom (check_rules LETTER_CLEAR_PT)
+    let room = Infinity;
+    pcs.forEach((list, j) => { if (j !== i) for (const p of list) room = Math.min(room, boxDist(c, p.box) - Rout); });
+    for (const b of mol.bonds) if (b.type !== HBOND && !b.atoms.includes(i)) room = Math.min(room, segDist(c, px[b.atoms[0]], px[b.atoms[1]]) - Rout - hw);
+    const total = ownership + (sep < 26 ? 1e6 : 0) + (ringNear ? 500 : 0) + (clear < 2 ? 1000 + (2 - clear) * 200 : 0) + (clear < 10 ? (10 - clear) ** 2 * 0.8 : 0) + (room < CHARGE_ROOM * ctx.pt ? 1000 * ((CHARGE_ROOM * ctx.pt - room) / (CHARGE_ROOM * ctx.pt)) ** 2 : 0) + Math.max(0, 50 - sep) * 2 + corr + near + 0.03 * angDiff(th, 45)
       + crowded * 20;
     return {total, clear, th, ownership, sep, corr, crowded, ringNear};
   };
@@ -1386,7 +1398,7 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     }
     const doneFields = done.map(fieldOf);
     const field = new FieldSet([bases[0], ...doneFields]);
-    // D192: the lines an arrow's body may cross (plain bonds and hydrogen bonds; never a wedge, hash or wavy bond)
+    // the lines an arrow's body may cross (plain bonds and hydrogen bonds; never a wedge, hash or wavy bond)
     const crossLines = mol.bonds.filter((b: any) => !b.stereo && !b.atoms.some((i: number) => mol.atoms[i].hidden))
       .map((b: any) => { const p = px[b.atoms[0]], q = px[b.atoms[1]];
         return {p, q, hb: b.type === HBOND, x0: Math.min(p[0], q[0]), x1: Math.max(p[0], q[0]), y0: Math.min(p[1], q[1]), y1: Math.max(p[1], q[1])}; });
@@ -1405,30 +1417,35 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
     const inkNoMate = mate ? new FieldSet([bases[1], ...done.filter((q) => q !== mate).map(fieldOf)]) : inkField;
     const inkAt = (p: Pt) => (meetAt && dist(p, meetAt) < MEET_FREE * L ? inkNoMate : inkField).at(p);
     const inkAtXY = (x: number, y: number) => (meetAt && Math.hypot(x - meetAt[0], y - meetAt[1]) < MEET_FREE * L ? inkNoMate : inkField).atXY(x, y);
-    // the clearance a sample keeps, as check_rules.py measures it: the padded field (letters 2 px larger) where it gives
-    // 2 px or more; nearer, the drawn ink and each letter's own box, inside which the clearance is minus the depth (a
-    // route through a letter costs more than one that grazes it)
-    const clearAt = (p: Pt): number => {
-      const a = at(p);
-      if (a >= 2) return a;
-      let t = inkAt(p);
-      for (const b of textBoxes) {
-        const dx = Math.max(b[0] - p[0], p[0] - b[2]), dy = Math.max(b[1] - p[1], p[1] - b[3]);
-        t = Math.min(t, dx > 0 || dy > 0 ? Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) : Math.max(dx, dy));
-      }
-      return t;
-    };
     // the clearance on the padded scale (letters 2 px larger), carried on toward and into a letter as its true distance less
-    // 2 px: it falls as a route comes nearer, so it ranks routes; clearAt gives the true distance, which the rule judges
+    // 2 px: it falls as a route comes nearer, so it ranks routes; clearRank also gives the true distance, which the rule judges
     const rankAt = (p: Pt, pd: number): number => {
       if (pd >= 2) return pd;
       let t = pd;
       for (const b of textBoxes) {
         const dx = Math.max(b[0] - p[0], p[0] - b[2]), dy = Math.max(b[1] - p[1], p[1] - b[3]);
+        if (Math.max(dx, dy) - 2 >= t) continue;
         const d = (dx > 0 || dy > 0 ? Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) : Math.max(dx, dy)) - 2;
         if (d < t) t = d;
       }
       return t;
+    };
+    // in one pass over the letters (pd = at(p)): the clearance a sample keeps, as check_rules.py measures it (the padded
+    // field where it gives 2 px or more; nearer, the drawn ink and each letter's own box, inside which the clearance is
+    // minus the depth), and rankAt(p, pd); a letter that cannot lower either is skipped
+    let fusedDx = 0, fusedDr = 0;
+    const clearRank = (p: Pt, pd: number) => {
+      if (pd >= 2) { fusedDx = pd; fusedDr = pd; return; }
+      let t = inkAt(p), r = pd;
+      for (const b of textBoxes) {
+        const dx = Math.max(b[0] - p[0], p[0] - b[2]), dy = Math.max(b[1] - p[1], p[1] - b[3]), lb = Math.max(dx, dy);
+        if (lb >= t && lb - 2 >= r) continue;
+        const v = dx > 0 || dy > 0 ? Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) : Math.max(dx, dy);
+        t = Math.min(t, v);
+        const d = v - 2;
+        if (d < r) r = d;
+      }
+      fusedDx = t; fusedDr = r;
     };
     type Cand = {p: Pt; tag: string; t: number; tm: number; ex: number; atom?: number; pen: number; fail?: number};
     const ends = (side: End, gapAtom: number, extras: number[]): Cand[] => {
@@ -1570,7 +1587,7 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         const polys = arrowShapes(a, f, L) as number[][][];
         // the head is measured along its edges (a corner-only sample misses an edge lying on a bond)
         const headPoly = polys.find((q) => q.length >= 3 && q.some((v) => dist(v as Pt, e.p) < 0.1));
-        // D192 (check_rules.py _arrow_crossings): the body may cross a plain bond's or a hydrogen bond's line once,
+        // as check_rules.py _arrow_crossings judges it: the body may cross a plain bond's or a hydrogen bond's line once,
         // through its middle (a quarter of it from either atom), at 30 degrees or more, no letter within 2 pt; the
         // contact there is not a touch, only a small cost (a route that need not cross is still preferred)
         const headLen = headPoly ? Math.max(...headPoly.map((v) => dist(v as Pt, e.p))) : 0;
@@ -1602,7 +1619,8 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         // (another arrow, a charge ring, a letter) still is (check_rules.py exempts that one bond only)
         const crossing = (q: Pt, dd: number) => crossAt.some((c) => dist(q, c.x) <= c.r && dd >= segDist(q, c.p, c.q) - f.line / 2 - 1);
         // each sample as the cost below measures it (the ranking scale, a clean crossing left out): the bounds stay below the cost
-        const boundAt = (p: Pt) => { const pd = at(p); return crossAt.length && crossing(p, pd >= 2 ? pd : clearAt(p)) ? 1e9 : rankAt(p, pd); };
+        const boundAtPd = (p: Pt, pd: number) => { if (crossAt.length) { clearRank(p, pd); return crossing(p, fusedDx) ? 1e9 : fusedDr; } return rankAt(p, pd); };
+        const boundAt = (p: Pt) => boundAtPd(p, at(p));
         // A seat costs at most 60 + 4 * 10. Even the best route's full seat penalty cannot rescue this path.
         // Sample the centerline first; surviving candidates keep the original order of all cost additions.
         if (bestFree && path.some((p) => {
@@ -1617,7 +1635,7 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         // the same bound with what the centerline alone gives (its gaps and softness, the length terms), in the cost's order
         if (bestFree) {
           let lineWorst = 1e9, lineSoft = 0;
-          for (const p of path) { const pd = at(p), dd = boundAt(p); if (dd < lineWorst) lineWorst = dd; if (pd < 8 && !exempt(p)) lineSoft += (8 - pd) * 0.5; }
+          for (const p of path) { const pd = at(p), dd = boundAtPd(p, pd); if (dd < lineWorst) lineWorst = dd; if (pd < 8 && !exempt(p)) lineSoft += (8 - pd) * 0.5; }
           if (hookPre + wrongW + (lineWorst < 5.5 ? (5.5 - lineWorst) * 1e4 : 0) + amb + loop + s.pen + e.pen + lineSoft * 20 + len * 0.04 + Math.max(0, wishLen - len) * 1.5
             + Math.max(0, wishChord - chord) * 2.5 + Math.abs(bend) * 18 + (s.ex + e.ex) * 1.2 + (Math.abs(s.t - s.tm) + Math.abs(e.t - e.tm)) * T_OFF > bestFree.cost + (seatField ? 100 : 0)) continue;
         }
@@ -1637,14 +1655,18 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
           const count = Math.max(1, Math.ceil(dist(p, q) / (poly === headPoly ? 1 : 2)));
           for (let k = 0; k < count; k++) {
             const sample: Pt = [p[0] + (q[0] - p[0]) * k / count, p[1] + (q[1] - p[1]) * k / count];
-            const pd = at(sample), dx = pd >= 2 ? pd : clearAt(sample), dr = rankAt(sample, pd);
+            const pd = at(sample);
+            clearRank(sample, pd);
+            const dx = fusedDx, dr = fusedDr;
             if (poly === headPoly) { if (dr < headWorst) headWorst = dr; if (dx < headExact) headExact = dx; }
             else if ((dr < worst || dx < worstExact) && !(crossAt.length && crossing(sample, dx))) { if (dr < worst) worst = dr; if (dx < worstExact) worstExact = dx; }
             if (pd < 8 && !exempt(sample)) soft += (8 - pd) / count;
           }
         }
         for (const p of path) {
-          const pd = at(p), dx = pd >= 2 ? pd : clearAt(p), dr = rankAt(p, pd);
+          const pd = at(p);
+          clearRank(p, pd);
+          const dx = fusedDx, dr = fusedDr;
           if ((dr < worst || dx < worstExact) && !(crossAt.length && crossing(p, dx))) { if (dr < worst) worst = dr; if (dx < worstExact) worstExact = dx; }
           if (pd < 8 && !exempt(p)) soft += (8 - pd) * 0.5;
         }
@@ -1667,13 +1689,20 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
         if (gone) continue;
         if (headPoly) {
           const hx = headPoly.map((v) => v[0]), hy = headPoly.map((v) => v[1]), hx1 = Math.max(...hx), hy1 = Math.max(...hy), hy0 = Math.floor(Math.min(...hy));
-          for (let x = Math.floor(Math.min(...hx)); x <= hx1; x++) for (let y = hy0; y <= hy1; y++) {
-            let inside = false;
-            for (let a = 0, b = headPoly.length - 1; a < headPoly.length; b = a++) {
+          const hxa = Math.floor(Math.min(...hx)), nh = headPoly.length, xs: number[] = [];
+          for (let y = hy0; y <= hy1; y++) {
+            xs.length = 0;
+            for (let a = 0, b = nh - 1; a < nh; b = a++) {
               const [xa, ya] = headPoly[a], [xb, yb] = headPoly[b];
-              if ((ya > y) !== (yb > y) && x < ((xb - xa) * (y - ya)) / (yb - ya) + xa) inside = !inside;
+              if ((ya > y) !== (yb > y)) xs.push(((xb - xa) * (y - ya)) / (yb - ya) + xa);
             }
-            if (inside) { const dd = inkAtXY(x, y); if (dd < headWorst) headWorst = dd; if (dd < headExact) headExact = dd; }
+            if (!xs.length) continue;
+            xs.sort((u, v) => u - v);
+            // pixel x is inside when an odd number of crossings lie past it (x < crossing)
+            for (let x = hxa, k = 0; x <= hx1; x++) {
+              while (k < xs.length && xs[k] <= x) k++;
+              if ((xs.length - k) % 2 === 1) { const dd = inkAtXY(x, y); if (dd < headWorst) headWorst = dd; if (dd < headExact) headExact = dd; }
+            }
           }
         }
         // the second fishhook of a forming bond does not touch the first, and its head faces the first's head
@@ -1702,7 +1731,7 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
           : angleBetween(tEnd, norm(sub2(targetPoint(req.snk, e.p), e.p))), tailDev = angleBetween(tStart, norm(sub2(s.p, targetPoint(req.src, s.p))));
         const aimDir = (headDev > HEAD_DEV ? (headDev - HEAD_DEV) * (e.atom !== undefined ? 15 : 6) : 0) + (tailDev > 75 ? (tailDev - 75) * 2 : 0);
         // a head beside a symbol whose line, carried on, misses the symbol and meets one of that atom's bonds within a bond
-        // length reads as pointing at the bond (check_rules.py arrows_ends; harness_rsi D538, D539)
+        // length reads as pointing at the bond (check_rules.py arrows_ends)
         let atBond = 0;
         if (box && rayBox(e.p, uHead, box) === null)
           for (const b of mol.bonds) {
@@ -1728,7 +1757,7 @@ function routeArrows(mol: any, ctx: Ctx, job: any, seats: Box[] = []) {
           const dev = angleBetween(norm(sub2(px[j], px[i])), norm(sub2(e.p, px[i])));
           if (dev > HOOK_DEV) around = (dev - HOOK_DEV) * 30;
         }
-        // the rules the checks judge, measured as they measure them (D191): each broken one ranks the route below every
+        // the rules the checks judge, measured as they measure them: each broken one ranks the route below every
         // route that breaks fewer, whatever the weights below; the weights only order routes that break as many
         const ownHook = req.src.kind === 'bond' && e.atom !== undefined && req.src.atoms.includes(e.atom);
         const broken: string[] = [];
@@ -1983,10 +2012,11 @@ function placeNumbers(mol: any, ctx: Ctx, job: any, curvedPolys: number[][][], d
       const box: Box = [cx + ink[0], base + ink[1], cx + ink[2], base + ink[3]];
       return {cost: 0, deg: pageDeg(px[i], [cx, cy]), r: dist(px[i], [cx, cy]) / L, cx, cy, box, clear: 100, own: 0, nearestOther: 100, nearestLetter: 100, terms: {fixed: true}};
     }
-    for (let deg = 0; deg < 360; deg += opts.repairNumbers ? 2.5 : 5) for (let r = r0 - (opts.repairNumbers ? 0.4 : 0.25); r <= r0 + (opts.repairNumbers ? 0.9 : 0.6) + 1e-9; r += opts.repairNumbers ? 0.0125 : 0.025) {
+    for (let deg = 0; deg < 360; deg += opts.repairNumbers ? 2.5 : 5) {
+    const ang = gaps.length ? Math.min(...gaps.map((g: any) => (angDiff(deg, g.mid) / 30) ** 2 + 3 * (1 - g.size / maxGap))) : 0;
+    for (let r = r0 - (opts.repairNumbers ? 0.4 : 0.25); r <= r0 + (opts.repairNumbers ? 0.9 : 0.6) + 1e-9; r += opts.repairNumbers ? 0.0125 : 0.025) {
       const th = (deg * Math.PI) / 180, cx = px[i][0] + r * L * Math.cos(th), cy = px[i][1] - r * L * Math.sin(th), base = cy + asc / 2;
       const adv: Box = [cx - w / 2, cy - asc / 2, cx + w / 2, base], box: Box = [cx + ink[0], base + ink[1], cx + ink[2], base + ink[3]];
-      const ang = gaps.length ? Math.min(...gaps.map((g: any) => (angDiff(deg, g.mid) / 30) ** 2 + 3 * (1 - g.size / maxGap))) : 0;
       const rad = ((r - r0) / 0.15) ** 2 * 0.5;
       if (best && ang + rad > best.cost) continue;
       let clear = field.overBox(box);
@@ -2018,6 +2048,7 @@ function placeNumbers(mol: any, ctx: Ctx, job: any, curvedPolys: number[][][], d
       const cost = ang + rad + clr + lineHit + assoc + between + side + ownTerm;
       const terms = {angle: r2(ang), radius: r2(rad), clearance: r2(clr), line_box: lineHit, ownership: r2(assoc), between_labels: r2(between), symbol_side: side, own_gap: r2(ownTerm)};
       if (!best || cost < best.cost) best = {cost, deg, r, cx, cy, box, clear, own, nearestOther, nearestLetter, terms};
+    }
     }
     return best;
   };
