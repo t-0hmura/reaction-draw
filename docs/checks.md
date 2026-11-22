@@ -47,7 +47,7 @@ For an `hbonds` overlap, the `FIX` line points to `python scripts/fix_hbonds.py 
 ## Names and labels
 
 - `overlap_text_text` also fails when a free text and another name, or the residue names of two species, stand closer than 0.6 bond lengths, since a reader cannot tell which name labels which group. The layout keeps 0.8 bond lengths and does not place a text level with an atom label.
-- `overlap_text_text` also fails when the letters of two atoms that are not bonded stand closer than 5 pt, and `overlap_charge` when a charge circle stands closer than 5 pt to another atom's letters or to a bond that does not end at the circle's atom; `species_gap` fails when two molecules stand closer than half a bond length (7.2 pt).
+- `overlap_text_text` also fails when the letters of two atoms that are not bonded (nor bonded to one atom, as the two O of a carboxylate) stand closer than 5 pt, `overlap_text_bond` when an atom's letters stand closer than 5 pt to a bond of its molecule that ends neither at that atom nor at an atom bonded to it (except in a transition state, drawn in perspective), and `overlap_charge` when a charge circle stands closer than 5 pt to another atom's letters or to a bond that does not end at the circle's atom; `species_gap` fails when two molecules stand closer than half a bond length (7.2 pt).
 - `one_label_bonds` also fails when a bond meets the H of a label (NH₂ with its bond on the H side). The heavy atom stands at the bond (H₂N), and a reacting lone pair goes above or below it.
 - `residue_codes` also fails when what is drawn beyond a residue name is not that residue's side chain, such as His drawn without its imidazole ring. A main-chain piece and a name that stands for the whole residue are not checked.
 

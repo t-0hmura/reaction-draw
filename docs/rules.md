@@ -20,7 +20,7 @@ IUPAC rules ([decided by the agent](../skills/reaction-draw/references/iupac-rul
 - Resolve overlaps by moving atoms or labels, never by hiding them or covering them with white boxes.
 - Keep each molecule's position and orientation consistent across panels; place an incoming group on the side it approaches from.
 - Maintain at least half a bond length (7.2 pt) of white space between molecules.
-- Keep at least 5 pt between the letters of two atoms that are not bonded, and between a charge circle and another atom's letters or bonds.
+- Keep at least 5 pt between the letters of two atoms that are not bonded (nor bonded to one atom), between an atom's letters and a bond that ends neither at that atom nor at an atom bonded to it, and between a charge circle and another atom's letters or bonds.
 - Arrange the figure from left to right, wrapping into rows; align the panels and make all reaction arrows within a row the same length.
 
 ## Symbols, charges, and labels

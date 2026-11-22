@@ -42,8 +42,10 @@ CIRCLE_TOL_PT = 0.15           # outer diameter of a charge circle against the d
 CIRCLE_RATIO = 0.34            # Octet: circle radius (center line) = 0.34 x label size
 CHARGE_GAP_MAX_PT = 3.0        # a circle this close (or closer) to its own symbol letter is next to it
 CHARGE_CLEAR_PT = 0.5          # a circle keeps this much from other ink, arrows and other atoms' text
-LETTER_CLEAR_PT = 5.0          # a circle keeps this much from another atom's letters and bonds, and the letters of two
-                               # atoms that are not bonded keep this much apart (closer ones look touching)
+LETTER_CLEAR_PT = 5.0          # a circle keeps this much from another atom's letters and bonds, the letters of two
+                               # atoms that are not bonded (nor bonded to one atom) keep this much apart, and an atom's letters keep this much from
+                               # the bonds of its molecule that end neither at it nor at an atom bonded to it (closer ones
+                               # look touching)
 CIRCLE_OWN_OVERLAP_PT = 0.5    # a circle may reach this far into its own letter's glyph box (the box's corners are
                                # empty for round letters such as O); deeper, it covers the letter
 NUMBER_CLEAR_PT = 1.2          # an atom number keeps this much white from bonds, arrows, circles and other texts (glyph ink
@@ -680,13 +682,19 @@ def det_overlap_text_text(f):
             if g < 0:
                 out.append('%s %r%s and %s %r%s overlap by %.2f pt' % (
                     ka, ta, ' (' + oa + ')' if oa else '', kb, tb, ' (' + ob + ')' if ob else '', -g))
-    # the letters of two atoms of one panel that are not bonded to each other: LETTER_CLEAR_PT apart
+    # the letters of two atoms of one panel that are neither bonded to each other nor bonded to one atom (the two O of a
+    # carboxylate, whose gap the bond angle sets): LETTER_CLEAR_PT apart
     bonded = {frozenset((b['a'], b['b'])) for b in f.bonds}
+    nbr = collections.defaultdict(set)
+    for b in f.bonds:
+        nbr[b['a']].add(b['b'])
+        nbr[b['b']].add(b['a'])
     labels = [(o, t, b) for o, k, t, b in items if k == 'label' and o]
     near = {}
     for i, (oa, ta, ba) in enumerate(labels):
         for ob, tb, bb in labels[i + 1:]:
-            if oa == ob or frozenset((oa, ob)) in bonded or oa.split('.', 1)[0] != ob.split('.', 1)[0]:
+            if oa == ob or frozenset((oa, ob)) in bonded or oa.split('.', 1)[0] != ob.split('.', 1)[0] \
+                    or nbr[oa] & nbr[ob]:
                 continue
             g = box_gap(ba, bb)
             if 0 <= g < LETTER_CLEAR_PT:
@@ -726,6 +734,30 @@ def det_overlap_text_bond(f):
             c = shape_clear(tb, s)
             if c <= 0.0:
                 out.append('%s %r%s touches %s (%.2f pt)' % (kind, text, ' (' + owner + ')' if owner else '', _ink_name(s), c))
+    # an atom's letters and a bond of its molecule that ends neither at the atom nor at an atom bonded to it:
+    # LETTER_CLEAR_PT apart (a charge sign is not a letter; a transition state, drawn in perspective, is exempt as in
+    # det_bond_crossing)
+    nbr = collections.defaultdict(set)
+    for b in f.bonds:
+        nbr[b['a']].add(b['b'])
+        nbr[b['b']].add(b['a'])
+    bonds = [s for s in sc['bonds'] if s.owner and s.owner[0] == 'bond']
+    near = {}
+    for owner, kind, text, box in f.texts():
+        if kind != 'label' or not owner or not any(ch.isalpha() for ch in text) or f.atoms.get(owner, {}).get('ts'):
+            continue
+        tb, sid = box_shape(box), owner.rsplit(':', 1)[0]
+        for s in bonds:
+            a, b = s.owner[1]
+            if a.rsplit(':', 1)[0] != sid or owner in (a, b) or a in nbr[owner] or b in nbr[owner]:
+                continue
+            if _far(s.bbox, tb.bbox, LETTER_CLEAR_PT):
+                continue
+            c = shape_clear(tb, s)
+            if 0.0 < c < LETTER_CLEAR_PT and c < near.get((owner, a, b), (LETTER_CLEAR_PT, ''))[0]:
+                near[(owner, a, b)] = (c, 'label %r (%s) stands %.2f pt from bond %s-%s, closer than %.1f pt' % (
+                    text, owner, c, a, b, LETTER_CLEAR_PT))
+    out += [m for _, m in sorted(near.values())]
     return out
 
 

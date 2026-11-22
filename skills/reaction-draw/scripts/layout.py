@@ -26,6 +26,9 @@ ROW_WIDTH_PT = 504.0        # the ACS double column (7 in, draw_figure.ACS_COLUM
 SPECIES_GAP = 0.5           # white space kept between two species of a panel (bond lengths; check_rules.det_species_gap)
 PAIR_PAD = 0.27             # how far the dots of a reacting pair reach outside the label box (bond lengths; 3 pt and a margin for the label estimate)
 NEAR_DIST = 1.3             # default distance of a "near" placement of a species (atom to its middle)
+TURN_LABELED = False        # True: a labeled chain atom (an imine NH) beside a branched group on a ring atom turns away
+                            # as a labeled end atom does (a layout draw_figure.retry_turn tries for a figure whose
+                            # letters were drawn too close)
 TEXT_NEAR_GAP = 0.8         # default distance of a "near" text: from the atom to the near edge of the text
 TEXT_APART = 0.8            # white space kept between two names of different molecules (texts, residue names), so
                             # that each reads as its own molecule's (check_rules.TEXT_APART_BONDS is the failing limit)
@@ -683,9 +686,11 @@ def iupac_positions(mol, positions, kept=()):
             angles = list(min(options, key=lambda ds: sum(adiff(direction(i, j), d) for j, d in zip(exo, ds))))
             if spread == 60:
                 # a labeled end atom (NH3+) beside a branched group (CO2-): its label would meet the group's labels,
-                # so it turns 30 degrees away (legibility first, GR-4.2.3)
+                # so it turns 30 degrees away (legibility first, GR-4.2.3); a labeled chain atom (an imine NH) too
+                # under TURN_LABELED
                 for k, j in enumerate(exo):
-                    if len(mol.adj[j]) == 1 and mol.labeled(j) and len(mol.adj[exo[1 - k]]) >= 3:
+                    if mol.labeled(j) and (len(mol.adj[j]) == 1 or TURN_LABELED and len(mol.adj[j]) == 2) \
+                            and len(mol.adj[exo[1 - k]]) >= 3:
                         away = 1 if (angles[k] - angles[1 - k]) % 360 < 180 else -1
                         angles[k] = (angles[k] + 30 * away) % 360
             for j, degree in zip(exo, angles):
