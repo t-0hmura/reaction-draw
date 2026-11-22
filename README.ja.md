@@ -51,7 +51,7 @@ AIエージェントに、「https://github.com/t-0hmura/reaction-draw のskill�
 
 ## ベンチマークしたモデル
 
-Claude の 2 モデルと GPT の 2 モデル（effort: high）に 11 種類の反応機構を描画させました。Sol 6.2 high と Sonnet 5.5 high は、ほとんどの反応機構を正確に描画できました。Haiku 5.5 high も全問で実用的な図を出力しましたが、化学的な細部に抜けが多く見られました。一方、Luna 6 high はいくつかの酵素反応機構で誤りがありました。1 枚あたりの所要時間は、Sonnet 5.5 high が約 2.5 分、Haiku 5.5 high が約 5 分、Sol 6.2 high が約 4 分、Luna 6 high が約 4 分でした。詳細は [docs/benchmark](docs/benchmark/README.ja.md) を参照してください。
+Claude の 2 モデルと GPT の 2 モデル（effort: high）に 11 種類の反応機構を描画させました。Sol 6.2 high と Sonnet 5.5 high は、大半の反応機構を正確に描画できました。Haiku 5.5 high も全問で実用的な図を出力しましたが、化学的な細部に抜けが多く見られました。一方、Luna 6 high はいくつかの酵素反応機構で誤りがありました。1 枚あたりの所要時間は、Sonnet 5.5 high が約 2.5 分、Haiku 5.5 high が約 5 分、Sol 6.2 high が約 4 分、Luna 6 high が約 4 分でした。詳細は [docs/benchmark](docs/benchmark/README.ja.md) を参照してください。
 ## 限界
 
 複雑な反応機構や論文中で暗黙的に省略されている原子の移動がある場合、出力される図に誤りが含まれる場合があります。説明を詳細にしたり、出力された図を微調整するよう具体的な指示を与えてみてください。
