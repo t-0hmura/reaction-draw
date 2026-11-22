@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Four models were tested at high effort on 11 reaction-mechanism problems (44 runs): two Claude models (Sonnet 5.5 and Haiku 5.5) in Claude Code, and two GPT models (Sol 6.1 and Luna 6) in Codex CLI. All 44 runs passed the automated drawing checks, and independent judging yielded **27 PASS, 14 PARTIAL, and 3 FAIL**.
+Four models were tested at high effort on 11 reaction-mechanism problems (44 runs): two Claude models (Sonnet 5.5 and Haiku 5.5) in Claude Code, and two GPT models (Sol 6.2 and Luna 6) in Codex CLI. 43 of the 44 runs passed the automated drawing checks, and independent judging yielded **26 PASS, 15 PARTIAL, and 3 FAIL**.
 
 ## Setup and prompts
 
@@ -33,13 +33,13 @@ Draw the reaction mechanism of <TOPIC> as a curved-arrow figure. Use the skill i
 
 ## Judging
 
-In addition to the automated drawing checks, an independent GPT Sol 6.1 xhigh judge evaluated each figure against the paper's mechanism figure (or a written reference mechanism for textbook problems) for chemical accuracy, skill usage, and readability:
+In addition to the automated drawing checks, an independent GPT Sol 6.2 xhigh judge evaluated each figure against the paper's mechanism figure (or a written reference mechanism for textbook problems) for chemical accuracy, skill usage, and readability:
 
 - **PASS**: Chemically accurate and complete enough to represent the reference mechanism, passes all drawing checks, and is visually readable.
 - **PARTIAL**: Usable figure with a specific chemistry gap or failed drawing check.
 - **FAIL**: Incorrect chemistry, a missing key step, or no output figure.
 
-The verdicts below are taken from the judge's saved assessments, with reasons for PARTIAL and FAIL translated from those outputs.
+The verdicts and the reasons for PARTIAL and FAIL below are taken from the judge's saved assessments.
 
 ## Summary by model
 
@@ -47,10 +47,10 @@ Each row covers 11 high-effort runs (one per problem); times, token counts, and 
 
 | Model | Runs | PASS | PARTIAL | FAIL | Median time (m:ss) | Median Claude tokens (in + out) | Median Codex tokens (total) | Median Claude API cost |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sonnet 5.5 high | 11 | 9 | 2 | 0 | 11:48 | 1,351,590 | — | $0.64 |
-| Haiku 5.5 high | 11 | 3 | 8 | 0 | 7:25 | 1,268,582 | — | $0.04 |
-| Sol 6.1 high | 11 | 10 | 1 | 0 | 7:55 | — | 87,662 | — |
-| Luna 6 high | 11 | 5 | 3 | 3 | 11:30 | — | 87,925 | — |
+| Sonnet 5.5 high | 11 | 7 | 4 | 0 | 2:28 | 583,169 | — | $0.41 |
+| Haiku 5.5 high | 11 | 5 | 6 | 0 | 5:07 | 1,024,577 | — | $0.05 |
+| Sol 6.2 high | 11 | 9 | 2 | 0 | 4:17 | — | 67,026 | — |
+| Luna 6 high | 11 | 5 | 3 | 3 | 4:22 | — | 51,954 | — |
 
 ## Figures by problem
 
@@ -62,10 +62,10 @@ doi:10.1002/anie.202111217. Reference: Figure 4.
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 1:37 | 43/43 | PASS | — | 901,233 | — | $0.38 | [<img src="figures/beza_sonnet_high.png" width="180" alt="BezA: Sonnet 5.5 high">](figures/beza_sonnet_high.png) |
-| Haiku 5.5 high | 1:32 | 43/43 | PASS | — | 493,714 | — | $0.02 | [<img src="figures/beza_haiku_high.png" width="180" alt="BezA: Haiku 5.5 high">](figures/beza_haiku_high.png) |
-| Sol 6.1 high | 2:06 | 43/43 | PASS | — | — | 57,221 | — | [<img src="figures/beza_gpt-6.1-sol_high.png" width="180" alt="BezA: Sol 6.1 high">](figures/beza_gpt-6.1-sol_high.png) |
-| Luna 6 high | 1:55 | 43/43 | PASS | — | — | 42,336 | — | [<img src="figures/beza_gpt-6-luna_high.png" width="180" alt="BezA: Luna 6 high">](figures/beza_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 1:19 | 46/46 | PASS | — | 649,072 | — | $0.34 | [<img src="figures/beza_sonnet_high.png" width="180" alt="BezA: Sonnet 5.5 high">](figures/beza_sonnet_high.png) |
+| Haiku 5.5 high | 1:26 | 46/46 | PASS | — | 594,376 | — | $0.02 | [<img src="figures/beza_haiku_high.png" width="180" alt="BezA: Haiku 5.5 high">](figures/beza_haiku_high.png) |
+| Sol 6.2 high | 2:25 | 46/46 | PASS | — | — | 53,553 | — | [<img src="figures/beza_gpt-6.2-sol_high.png" width="180" alt="BezA: Sol 6.2 high">](figures/beza_gpt-6.2-sol_high.png) |
+| Luna 6 high | 1:14 | 49/49 | PASS | — | — | 45,001 | — | [<img src="figures/beza_gpt-6-luna_high.png" width="180" alt="BezA: Luna 6 high">](figures/beza_gpt-6-luna_high.png) |
 
 ### Orf30
 
@@ -73,10 +73,10 @@ doi:10.1021/jacs.6c13085. Reference: Figure S14 and main text.
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 17:01 | 45/45 | PARTIAL | Direct cyclization is correct, but curved arrows and proton transfers for enzyme regeneration are missing. | 2,870,454 | — | $1.04 | [<img src="figures/orf30_sonnet_high.png" width="180" alt="Orf30: Sonnet 5.5 high">](figures/orf30_sonnet_high.png) |
-| Haiku 5.5 high | 17:33 | 44/44 | PARTIAL | Cyclization and product stereochemistry are correct, but the cofactor protonation state and catalyst regeneration are incomplete. | 2,294,320 | — | $0.13 | [<img src="figures/orf30_haiku_high.png" width="180" alt="Orf30: Haiku 5.5 high">](figures/orf30_haiku_high.png) |
-| Sol 6.1 high | 13:51 | 44/44 | PARTIAL | Pathway and configuration are correct, but small deprotonation arrows are hard to read. | — | 119,243 | — | [<img src="figures/orf30_gpt-6.1-sol_high.png" width="180" alt="Orf30: Sol 6.1 high">](figures/orf30_gpt-6.1-sol_high.png) |
-| Luna 6 high | 12:17 | 40/40 | FAIL | The post-cyclization structure is incorrect and does not match the paper's mechanism. | — | 95,838 | — | [<img src="figures/orf30_gpt-6-luna_high.png" width="180" alt="Orf30: Luna 6 high">](figures/orf30_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 6:09 | 47/47 | PARTIAL | The cyclization and product stereochemistry match the paper’s figure, with Lys238 deprotonation and its nucleophilic attack arrow missing from the PLP regeneration step. | 1,135,156 | — | $0.77 | [<img src="figures/orf30_sonnet_high.png" width="180" alt="Orf30: Sonnet 5.5 high">](figures/orf30_sonnet_high.png) |
+| Haiku 5.5 high | 13:00 | 47/47 | PARTIAL | The figure correctly shows cyclization and product stereochemistry, but Lys238 remains protonated at product release, its attack arrow is missing, and the first curved arrow crosses a PLP bond. | 1,262,302 | — | $0.14 | [<img src="figures/orf30_haiku_high.png" width="180" alt="Orf30: Haiku 5.5 high">](figures/orf30_haiku_high.png) |
+| Sol 6.2 high | 13:32 | 47/47 | PARTIAL | In the external aldimine, the curved arrow from the C2″–H bond crosses the bond to the carboxylate, making the electron source hard to identify. | — | 125,955 | — | [<img src="figures/orf30_gpt-6.2-sol_high.png" width="180" alt="Orf30: Sol 6.2 high">](figures/orf30_gpt-6.2-sol_high.png) |
+| Luna 6 high | 27:29 | 47/47 | FAIL | The substrate has the opposite configuration at C2″ from the reference, and the Lys238 attack during product release is missing, so the figure cannot represent the paper’s mechanism. | — | 125,554 | — | [<img src="figures/orf30_gpt-6-luna_high.png" width="180" alt="Orf30: Luna 6 high">](figures/orf30_gpt-6-luna_high.png) |
 
 ### 4-Oxalocrotonate tautomerase
 
@@ -84,10 +84,10 @@ doi:10.1016/j.bioorg.2007.08.003. Reference: Scheme 2.
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 11:48 | 44/44 | PASS | — | 1,076,833 | — | $0.50 | [<img src="figures/fourot_sonnet_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Sonnet 5.5 high">](figures/fourot_sonnet_high.png) |
-| Haiku 5.5 high | 18:17 | 41/41 | PASS | — | 4,048,219 | — | $0.21 | [<img src="figures/fourot_haiku_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Haiku 5.5 high">](figures/fourot_haiku_high.png) |
-| Sol 6.1 high | 8:47 | 45/45 | PASS | — | — | 87,662 | — | [<img src="figures/fourot_gpt-6.1-sol_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Sol 6.1 high">](figures/fourot_gpt-6.1-sol_high.png) |
-| Luna 6 high | 3:29 | 43/43 | PASS | — | — | 52,722 | — | [<img src="figures/fourot_gpt-6-luna_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Luna 6 high">](figures/fourot_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 2:35 | 47/47 | PARTIAL | The C2=C3 bond in the upper-right dienolate intermediate is drawn with a different geometry from Scheme 2. | 583,169 | — | $0.41 | [<img src="figures/fourot_sonnet_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Sonnet 5.5 high">](figures/fourot_sonnet_high.png) |
+| Haiku 5.5 high | 5:37 | 48/48 | PARTIAL | The intermediate needs correction because its C2=C3 double-bond geometry is reversed relative to Scheme 2. | 1,312,488 | — | $0.14 | [<img src="figures/fourot_haiku_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Haiku 5.5 high">](figures/fourot_haiku_high.png) |
+| Sol 6.2 high | 4:27 | 48/48 | PASS | — | — | 101,764 | — | [<img src="figures/fourot_gpt-6.2-sol_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Sol 6.2 high">](figures/fourot_gpt-6.2-sol_high.png) |
+| Luna 6 high | 3:08 | 46/46 | FAIL | All three panels insert an extra CH₂ between C5 and the terminal carboxylate, turning the paper’s six-carbon skeleton into a seven-carbon skeleton. | — | 56,685 | — | [<img src="figures/fourot_gpt-6-luna_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Luna 6 high">](figures/fourot_gpt-6-luna_high.png) |
 
 ### Haloalcohol dehalogenase HheC
 
@@ -95,10 +95,10 @@ doi:10.1021/ct8000443. Reference: Scheme 2.
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 24:10 | 41/41 | PASS | — | 1,943,556 | — | $0.71 | [<img src="figures/hhec_sonnet_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Sonnet 5.5 high">](figures/hhec_sonnet_high.png) |
-| Haiku 5.5 high | 16:12 | 42/42 | PARTIAL | Main reaction is correct, but the Asp80 attachment point and Ser132 hydrogen bond differ from the reference figure. | 2,179,714 | — | $0.10 | [<img src="figures/hhec_haiku_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Haiku 5.5 high">](figures/hhec_haiku_high.png) |
-| Sol 6.1 high | 7:55 | 42/42 | PASS | — | — | 75,669 | — | [<img src="figures/hhec_gpt-6.1-sol_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Sol 6.1 high">](figures/hhec_gpt-6.1-sol_high.png) |
-| Luna 6 high | 45:36 | 44/44 | FAIL | Cyclization step is clear, but the reacting Arg149 is drawn as a nitrogen radical with an incorrect H count. | — | 162,931 | — | [<img src="figures/hhec_gpt-6-luna_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Luna 6 high">](figures/hhec_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 4:51 | 44/44 | PARTIAL | The concerted ring closure and chloride loss are clear, but two curved arrows in the left panel start at O–H bonds instead of the oxygen atoms shown in Scheme 2 and need correction before the figure can represent the published mechanism. | 989,179 | — | $0.57 | [<img src="figures/hhec_sonnet_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Sonnet 5.5 high">](figures/hhec_sonnet_high.png) |
+| Haiku 5.5 high | 5:07 | 44/44 | PASS | — | 1,625,244 | — | $0.11 | [<img src="figures/hhec_haiku_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Haiku 5.5 high">](figures/hhec_haiku_high.png) |
+| Sol 6.2 high | 5:38 | 44/44 | PASS | — | — | 67,026 | — | [<img src="figures/hhec_gpt-6.2-sol_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Sol 6.2 high">](figures/hhec_gpt-6.2-sol_high.png) |
+| Luna 6 high | 3:10 | 44/44 | PASS | — | — | 54,229 | — | [<img src="figures/hhec_gpt-6-luna_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Luna 6 high">](figures/hhec_gpt-6-luna_high.png) |
 
 ### SET7/9
 
@@ -106,10 +106,10 @@ doi:10.1002/jcc.21458. Reference: Scheme 1 and main text.
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 1:11 | 37/37 | PASS | — | 496,793 | — | $0.27 | [<img src="figures/set79_sonnet_high.png" width="180" alt="SET7/9: Sonnet 5.5 high">](figures/set79_sonnet_high.png) |
-| Haiku 5.5 high | 1:25 | 41/41 | PASS | — | 840,433 | — | $0.02 | [<img src="figures/set79_haiku_high.png" width="180" alt="SET7/9: Haiku 5.5 high">](figures/set79_haiku_high.png) |
-| Sol 6.1 high | 2:55 | 38/38 | PASS | — | — | 47,898 | — | [<img src="figures/set79_gpt-6.1-sol_high.png" width="180" alt="SET7/9: Sol 6.1 high">](figures/set79_gpt-6.1-sol_high.png) |
-| Luna 6 high | 16:23 | 37/37 | PASS | — | — | 129,420 | — | [<img src="figures/set79_gpt-6-luna_high.png" width="180" alt="SET7/9: Luna 6 high">](figures/set79_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 1:27 | 44/44 | PASS | — | 555,179 | — | $0.32 | [<img src="figures/set79_sonnet_high.png" width="180" alt="SET7/9: Sonnet 5.5 high">](figures/set79_sonnet_high.png) |
+| Haiku 5.5 high | 1:35 | 45/45 | PASS | — | 841,556 | — | $0.03 | [<img src="figures/set79_haiku_high.png" width="180" alt="SET7/9: Haiku 5.5 high">](figures/set79_haiku_high.png) |
+| Sol 6.2 high | 2:51 | 44/44 | PASS | — | — | 91,241 | — | [<img src="figures/set79_gpt-6.2-sol_high.png" width="180" alt="SET7/9: Sol 6.2 high">](figures/set79_gpt-6.2-sol_high.png) |
+| Luna 6 high | 1:51 | 44/44 | PARTIAL | The SET7/9 methyl transfer is drawn correctly and passes the drawing checks, but the reacting lysine is not identified as Lys4. | — | 30,786 | — | [<img src="figures/set79_gpt-6-luna_high.png" width="180" alt="SET7/9: Luna 6 high">](figures/set79_gpt-6-luna_high.png) |
 
 ### Chorismate mutase
 
@@ -117,10 +117,10 @@ doi:10.1039/b313759g. Reference: Figure 1.
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 11:51 | 43/43 | PASS | — | 1,351,590 | — | $0.64 | [<img src="figures/cm_sonnet_high.png" width="180" alt="Chorismate mutase: Sonnet 5.5 high">](figures/cm_sonnet_high.png) |
-| Haiku 5.5 high | 7:25 | 39/39 | PARTIAL | Skeleton, charges, and electron flow are correct, but the product's relative configuration is omitted. | 1,268,582 | — | $0.04 | [<img src="figures/cm_haiku_high.png" width="180" alt="Chorismate mutase: Haiku 5.5 high">](figures/cm_haiku_high.png) |
-| Sol 6.1 high | 5:50 | 39/39 | PASS | — | — | 88,591 | — | [<img src="figures/cm_gpt-6.1-sol_high.png" width="180" alt="Chorismate mutase: Sol 6.1 high">](figures/cm_gpt-6.1-sol_high.png) |
-| Luna 6 high | 9:45 | 35/35 | PARTIAL | Bond changes and charges are correct, but the configuration shown in the paper is omitted and check records are inconsistent. | — | 77,103 | — | [<img src="figures/cm_gpt-6-luna_high.png" width="180" alt="Chorismate mutase: Luna 6 high">](figures/cm_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 4:57 | 46/46 | PASS | — | 963,344 | — | $0.47 | [<img src="figures/cm_sonnet_high.png" width="180" alt="Chorismate mutase: Sonnet 5.5 high">](figures/cm_sonnet_high.png) |
+| Haiku 5.5 high | 7:01 | 46/46 | PARTIAL | The Claisen rearrangement is shown correctly, but the two Arg7 hydrogen bonds on the left are drawn from the same nitrogen, whereas the paper assigns them to two different nitrogens. | 2,869,527 | — | $0.27 | [<img src="figures/cm_haiku_high.png" width="180" alt="Chorismate mutase: Haiku 5.5 high">](figures/cm_haiku_high.png) |
+| Sol 6.2 high | 3:12 | 41/41 | PASS | — | — | 60,937 | — | [<img src="figures/cm_gpt-6.2-sol_high.png" width="180" alt="Chorismate mutase: Sol 6.2 high">](figures/cm_gpt-6.2-sol_high.png) |
+| Luna 6 high | 4:41 | 41/41 | PARTIAL | The figure is usable as a schematic of the one-step Claisen rearrangement, but it omits the stereochemistry of both the substrate and the product. | — | 82,788 | — | [<img src="figures/cm_gpt-6-luna_high.png" width="180" alt="Chorismate mutase: Luna 6 high">](figures/cm_gpt-6-luna_high.png) |
 
 ### Chorismate mutase with its transition state
 
@@ -128,10 +128,10 @@ doi:10.1039/b313759g. Reference: Figure 1 (with transition state).
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 15:01 | 46/46 | PASS | — | 3,867,163 | — | $1.17 | [<img src="figures/cmts_sonnet_high.png" width="180" alt="Chorismate mutase with its transition state: Sonnet 5.5 high">](figures/cmts_sonnet_high.png) |
-| Haiku 5.5 high | 11:33 | 42/42 | PARTIAL | Reaction and transition state are correct, but the product's relative configuration is omitted. | 3,414,681 | — | $0.28 | [<img src="figures/cmts_haiku_high.png" width="180" alt="Chorismate mutase with its transition state: Haiku 5.5 high">](figures/cmts_haiku_high.png) |
-| Sol 6.1 high | 12:27 | 46/46 | PASS | — | — | 105,127 | — | [<img src="figures/cmts_gpt-6.1-sol_high.png" width="180" alt="Chorismate mutase with its transition state: Sol 6.1 high">](figures/cmts_gpt-6.1-sol_high.png) |
-| Luna 6 high | 14:09 | 38/38 | PARTIAL | Bond changes are correct, but the reactant configuration is omitted and bonds cross in the transition state. | — | 92,975 | — | [<img src="figures/cmts_gpt-6-luna_high.png" width="180" alt="Chorismate mutase with its transition state: Luna 6 high">](figures/cmts_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 2:28 | 49/49 | PARTIAL | The forming bond uses a different carbon number from the paper, so the label needs correction for direct comparison with the paper. | 759,300 | — | $0.49 | [<img src="figures/cmts_sonnet_high.png" width="180" alt="Chorismate mutase with its transition state: Sonnet 5.5 high">](figures/cmts_sonnet_high.png) |
+| Haiku 5.5 high | 6:01 | 44/44 | PARTIAL | The bond changes and transition state are drawn correctly, but the carbon in the breaking C–O3 bond is labeled “5,” which identifies a different carbon in the paper. | 1,819,727 | — | $0.16 | [<img src="figures/cmts_haiku_high.png" width="180" alt="Chorismate mutase with its transition state: Haiku 5.5 high">](figures/cmts_haiku_high.png) |
+| Sol 6.2 high | 6:55 | 49/49 | PASS | — | — | 100,066 | — | [<img src="figures/cmts_gpt-6.2-sol_high.png" width="180" alt="Chorismate mutase with its transition state: Sol 6.2 high">](figures/cmts_gpt-6.2-sol_high.png) |
+| Luna 6 high | 8:23 | 38/39 | FAIL | The substrate and product stereochemistry differ from the paper’s figure, and the transition state has problems with bond notation and label placement. | — | 97,375 | — | [<img src="figures/cmts_gpt-6-luna_high.png" width="180" alt="Chorismate mutase with its transition state: Luna 6 high">](figures/cmts_gpt-6-luna_high.png) |
 
 ### Chymotrypsin
 
@@ -139,10 +139,10 @@ Textbook mechanism (no reference paper).
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 56:05 | 41/41 | PASS | — | 4,994,935 | — | $1.52 | [<img src="figures/chymo_sonnet_high.png" width="180" alt="Chymotrypsin: Sonnet 5.5 high">](figures/chymo_sonnet_high.png) |
-| Haiku 5.5 high | 19:40 | 41/41 | PARTIAL | All four main steps are shown, but two proton-transfer arrows are incorrect. | 4,358,091 | — | $0.23 | [<img src="figures/chymo_haiku_high.png" width="180" alt="Chymotrypsin: Haiku 5.5 high">](figures/chymo_haiku_high.png) |
-| Sol 6.1 high | 13:42 | 41/41 | PASS | — | — | 116,548 | — | [<img src="figures/chymo_gpt-6.1-sol_high.png" width="180" alt="Chymotrypsin: Sol 6.1 high">](figures/chymo_gpt-6.1-sol_high.png) |
-| Luna 6 high | 11:30 | 40/40 | PASS | — | — | 87,925 | — | [<img src="figures/chymo_gpt-6-luna_high.png" width="180" alt="Chymotrypsin: Luna 6 high">](figures/chymo_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 3:44 | 44/44 | PASS | — | 542,838 | — | $0.53 | [<img src="figures/chymo_sonnet_high.png" width="180" alt="Chymotrypsin: Sonnet 5.5 high">](figures/chymo_sonnet_high.png) |
+| Haiku 5.5 high | 5:58 | 44/44 | PASS | — | 824,495 | — | $0.05 | [<img src="figures/chymo_haiku_high.png" width="180" alt="Chymotrypsin: Haiku 5.5 high">](figures/chymo_haiku_high.png) |
+| Sol 6.2 high | 8:25 | 44/44 | PASS | — | — | 108,864 | — | [<img src="figures/chymo_gpt-6.2-sol_high.png" width="180" alt="Chymotrypsin: Sol 6.2 high">](figures/chymo_gpt-6.2-sol_high.png) |
+| Luna 6 high | 4:22 | 48/48 | PASS | — | — | 46,071 | — | [<img src="figures/chymo_gpt-6-luna_high.png" width="180" alt="Chymotrypsin: Luna 6 high">](figures/chymo_gpt-6-luna_high.png) |
 
 ### Aldol condensation
 
@@ -150,10 +150,10 @@ Textbook mechanism (no reference paper).
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 2:31 | 37/37 | PARTIAL | Species and product are correct, but three curved arrows are missing. | 641,349 | — | $0.42 | [<img src="figures/aldol_sonnet_high.png" width="180" alt="Aldol condensation: Sonnet 5.5 high">](figures/aldol_sonnet_high.png) |
-| Haiku 5.5 high | 3:22 | 37/37 | PARTIAL | Pathway and product are correct, but one curved arrow is missing in the addition step (step 2). | 791,136 | — | $0.04 | [<img src="figures/aldol_haiku_high.png" width="180" alt="Aldol condensation: Haiku 5.5 high">](figures/aldol_haiku_high.png) |
-| Sol 6.1 high | 4:26 | 37/37 | PASS | — | — | 74,538 | — | [<img src="figures/aldol_gpt-6.1-sol_high.png" width="180" alt="Aldol condensation: Sol 6.1 high">](figures/aldol_gpt-6.1-sol_high.png) |
-| Luna 6 high | 4:48 | 37/37 | PASS | — | — | 61,179 | — | [<img src="figures/aldol_gpt-6-luna_high.png" width="180" alt="Aldol condensation: Luna 6 high">](figures/aldol_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 1:47 | 39/39 | PASS | — | 321,974 | — | $0.28 | [<img src="figures/aldol_sonnet_high.png" width="180" alt="Aldol condensation: Sonnet 5.5 high">](figures/aldol_sonnet_high.png) |
+| Haiku 5.5 high | 4:00 | 39/39 | PASS | — | 573,081 | — | $0.04 | [<img src="figures/aldol_haiku_high.png" width="180" alt="Aldol condensation: Haiku 5.5 high">](figures/aldol_haiku_high.png) |
+| Sol 6.2 high | 2:18 | 39/39 | PASS | — | — | 41,088 | — | [<img src="figures/aldol_gpt-6.2-sol_high.png" width="180" alt="Aldol condensation: Sol 6.2 high">](figures/aldol_gpt-6.2-sol_high.png) |
+| Luna 6 high | 6:44 | 44/44 | PASS | — | — | 51,954 | — | [<img src="figures/aldol_gpt-6-luna_high.png" width="180" alt="Aldol condensation: Luna 6 high">](figures/aldol_gpt-6-luna_high.png) |
 
 ### Radical addition of HBr to propene
 
@@ -161,10 +161,10 @@ Textbook mechanism (no reference paper).
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 2:15 | 29/29 | PASS | — | 543,737 | — | $0.33 | [<img src="figures/radical_sonnet_high.png" width="180" alt="Radical addition of HBr to propene: Sonnet 5.5 high">](figures/radical_sonnet_high.png) |
-| Haiku 5.5 high | 4:46 | 29/29 | PARTIAL | Chain reaction is correct, but the `2 RO•` formed by peroxide homolysis is omitted. | 1,118,670 | — | $0.04 | [<img src="figures/radical_haiku_high.png" width="180" alt="Radical addition of HBr to propene: Haiku 5.5 high">](figures/radical_haiku_high.png) |
-| Sol 6.1 high | 2:23 | 29/29 | PASS | — | — | 43,751 | — | [<img src="figures/radical_gpt-6.1-sol_high.png" width="180" alt="Radical addition of HBr to propene: Sol 6.1 high">](figures/radical_gpt-6.1-sol_high.png) |
-| Luna 6 high | 5:52 | 29/29 | PARTIAL | Product and chain skeleton are correct, but the ROH byproduct in initiation is omitted and the H-abstraction arrow is unclear. | — | 58,141 | — | [<img src="figures/radical_gpt-6-luna_high.png" width="180" alt="Radical addition of HBr to propene: Luna 6 high">](figures/radical_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 1:30 | 31/31 | PASS | — | 364,738 | — | $0.26 | [<img src="figures/radical_sonnet_high.png" width="180" alt="Radical addition of HBr to propene: Sonnet 5.5 high">](figures/radical_sonnet_high.png) |
+| Haiku 5.5 high | 2:45 | 31/31 | PARTIAL | The mechanism is drawn correctly, but in the first propagation step, the fishhook tail is far enough from the double bond that the electron source is hard to identify. | 437,662 | — | $0.03 | [<img src="figures/radical_haiku_high.png" width="180" alt="Radical addition of HBr to propene: Haiku 5.5 high">](figures/radical_haiku_high.png) |
+| Sol 6.2 high | 1:41 | 32/32 | PASS | — | — | 35,506 | — | [<img src="figures/radical_gpt-6.2-sol_high.png" width="180" alt="Radical addition of HBr to propene: Sol 6.2 high">](figures/radical_gpt-6.2-sol_high.png) |
+| Luna 6 high | 2:12 | 35/35 | PARTIAL | The figure shows one too few OH radicals from hydrogen peroxide homolysis, and the initiation hydrogen-transfer arrow stops short of the hydrogen atom. | — | 24,000 | — | [<img src="figures/radical_gpt-6-luna_high.png" width="180" alt="Radical addition of HBr to propene: Luna 6 high">](figures/radical_gpt-6-luna_high.png) |
 
 ### Carbonic anhydrase II
 
@@ -172,7 +172,7 @@ Textbook mechanism (no reference paper).
 
 | Model | Time (m:ss) | Checks | Verdict | Reason for PARTIAL / FAIL | Claude tokens (in + out) | Codex tokens (total) | Claude API cost | Figure |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 9:27 | 41/41 | PASS | — | 1,981,673 | — | $0.70 | [<img src="figures/metal_sonnet_high.png" width="180" alt="Carbonic anhydrase II: Sonnet 5.5 high">](figures/metal_sonnet_high.png) |
-| Haiku 5.5 high | 5:52 | 41/41 | PARTIAL | Main steps and electron flow are correct, but His119 coordinates through the wrong nitrogen in every panel. | 883,342 | — | $0.04 | [<img src="figures/metal_haiku_high.png" width="180" alt="Carbonic anhydrase II: Haiku 5.5 high">](figures/metal_haiku_high.png) |
-| Sol 6.1 high | 11:02 | 41/41 | PASS | — | — | 95,019 | — | [<img src="figures/metal_gpt-6.1-sol_high.png" width="180" alt="Carbonic anhydrase II: Sol 6.1 high">](figures/metal_gpt-6.1-sol_high.png) |
-| Luna 6 high | 21:07 | 43/43 | FAIL | All required steps are shown, but the zinc-bound hydroxide is missing its H and the product is drawn as a radical instead of bicarbonate. | — | 187,955 | — | [<img src="figures/metal_gpt-6-luna_high.png" width="180" alt="Carbonic anhydrase II: Luna 6 high">](figures/metal_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 2:28 | 44/44 | PASS | — | 328,431 | — | $0.26 | [<img src="figures/metal_sonnet_high.png" width="180" alt="Carbonic anhydrase II: Sonnet 5.5 high">](figures/metal_sonnet_high.png) |
+| Haiku 5.5 high | 4:16 | 43/43 | PARTIAL | The carbonic anhydrase II mechanism and charges match the reference, but the ligand-exchange arrow is detached from the intermediate in the top row, making the sequence across rows hard to follow. | 1,024,577 | — | $0.05 | [<img src="figures/metal_haiku_high.png" width="180" alt="Carbonic anhydrase II: Haiku 5.5 high">](figures/metal_haiku_high.png) |
+| Sol 6.2 high | 4:17 | 44/44 | PARTIAL | The mechanism is correct, but a curved arrow in panel 3 crosses W1’s O–H bond, making the source of the electron pair hard to read. | — | 56,715 | — | [<img src="figures/metal_gpt-6.2-sol_high.png" width="180" alt="Carbonic anhydrase II: Sol 6.2 high">](figures/metal_gpt-6.2-sol_high.png) |
+| Luna 6 high | 4:29 | 48/48 | PASS | — | — | 27,424 | — | [<img src="figures/metal_gpt-6-luna_high.png" width="180" alt="Carbonic anhydrase II: Luna 6 high">](figures/metal_gpt-6-luna_high.png) |

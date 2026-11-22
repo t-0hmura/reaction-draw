@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-4 つのモデル（effort は high）に 11 問の反応機構を描かせました（計 44 回）。Claude のモデル（Sonnet 5.5・Haiku 5.5）は Claude Code で、GPT のモデル（Sol 6.1・Luna 6）は Codex CLI で動かしました。結果は **PASS 27、PARTIAL 14、FAIL 3** で、描画の自動検査には 44 回すべてが合格しました。以下に prompt、結果、各回の出力図を示します。
+4 つのモデル（effort は high）に 11 問の反応機構を描かせました（計 44 回）。Claude のモデル（Sonnet 5.5・Haiku 5.5）は Claude Code で、GPT のモデル（Sol 6.2・Luna 6）は Codex CLI で動かしました。結果は **PASS 26、PARTIAL 15、FAIL 3** で、描画の自動検査には 44 回のうち 43 回が合格しました。以下に prompt、結果、各回の出力図を示します。
 
 ## 条件と prompt
 
@@ -33,7 +33,7 @@ Draw the reaction mechanism of <TOPIC> as a curved-arrow figure. Use the skill i
 
 ## 採点
 
-描画の自動検査とは別に、独立した採点役として GPT Sol 6.1 xhigh を用い、各図を論文の反応機構図（教科書の問題では教科書の機構を書き起こしたもの）と比較して、化学的な正しさ、skill の使い方、読みやすさを評価しました。
+描画の自動検査とは別に、独立した採点役として GPT Sol 6.2 xhigh を用い、各図を論文の反応機構図（教科書の問題では教科書の機構を書き起こしたもの）と比較して、化学的な正しさ、skill の使い方、読みやすさを評価しました。
 
 - PASS：参照元の反応機構を十分に正しく表しており、描画の自動検査にすべて合格し、視覚的にも読みやすい。
 - PARTIAL：図として成立しているが、化学的な記述に一部不足があるか、描画の自動検査に不合格項目がある。
@@ -47,10 +47,10 @@ Draw the reaction mechanism of <TOPIC> as a curved-arrow figure. Use the skill i
 
 | モデル | 回数 | PASS | PARTIAL | FAIL | 時間の中央値（m:ss） | Claude のトークン数の中央値（入力 + 出力） | Codex のトークン数の中央値（合計） | Claude の API 費用の中央値 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sonnet 5.5 high | 11 | 9 | 2 | 0 | 11:48 | 1,351,590 | — | $0.64 |
-| Haiku 5.5 high | 11 | 3 | 8 | 0 | 7:25 | 1,268,582 | — | $0.04 |
-| Sol 6.1 high | 11 | 10 | 1 | 0 | 7:55 | — | 87,662 | — |
-| Luna 6 high | 11 | 5 | 3 | 3 | 11:30 | — | 87,925 | — |
+| Sonnet 5.5 high | 11 | 7 | 4 | 0 | 2:28 | 583,169 | — | $0.41 |
+| Haiku 5.5 high | 11 | 5 | 6 | 0 | 5:07 | 1,024,577 | — | $0.05 |
+| Sol 6.2 high | 11 | 9 | 2 | 0 | 4:17 | — | 67,026 | — |
+| Luna 6 high | 11 | 5 | 3 | 3 | 4:22 | — | 51,954 | — |
 
 ## 問題ごとの図
 
@@ -62,10 +62,10 @@ doi:10.1002/anie.202111217。参照：Figure 4。
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 1:37 | 43/43 | PASS | — | 901,233 | — | $0.38 | [<img src="figures/beza_sonnet_high.png" width="180" alt="BezA: Sonnet 5.5 high">](figures/beza_sonnet_high.png) |
-| Haiku 5.5 high | 1:32 | 43/43 | PASS | — | 493,714 | — | $0.02 | [<img src="figures/beza_haiku_high.png" width="180" alt="BezA: Haiku 5.5 high">](figures/beza_haiku_high.png) |
-| Sol 6.1 high | 2:06 | 43/43 | PASS | — | — | 57,221 | — | [<img src="figures/beza_gpt-6.1-sol_high.png" width="180" alt="BezA: Sol 6.1 high">](figures/beza_gpt-6.1-sol_high.png) |
-| Luna 6 high | 1:55 | 43/43 | PASS | — | — | 42,336 | — | [<img src="figures/beza_gpt-6-luna_high.png" width="180" alt="BezA: Luna 6 high">](figures/beza_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 1:19 | 46/46 | PASS | — | 649,072 | — | $0.34 | [<img src="figures/beza_sonnet_high.png" width="180" alt="BezA: Sonnet 5.5 high">](figures/beza_sonnet_high.png) |
+| Haiku 5.5 high | 1:26 | 46/46 | PASS | — | 594,376 | — | $0.02 | [<img src="figures/beza_haiku_high.png" width="180" alt="BezA: Haiku 5.5 high">](figures/beza_haiku_high.png) |
+| Sol 6.2 high | 2:25 | 46/46 | PASS | — | — | 53,553 | — | [<img src="figures/beza_gpt-6.2-sol_high.png" width="180" alt="BezA: Sol 6.2 high">](figures/beza_gpt-6.2-sol_high.png) |
+| Luna 6 high | 1:14 | 49/49 | PASS | — | — | 45,001 | — | [<img src="figures/beza_gpt-6-luna_high.png" width="180" alt="BezA: Luna 6 high">](figures/beza_gpt-6-luna_high.png) |
 
 ### Orf30
 
@@ -73,10 +73,10 @@ doi:10.1021/jacs.6c13085。参照：Figure S14 と本文。
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 17:01 | 45/45 | PARTIAL | 直接環化は正しく描けていますが、酵素再生の巻矢印とプロトン移動が不足しています。 | 2,870,454 | — | $1.04 | [<img src="figures/orf30_sonnet_high.png" width="180" alt="Orf30: Sonnet 5.5 high">](figures/orf30_sonnet_high.png) |
-| Haiku 5.5 high | 17:33 | 44/44 | PARTIAL | 環化と生成物の立体化学は一致していますが、補酵素のプロトン化状態と触媒再生に化学上の不足があります。 | 2,294,320 | — | $0.13 | [<img src="figures/orf30_haiku_high.png" width="180" alt="Orf30: Haiku 5.5 high">](figures/orf30_haiku_high.png) |
-| Sol 6.1 high | 13:51 | 44/44 | PARTIAL | 反応経路と立体配置は正しいものの、脱プロトン化の電子移動を示す小矢印が判読しにくく、修正が必要です。 | — | 119,243 | — | [<img src="figures/orf30_gpt-6.1-sol_high.png" width="180" alt="Orf30: Sol 6.1 high">](figures/orf30_gpt-6.1-sol_high.png) |
-| Luna 6 high | 12:17 | 40/40 | FAIL | 環化後の構造が誤っており、論文の反応機構図として使用できません。 | — | 95,838 | — | [<img src="figures/orf30_gpt-6-luna_high.png" width="180" alt="Orf30: Luna 6 high">](figures/orf30_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 6:09 | 47/47 | PARTIAL | 環化と生成物の立体は論文図と一致し、補酵素 PLP の再生段階には Lys238 の脱プロトン化と求核攻撃を示す巻き矢印が不足しています。 | 1,135,156 | — | $0.77 | [<img src="figures/orf30_sonnet_high.png" width="180" alt="Orf30: Sonnet 5.5 high">](figures/orf30_sonnet_high.png) |
+| Haiku 5.5 high | 13:00 | 47/47 | PARTIAL | 環化と生成物の立体化学は正しく描かれていますが、生成物放出段階で Lys238 がプロトン化されたままで、攻撃の巻矢印がなく、最初の巻矢印は PLP の結合と交差しています。 | 1,262,302 | — | $0.14 | [<img src="figures/orf30_haiku_high.png" width="180" alt="Orf30: Haiku 5.5 high">](figures/orf30_haiku_high.png) |
+| Sol 6.2 high | 13:32 | 47/47 | PARTIAL | 外部アルジミンの C2″–H から出る巻矢印がカルボキシラートへの結合線を横切り、電子の出所が判読しにくいです。 | — | 125,955 | — | [<img src="figures/orf30_gpt-6.2-sol_high.png" width="180" alt="Orf30: Sol 6.2 high">](figures/orf30_gpt-6.2-sol_high.png) |
+| Luna 6 high | 27:29 | 47/47 | FAIL | 基質の C2″ の立体配置が原図と逆で、生成物放出時の Lys238 の攻撃も欠けているため、論文の機構図として使えません。 | — | 125,554 | — | [<img src="figures/orf30_gpt-6-luna_high.png" width="180" alt="Orf30: Luna 6 high">](figures/orf30_gpt-6-luna_high.png) |
 
 ### 4-オキサロクロトン酸トートメラーゼ
 
@@ -84,10 +84,10 @@ doi:10.1016/j.bioorg.2007.08.003。参照：Scheme 2。
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 11:48 | 44/44 | PASS | — | 1,076,833 | — | $0.50 | [<img src="figures/fourot_sonnet_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Sonnet 5.5 high">](figures/fourot_sonnet_high.png) |
-| Haiku 5.5 high | 18:17 | 41/41 | PASS | — | 4,048,219 | — | $0.21 | [<img src="figures/fourot_haiku_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Haiku 5.5 high">](figures/fourot_haiku_high.png) |
-| Sol 6.1 high | 8:47 | 45/45 | PASS | — | — | 87,662 | — | [<img src="figures/fourot_gpt-6.1-sol_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Sol 6.1 high">](figures/fourot_gpt-6.1-sol_high.png) |
-| Luna 6 high | 3:29 | 43/43 | PASS | — | — | 52,722 | — | [<img src="figures/fourot_gpt-6-luna_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Luna 6 high">](figures/fourot_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 2:35 | 47/47 | PARTIAL | 右上のジエノラート中間体の C2=C3 が、論文の Scheme 2 と異なる幾何で描かれています。 | 583,169 | — | $0.41 | [<img src="figures/fourot_sonnet_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Sonnet 5.5 high">](figures/fourot_sonnet_high.png) |
+| Haiku 5.5 high | 5:37 | 48/48 | PARTIAL | 中間体の C2=C3 の立体配置が Scheme 2 と逆のため、修正が必要です。 | 1,312,488 | — | $0.14 | [<img src="figures/fourot_haiku_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Haiku 5.5 high">](figures/fourot_haiku_high.png) |
+| Sol 6.2 high | 4:27 | 48/48 | PASS | — | — | 101,764 | — | [<img src="figures/fourot_gpt-6.2-sol_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Sol 6.2 high">](figures/fourot_gpt-6.2-sol_high.png) |
+| Luna 6 high | 3:08 | 46/46 | FAIL | 全3パネルでC5と末端カルボキシラートの間にCH₂が1個余分にあり、論文の6炭素骨格が7炭素になっています。 | — | 56,685 | — | [<img src="figures/fourot_gpt-6-luna_high.png" width="180" alt="4-Oxalocrotonate tautomerase: Luna 6 high">](figures/fourot_gpt-6-luna_high.png) |
 
 ### ハロアルコールデハロゲナーゼ HheC
 
@@ -95,10 +95,10 @@ doi:10.1021/ct8000443。参照：Scheme 2。
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 24:10 | 41/41 | PASS | — | 1,943,556 | — | $0.71 | [<img src="figures/hhec_sonnet_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Sonnet 5.5 high">](figures/hhec_sonnet_high.png) |
-| Haiku 5.5 high | 16:12 | 42/42 | PARTIAL | 主反応は正しいですが、Asp80 の接続位置と Ser132 の水素結合が原図と異なり、修正が必要です。 | 2,179,714 | — | $0.10 | [<img src="figures/hhec_haiku_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Haiku 5.5 high">](figures/hhec_haiku_high.png) |
-| Sol 6.1 high | 7:55 | 42/42 | PASS | — | — | 75,669 | — | [<img src="figures/hhec_gpt-6.1-sol_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Sol 6.1 high">](figures/hhec_gpt-6.1-sol_high.png) |
-| Luna 6 high | 45:36 | 44/44 | FAIL | 環化の流れは読み取れますが、反応に関与する Arg149 が窒素ラジカルとして描かれており、水素数も一致しません。 | — | 162,931 | — | [<img src="figures/hhec_gpt-6-luna_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Luna 6 high">](figures/hhec_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 4:51 | 44/44 | PARTIAL | 協奏的な閉環と塩化物の脱離は読み取れますが、左パネルの巻矢印2本は始点が Scheme 2 の酸素原子から O–H 結合に変わっており、原著の機構図として使うには修正が必要です。 | 989,179 | — | $0.57 | [<img src="figures/hhec_sonnet_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Sonnet 5.5 high">](figures/hhec_sonnet_high.png) |
+| Haiku 5.5 high | 5:07 | 44/44 | PASS | — | 1,625,244 | — | $0.11 | [<img src="figures/hhec_haiku_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Haiku 5.5 high">](figures/hhec_haiku_high.png) |
+| Sol 6.2 high | 5:38 | 44/44 | PASS | — | — | 67,026 | — | [<img src="figures/hhec_gpt-6.2-sol_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Sol 6.2 high">](figures/hhec_gpt-6.2-sol_high.png) |
+| Luna 6 high | 3:10 | 44/44 | PASS | — | — | 54,229 | — | [<img src="figures/hhec_gpt-6-luna_high.png" width="180" alt="Haloalcohol dehalogenase HheC: Luna 6 high">](figures/hhec_gpt-6-luna_high.png) |
 
 ### SET7/9
 
@@ -106,10 +106,10 @@ doi:10.1002/jcc.21458。参照：Scheme 1 と本文。
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 1:11 | 37/37 | PASS | — | 496,793 | — | $0.27 | [<img src="figures/set79_sonnet_high.png" width="180" alt="SET7/9: Sonnet 5.5 high">](figures/set79_sonnet_high.png) |
-| Haiku 5.5 high | 1:25 | 41/41 | PASS | — | 840,433 | — | $0.02 | [<img src="figures/set79_haiku_high.png" width="180" alt="SET7/9: Haiku 5.5 high">](figures/set79_haiku_high.png) |
-| Sol 6.1 high | 2:55 | 38/38 | PASS | — | — | 47,898 | — | [<img src="figures/set79_gpt-6.1-sol_high.png" width="180" alt="SET7/9: Sol 6.1 high">](figures/set79_gpt-6.1-sol_high.png) |
-| Luna 6 high | 16:23 | 37/37 | PASS | — | — | 129,420 | — | [<img src="figures/set79_gpt-6-luna_high.png" width="180" alt="SET7/9: Luna 6 high">](figures/set79_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 1:27 | 44/44 | PASS | — | 555,179 | — | $0.32 | [<img src="figures/set79_sonnet_high.png" width="180" alt="SET7/9: Sonnet 5.5 high">](figures/set79_sonnet_high.png) |
+| Haiku 5.5 high | 1:35 | 45/45 | PASS | — | 841,556 | — | $0.03 | [<img src="figures/set79_haiku_high.png" width="180" alt="SET7/9: Haiku 5.5 high">](figures/set79_haiku_high.png) |
+| Sol 6.2 high | 2:51 | 44/44 | PASS | — | — | 91,241 | — | [<img src="figures/set79_gpt-6.2-sol_high.png" width="180" alt="SET7/9: Sol 6.2 high">](figures/set79_gpt-6.2-sol_high.png) |
+| Luna 6 high | 1:51 | 44/44 | PARTIAL | SET7/9 のメチル転移は正しく描かれ、描画検査にも合格していますが、反応するリシンが Lys4 と明記されていません。 | — | 30,786 | — | [<img src="figures/set79_gpt-6-luna_high.png" width="180" alt="SET7/9: Luna 6 high">](figures/set79_gpt-6-luna_high.png) |
 
 ### コリスミ酸ムターゼ
 
@@ -117,10 +117,10 @@ doi:10.1039/b313759g。参照：Fig. 1。
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 11:51 | 43/43 | PASS | — | 1,351,590 | — | $0.64 | [<img src="figures/cm_sonnet_high.png" width="180" alt="Chorismate mutase: Sonnet 5.5 high">](figures/cm_sonnet_high.png) |
-| Haiku 5.5 high | 7:25 | 39/39 | PARTIAL | 反応の骨格・電荷・電子移動は正しいですが、生成物の相対立体配置が省略されています。 | 1,268,582 | — | $0.04 | [<img src="figures/cm_haiku_high.png" width="180" alt="Chorismate mutase: Haiku 5.5 high">](figures/cm_haiku_high.png) |
-| Sol 6.1 high | 5:50 | 39/39 | PASS | — | — | 88,591 | — | [<img src="figures/cm_gpt-6.1-sol_high.png" width="180" alt="Chorismate mutase: Sol 6.1 high">](figures/cm_gpt-6.1-sol_high.png) |
-| Luna 6 high | 9:45 | 35/35 | PARTIAL | 反応の結合変化と電荷は正しいですが、原著にある立体配置が欠落しており、検査記録にも不一致があります。 | — | 77,103 | — | [<img src="figures/cm_gpt-6-luna_high.png" width="180" alt="Chorismate mutase: Luna 6 high">](figures/cm_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 4:57 | 46/46 | PASS | — | 963,344 | — | $0.47 | [<img src="figures/cm_sonnet_high.png" width="180" alt="Chorismate mutase: Sonnet 5.5 high">](figures/cm_sonnet_high.png) |
+| Haiku 5.5 high | 7:01 | 46/46 | PARTIAL | Claisen 転位は正しく読めますが、左の Arg7 の水素結合 2 本は、論文では別々の窒素から供与されるところを、図では同じ窒素から供与しています。 | 2,869,527 | — | $0.27 | [<img src="figures/cm_haiku_high.png" width="180" alt="Chorismate mutase: Haiku 5.5 high">](figures/cm_haiku_high.png) |
+| Sol 6.2 high | 3:12 | 41/41 | PASS | — | — | 60,937 | — | [<img src="figures/cm_gpt-6.2-sol_high.png" width="180" alt="Chorismate mutase: Sol 6.2 high">](figures/cm_gpt-6.2-sol_high.png) |
+| Luna 6 high | 4:41 | 41/41 | PARTIAL | 一段階のクライゼン転位を示す図として使えますが、基質と生成物の立体配置が省略されています。 | — | 82,788 | — | [<img src="figures/cm_gpt-6-luna_high.png" width="180" alt="Chorismate mutase: Luna 6 high">](figures/cm_gpt-6-luna_high.png) |
 
 ### コリスミ酸ムターゼ（遷移状態つき）
 
@@ -128,10 +128,10 @@ doi:10.1039/b313759g。参照：Fig. 1（prompt で遷移状態の描画を指�
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 15:01 | 46/46 | PASS | — | 3,867,163 | — | $1.17 | [<img src="figures/cmts_sonnet_high.png" width="180" alt="Chorismate mutase with its transition state: Sonnet 5.5 high">](figures/cmts_sonnet_high.png) |
-| Haiku 5.5 high | 11:33 | 42/42 | PARTIAL | 反応と遷移状態は正しく読み取れますが、生成物の相対立体配置が省略されています。 | 3,414,681 | — | $0.28 | [<img src="figures/cmts_haiku_high.png" width="180" alt="Chorismate mutase with its transition state: Haiku 5.5 high">](figures/cmts_haiku_high.png) |
-| Sol 6.1 high | 12:27 | 46/46 | PASS | — | — | 105,127 | — | [<img src="figures/cmts_gpt-6.1-sol_high.png" width="180" alt="Chorismate mutase with its transition state: Sol 6.1 high">](figures/cmts_gpt-6.1-sol_high.png) |
-| Luna 6 high | 14:09 | 38/38 | PARTIAL | 転位の結合変化は正しいですが、反応物の立体配置が省略されており、遷移状態で結合の交差が残っています。 | — | 92,975 | — | [<img src="figures/cmts_gpt-6-luna_high.png" width="180" alt="Chorismate mutase with its transition state: Luna 6 high">](figures/cmts_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 2:28 | 49/49 | PARTIAL | 形成結合の炭素番号が論文と異なるため、論文と直接照合できる機構図にするには番号の修正が必要です。 | 759,300 | — | $0.49 | [<img src="figures/cmts_sonnet_high.png" width="180" alt="Chorismate mutase with its transition state: Sonnet 5.5 high">](figures/cmts_sonnet_high.png) |
+| Haiku 5.5 high | 6:01 | 44/44 | PARTIAL | 反応の結合変化と遷移状態は正しく描かれていますが、切断されるC–O3結合の炭素に、論文では別の炭素を指す「5」が付いています。 | 1,819,727 | — | $0.16 | [<img src="figures/cmts_haiku_high.png" width="180" alt="Chorismate mutase with its transition state: Haiku 5.5 high">](figures/cmts_haiku_high.png) |
+| Sol 6.2 high | 6:55 | 49/49 | PASS | — | — | 100,066 | — | [<img src="figures/cmts_gpt-6.2-sol_high.png" width="180" alt="Chorismate mutase with its transition state: Sol 6.2 high">](figures/cmts_gpt-6.2-sol_high.png) |
+| Luna 6 high | 8:23 | 38/39 | FAIL | 基質と生成物の立体配置が論文図と異なり、遷移状態の結合表記とラベル配置にも不備があります。 | — | 97,375 | — | [<img src="figures/cmts_gpt-6-luna_high.png" width="180" alt="Chorismate mutase with its transition state: Luna 6 high">](figures/cmts_gpt-6-luna_high.png) |
 
 ### キモトリプシン
 
@@ -139,10 +139,10 @@ doi:10.1039/b313759g。参照：Fig. 1（prompt で遷移状態の描画を指�
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 56:05 | 41/41 | PASS | — | 4,994,935 | — | $1.52 | [<img src="figures/chymo_sonnet_high.png" width="180" alt="Chymotrypsin: Sonnet 5.5 high">](figures/chymo_sonnet_high.png) |
-| Haiku 5.5 high | 19:40 | 41/41 | PARTIAL | 主要な 4 段階はそろっていますが、2 箇所のプロトン移動の矢印に修正が必要です。 | 4,358,091 | — | $0.23 | [<img src="figures/chymo_haiku_high.png" width="180" alt="Chymotrypsin: Haiku 5.5 high">](figures/chymo_haiku_high.png) |
-| Sol 6.1 high | 13:42 | 41/41 | PASS | — | — | 116,548 | — | [<img src="figures/chymo_gpt-6.1-sol_high.png" width="180" alt="Chymotrypsin: Sol 6.1 high">](figures/chymo_gpt-6.1-sol_high.png) |
-| Luna 6 high | 11:30 | 40/40 | PASS | — | — | 87,925 | — | [<img src="figures/chymo_gpt-6-luna_high.png" width="180" alt="Chymotrypsin: Luna 6 high">](figures/chymo_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 3:44 | 44/44 | PASS | — | 542,838 | — | $0.53 | [<img src="figures/chymo_sonnet_high.png" width="180" alt="Chymotrypsin: Sonnet 5.5 high">](figures/chymo_sonnet_high.png) |
+| Haiku 5.5 high | 5:58 | 44/44 | PASS | — | 824,495 | — | $0.05 | [<img src="figures/chymo_haiku_high.png" width="180" alt="Chymotrypsin: Haiku 5.5 high">](figures/chymo_haiku_high.png) |
+| Sol 6.2 high | 8:25 | 44/44 | PASS | — | — | 108,864 | — | [<img src="figures/chymo_gpt-6.2-sol_high.png" width="180" alt="Chymotrypsin: Sol 6.2 high">](figures/chymo_gpt-6.2-sol_high.png) |
+| Luna 6 high | 4:22 | 48/48 | PASS | — | — | 46,071 | — | [<img src="figures/chymo_gpt-6-luna_high.png" width="180" alt="Chymotrypsin: Luna 6 high">](figures/chymo_gpt-6-luna_high.png) |
 
 ### アルドール縮合
 
@@ -150,10 +150,10 @@ doi:10.1039/b313759g。参照：Fig. 1（prompt で遷移状態の描画を指�
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 2:31 | 37/37 | PARTIAL | 化学種と生成物は正しいものの、電子対の移動を示す巻矢印が 3 本欠けています。 | 641,349 | — | $0.42 | [<img src="figures/aldol_sonnet_high.png" width="180" alt="Aldol condensation: Sonnet 5.5 high">](figures/aldol_sonnet_high.png) |
-| Haiku 5.5 high | 3:22 | 37/37 | PARTIAL | 反応経路と生成物は正しいですが、付加段階（2）に必要な巻矢印が 1 本欠けています。 | 791,136 | — | $0.04 | [<img src="figures/aldol_haiku_high.png" width="180" alt="Aldol condensation: Haiku 5.5 high">](figures/aldol_haiku_high.png) |
-| Sol 6.1 high | 4:26 | 37/37 | PASS | — | — | 74,538 | — | [<img src="figures/aldol_gpt-6.1-sol_high.png" width="180" alt="Aldol condensation: Sol 6.1 high">](figures/aldol_gpt-6.1-sol_high.png) |
-| Luna 6 high | 4:48 | 37/37 | PASS | — | — | 61,179 | — | [<img src="figures/aldol_gpt-6-luna_high.png" width="180" alt="Aldol condensation: Luna 6 high">](figures/aldol_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 1:47 | 39/39 | PASS | — | 321,974 | — | $0.28 | [<img src="figures/aldol_sonnet_high.png" width="180" alt="Aldol condensation: Sonnet 5.5 high">](figures/aldol_sonnet_high.png) |
+| Haiku 5.5 high | 4:00 | 39/39 | PASS | — | 573,081 | — | $0.04 | [<img src="figures/aldol_haiku_high.png" width="180" alt="Aldol condensation: Haiku 5.5 high">](figures/aldol_haiku_high.png) |
+| Sol 6.2 high | 2:18 | 39/39 | PASS | — | — | 41,088 | — | [<img src="figures/aldol_gpt-6.2-sol_high.png" width="180" alt="Aldol condensation: Sol 6.2 high">](figures/aldol_gpt-6.2-sol_high.png) |
+| Luna 6 high | 6:44 | 44/44 | PASS | — | — | 51,954 | — | [<img src="figures/aldol_gpt-6-luna_high.png" width="180" alt="Aldol condensation: Luna 6 high">](figures/aldol_gpt-6-luna_high.png) |
 
 ### プロペンへの HBr のラジカル付加
 
@@ -161,10 +161,10 @@ doi:10.1039/b313759g。参照：Fig. 1（prompt で遷移状態の描画を指�
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 2:15 | 29/29 | PASS | — | 543,737 | — | $0.33 | [<img src="figures/radical_sonnet_high.png" width="180" alt="Radical addition of HBr to propene: Sonnet 5.5 high">](figures/radical_sonnet_high.png) |
-| Haiku 5.5 high | 4:46 | 29/29 | PARTIAL | 連鎖反応は正しいですが、過酸化物の均等開裂で生じる「2 RO•」の表示が欠けています。 | 1,118,670 | — | $0.04 | [<img src="figures/radical_haiku_high.png" width="180" alt="Radical addition of HBr to propene: Haiku 5.5 high">](figures/radical_haiku_high.png) |
-| Sol 6.1 high | 2:23 | 29/29 | PASS | — | — | 43,751 | — | [<img src="figures/radical_gpt-6.1-sol_high.png" width="180" alt="Radical addition of HBr to propene: Sol 6.1 high">](figures/radical_gpt-6.1-sol_high.png) |
-| Luna 6 high | 5:52 | 29/29 | PARTIAL | 生成物と連鎖反応の骨格は正しいですが、開始反応の ROH が欠落しており、水素引き抜きの矢印も不明瞭です。 | — | 58,141 | — | [<img src="figures/radical_gpt-6-luna_high.png" width="180" alt="Radical addition of HBr to propene: Luna 6 high">](figures/radical_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 1:30 | 31/31 | PASS | — | 364,738 | — | $0.26 | [<img src="figures/radical_sonnet_high.png" width="180" alt="Radical addition of HBr to propene: Sonnet 5.5 high">](figures/radical_sonnet_high.png) |
+| Haiku 5.5 high | 2:45 | 31/31 | PARTIAL | 反応機構は正しく描かれていますが、伝播1で片羽矢印の尾が二重結合から離れ、電子の出所が読み取りにくいです。 | 437,662 | — | $0.03 | [<img src="figures/radical_haiku_high.png" width="180" alt="Radical addition of HBr to propene: Haiku 5.5 high">](figures/radical_haiku_high.png) |
+| Sol 6.2 high | 1:41 | 32/32 | PASS | — | — | 35,506 | — | [<img src="figures/radical_gpt-6.2-sol_high.png" width="180" alt="Radical addition of HBr to propene: Sol 6.2 high">](figures/radical_gpt-6.2-sol_high.png) |
+| Luna 6 high | 2:12 | 35/35 | PARTIAL | 過酸化水素の均等開裂で生じる OH• が図では 1 個分不足し、開始段階の水素移動を示す矢印が H 原子から離れた位置で止まっています。 | — | 24,000 | — | [<img src="figures/radical_gpt-6-luna_high.png" width="180" alt="Radical addition of HBr to propene: Luna 6 high">](figures/radical_gpt-6-luna_high.png) |
 
 ### 炭酸脱水酵素 II
 
@@ -172,7 +172,7 @@ doi:10.1039/b313759g。参照：Fig. 1（prompt で遷移状態の描画を指�
 
 | モデル | 時間（m:ss） | 検査 | 判定 | PARTIAL・FAIL の理由 | Claude のトークン数（入力 + 出力） | Codex のトークン数（合計） | Claude の API 費用 | 図 |
 |---|---:|---|---|---|---:|---:|---:|---|
-| Sonnet 5.5 high | 9:27 | 41/41 | PASS | — | 1,981,673 | — | $0.70 | [<img src="figures/metal_sonnet_high.png" width="180" alt="Carbonic anhydrase II: Sonnet 5.5 high">](figures/metal_sonnet_high.png) |
-| Haiku 5.5 high | 5:52 | 41/41 | PARTIAL | 主要な 3 段階と電子移動は正しいですが、全パネルで His119 の配位窒素が誤っています。 | 883,342 | — | $0.04 | [<img src="figures/metal_haiku_high.png" width="180" alt="Carbonic anhydrase II: Haiku 5.5 high">](figures/metal_haiku_high.png) |
-| Sol 6.1 high | 11:02 | 41/41 | PASS | — | — | 95,019 | — | [<img src="figures/metal_gpt-6.1-sol_high.png" width="180" alt="Carbonic anhydrase II: Sol 6.1 high">](figures/metal_gpt-6.1-sol_high.png) |
-| Luna 6 high | 21:07 | 43/43 | FAIL | 必須の反応段階は描かれていますが、反応する水酸化物イオンの水素が欠けており、生成物が炭酸水素イオンではなくラジカルになっています。 | — | 187,955 | — | [<img src="figures/metal_gpt-6-luna_high.png" width="180" alt="Carbonic anhydrase II: Luna 6 high">](figures/metal_gpt-6-luna_high.png) |
+| Sonnet 5.5 high | 2:28 | 44/44 | PASS | — | 328,431 | — | $0.26 | [<img src="figures/metal_sonnet_high.png" width="180" alt="Carbonic anhydrase II: Sonnet 5.5 high">](figures/metal_sonnet_high.png) |
+| Haiku 5.5 high | 4:16 | 43/43 | PARTIAL | 炭酸脱水酵素 II の機構と電荷は基準に合っていますが、配位子交換の反応矢印が上段の中間体から離れており、段をまたぐ反応順が追いにくいです。 | 1,024,577 | — | $0.05 | [<img src="figures/metal_haiku_high.png" width="180" alt="Carbonic anhydrase II: Haiku 5.5 high">](figures/metal_haiku_high.png) |
+| Sol 6.2 high | 4:17 | 44/44 | PARTIAL | 反応機構は正しいですが、第3パネルで巻矢印が W1 の O–H 結合を横切り、電子対の出所が読み取りにくくなっています。 | — | 56,715 | — | [<img src="figures/metal_gpt-6.2-sol_high.png" width="180" alt="Carbonic anhydrase II: Sol 6.2 high">](figures/metal_gpt-6.2-sol_high.png) |
+| Luna 6 high | 4:29 | 48/48 | PASS | — | — | 27,424 | — | [<img src="figures/metal_gpt-6-luna_high.png" width="180" alt="Carbonic anhydrase II: Luna 6 high">](figures/metal_gpt-6-luna_high.png) |
