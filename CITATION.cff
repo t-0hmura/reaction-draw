@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "reaction-draw"
+type: software
+authors:
+  - family-names: Ohmura
+    given-names: Takuto
+    affiliation: The University of Tokyo
+version: 1.1.0
+date-released: 2026-11-22
+doi: 10.5281/zenodo.24436446
+license: Apache-2.0
+repository-code: "https://github.com/t-0hmura/reaction-draw"
