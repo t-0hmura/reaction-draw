@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-Four models were tested at high effort on 11 reaction-mechanism problems (44 runs): two Claude models (Sonnet 5.5 and Haiku 5.5) in Claude Code, and two GPT models (Sol 6.2 and Luna 6) in Codex CLI. 43 of the 44 runs passed the automated drawing checks, and independent judging yielded **26 PASS, 15 PARTIAL, and 3 FAIL**.
+Four models were tested at high effort on 11 reaction-mechanism problems (44 runs): two Claude models (Sonnet 5.5 and Haiku 5.5) in Claude Code, and two GPT models (Sol 6.2 and Luna 6) in Codex CLI. 43 of the 44 runs passed the automated drawing checks, and independent judging found **26 runs passed (PASS), 15 had concerns (PARTIAL), and 3 failed (FAIL)**.
 
 ## Setup and prompts
 
