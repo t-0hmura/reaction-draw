@@ -21,6 +21,9 @@ from pathlib import Path
 
 import chemdraw_compat                    # same directory: figure.cdxml for ChemDraw
 
+# multiplies every browser wait (start, page load, screenshot); a slow machine such as a CI runner sets it higher
+WAIT_SCALE = float(os.environ.get('OCTET_DRAW_TIMEOUT_SCALE') or 1)
+
 
 def canonical(cdxml):
     """The XML of a CDXML text without its prolog, in canonical form."""
@@ -29,6 +32,7 @@ def canonical(cdxml):
 
 
 def launch(pw, browser='auto', timeout=30000):
+    timeout *= WAIT_SCALE
     """System Chrome, else Playwright's Chromium, else the executable at `browser`."""
     # --disable-lcd-text: gray antialiasing; LCD (sub-pixel) text would put orange and blue fringes on black glyphs
     args = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-lcd-text']
@@ -63,7 +67,8 @@ def png(browser, svg, dpi, width=None):
         page.set_content('<!doctype html><meta charset="utf-8"><body style="margin:0;background:#fff">'
                          '<div style="width:%.2fpx;height:%.2fpx;background:#fff">%s</div>' % (w, h, sized))
         page.evaluate('document.fonts.ready')
-        return page.screenshot(clip={'x': 0, 'y': 0, 'width': w, 'height': h}, omit_background=False)
+        return page.screenshot(clip={'x': 0, 'y': 0, 'width': w, 'height': h}, omit_background=False,
+                               timeout=30000 * WAIT_SCALE)
     finally:
         page.close()
 
@@ -87,8 +92,8 @@ def check_environment(html):
                                                     'in the browser Python environment (%s)' % (str(exc).strip().splitlines() or [type(exc).__name__])[0][:200]]}
                 try:
                     page = browser.new_page(viewport={'width': 160, 'height': 100})
-                    page.goto(Path(html).resolve().as_uri(), timeout=8000)
-                    page.wait_for_function('typeof window.checkEnvironment === "function"', timeout=5000)
+                    page.goto(Path(html).resolve().as_uri(), timeout=8000 * WAIT_SCALE)
+                    page.wait_for_function('typeof window.checkEnvironment === "function"', timeout=5000 * WAIT_SCALE)
                     font = page.evaluate('checkEnvironment()')
                     good = font.get('ok', False)
                     return {'ok': bool(good), 'browser': browser.version, 'font_check': font,
@@ -126,8 +131,8 @@ def run_job(job_path):
                 page = browser.new_page(viewport={'width': 1600, 'height': 900})
                 page.on('pageerror', lambda e: errors.append(str(e)))
                 page.on('console', lambda m: errors.append('console: ' + m.text) if m.type == 'error' else None)
-                page.goto(html.as_uri())
-                page.wait_for_function('() => typeof window.drawFigure === "function"', timeout=60000)
+                page.goto(html.as_uri(), timeout=30000 * WAIT_SCALE)
+                page.wait_for_function('() => typeof window.drawFigure === "function"', timeout=60000 * WAIT_SCALE)
                 T['page_load'] = time.perf_counter() - t
                 t = time.perf_counter()
                 res = page.evaluate('async j => await drawFigure(j)', job['page'])
@@ -150,8 +155,8 @@ def run_job(job_path):
                 fresh = browser.new_page(viewport={'width': 1600, 'height': 900})
                 fresh_errors = []
                 fresh.on('pageerror', lambda e: fresh_errors.append(str(e)))
-                fresh.goto(html.as_uri())
-                fresh.wait_for_function('() => typeof window.readCdxml === "function"', timeout=60000)
+                fresh.goto(html.as_uri(), timeout=30000 * WAIT_SCALE)
+                fresh.wait_for_function('() => typeof window.readCdxml === "function"', timeout=60000 * WAIT_SCALE)
                 meta = res.get('meta') or {}
                 cdxml_file = fresh.evaluate('async q => await readCdxml(q.text, q.refs, q.numbers, q.ids, q.roles)',
                                             {'text': chemdraw_compat.restore((out / 'figure.cdxml').read_text(encoding='utf-8')), 'refs': meta.get('refs', []),

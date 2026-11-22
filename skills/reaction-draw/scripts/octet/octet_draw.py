@@ -806,7 +806,8 @@ def check_environment(browser_cmd=None, octet_dir=None, node_modules=None):
         return octet_run.check_environment(html)
     try:
         r = subprocess.run('%s %s --check-env %s' % (command, shlex.quote(str(RUNNER)), shlex.quote(str(html))),
-                           shell=True, capture_output=True, text=True, timeout=25)
+                           shell=True, capture_output=True, text=True,
+                           timeout=25 * float(os.environ.get('OCTET_DRAW_TIMEOUT_SCALE') or 1))
     except subprocess.TimeoutExpired:
         return {'ok': False, 'problems': ['browser command: timed out; check the command or configure --browser-cmd '
                                         'with a reachable Python that has Playwright and Chromium installed']}

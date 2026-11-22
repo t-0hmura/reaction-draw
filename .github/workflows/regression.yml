@@ -9,7 +9,9 @@ on:
 jobs:
   draw:
     runs-on: ubuntu-26.04
-    timeout-minutes: 90
+    timeout-minutes: 120
+    env:
+      OCTET_DRAW_TIMEOUT_SCALE: '5'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -37,9 +39,10 @@ jobs:
 
   draw-windows:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       PYTHONUTF8: '1'
+      OCTET_DRAW_TIMEOUT_SCALE: '5'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

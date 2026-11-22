@@ -47,7 +47,7 @@ Each run overwrites only managed output files in `DIR`. When a check fails, the 
 | `--browser-cmd` | Run the browser step on another host that shares the same filesystem paths (Python with Playwright); pass to both `--check-env` and the full run |
 | `--octet`, `--node-modules` | Build the page from an Octet Draw checkout instead of using the prebuilt bundle ([rebuilding](#rebuilding-the-page)) |
 
-The environment variables `OCTET_DRAW_BROWSER_CMD`, `OCTET_DRAW_CHECKOUT`, `OCTET_DRAW_NODE_MODULES`, and `OCTET_DRAW_CACHE` set the corresponding defaults. An optional `style` block in the input overrides the default ACS dimensions: `font`, `font_size_pt` (10), `bond_length_pt` (14.4), `line_width_pt` (0.6), `bold_width_pt` (2.0), `double_spacing` (0.18), `label_margin_pt` (1.6), `hash_spacing_pt` (2.5), `number_size_pt` (8), `number_font`, and `title_size_pt` (10).
+The environment variables `OCTET_DRAW_BROWSER_CMD`, `OCTET_DRAW_CHECKOUT`, `OCTET_DRAW_NODE_MODULES`, and `OCTET_DRAW_CACHE` set the corresponding defaults, and `OCTET_DRAW_TIMEOUT_SCALE` multiplies the browser's time limits (for example, `5` on a slow machine). An optional `style` block in the input overrides the default ACS dimensions: `font`, `font_size_pt` (10), `bond_length_pt` (14.4), `line_width_pt` (0.6), `bold_width_pt` (2.0), `double_spacing` (0.18), `label_margin_pt` (1.6), `hash_spacing_pt` (2.5), `number_size_pt` (8), `number_font`, and `title_size_pt` (10).
 
 ## Run
 
